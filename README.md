@@ -46,7 +46,6 @@ curl -sSL https://raw.githubusercontent.com/noxthewildshadow/TheBlockHeads-Serve
 
 After installation, create your first world:
 ```bash
-cd ~
 ./blockheads_server171 -n
 ```
 
@@ -71,7 +70,7 @@ Open The BlockHeads game on your device and connect using:
 
 ### Starting the Server
 ```bash
-./server_manager.sh start WorldName 12153
+./server_manager.sh start WorldID 12153
 ```
 
 ### Stopping the Server
@@ -116,10 +115,10 @@ Your server includes an automated economy system with these features:
 You can run multiple worlds on different ports:
 ```bash
 # First server
-./server_manager.sh start World1 12153
+./server_manager.sh start WorldID1 12153
 
 # Second server (in a different terminal or screen session)
-./server_manager.sh start World2 12154
+./server_manager.sh start WorldID2 12154
 ```
 
 ### Admin Commands
@@ -136,11 +135,11 @@ Server operators can use these commands in the bot terminal:
 1. **Port already in use**
    ```bash
    # Use a different port
-   ./server_manager.sh start MyWorld 12154
+   ./server_manager.sh start MyWorldID 12154
    ```
 
 2. **World not found**
-   - Make sure you created the world first with `./blockheads_server171 -n`
+   - Make sure you created the world first with `./blockheads_server171 -n YOUR_WORLD_NAME`
 
 3. **Permission denied errors**
    - Ensure you're using `sudo` for installation
