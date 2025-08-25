@@ -43,16 +43,6 @@ print_step() {
 SERVER_BINARY="./blockheads_server171"
 DEFAULT_PORT=12153
 
-# Try to find the server binary if the default name doesn't exist
-if [ ! -f "$SERVER_BINARY" ]; then
-    SERVER_BINARY=$(find . -name "*blockheads*" -type f -executable | head -n 1)
-    if [ -z "$SERVER_BINARY" ]; then
-        print_error "Server binary not found. Please run the installer first."
-        exit 1
-    fi
-    print_warning "Using alternative server binary: $SERVER_BINARY"
-fi
-
 # Function to check if screen session exists
 screen_session_exists() {
     screen -list 2>/dev/null | grep -q "$1"
@@ -79,7 +69,7 @@ show_usage() {
     echo -e "  ${YELLOW}$0 list${NC}                 (lists all running servers)"
     echo ""
     print_warning "Note: First create a world manually with:"
-    echo -e "  ${GREEN}$SERVER_BINARY -n${NC}"
+    echo -e "  ${GREEN}./blockheads_server171 -n${NC}"
     echo ""
     print_warning "After creating the world, press ${YELLOW}CTRL+C${NC} to exit"
     print_warning "and then start the server with the start command."
@@ -87,13 +77,13 @@ show_usage() {
 }
 
 is_port_in_use() {
-    lsof -Pi ":$1" -sTCP:LISTEN -t >/dev/null 2>&1
+    lsof -Pi ":$1" -sTCP:LISTEN -t >/dev/null
 }
 
 free_port() {
     local port="$1"
     print_warning "Freeing port $port..."
-    local pids=$(lsof -ti ":$port" 2>/dev/null)
+    local pids=$(lsof -ti ":$port")
     [ -n "$pids" ] && kill -9 $pids 2>/dev/null
     
     # Use our function to check if screen sessions exist before trying to quit them
@@ -115,14 +105,10 @@ free_port() {
 check_world_exists() {
     local world_id="$1"
     local saves_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
-    
-    # Create saves directory if it doesn't exist
-    mkdir -p "$saves_dir"
-    
     [ -d "$saves_dir/$world_id" ] || {
         print_error "World '$world_id' does not exist in: $saves_dir/"
         echo ""
-        print_warning "To create a world, run: ${GREEN}$SERVER_BINARY -n${NC}"
+        print_warning "To create a world, run: ${GREEN}./blockheads_server171 -n${NC}"
         print_warning "After creating the world, press ${YELLOW}CTRL+C${NC} to exit"
         print_warning "and then start the server with: ${GREEN}$0 start $world_id $port${NC}"
         return 1
@@ -141,7 +127,7 @@ start_server() {
     # Verify server binary exists
     if [ ! -f "$SERVER_BINARY" ]; then
         print_error "Server binary not found: $SERVER_BINARY"
-        print_warning "Run the installer first."
+        print_warning "Run the installer first: ${GREEN}./installer.sh${NC}"
         return 1
     fi
 
@@ -184,18 +170,18 @@ start_server() {
 #!/bin/bash
 cd '$PWD'
 while true; do
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting server..."
-    if $SERVER_BINARY -o '$world_id' -p $port 2>&1 | tee -a '$log_file'; then
-        echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server closed normally"
+    echo "[\\\$(date '+%Y-%m-%d %H:%M:%S')] Starting server..."
+    if ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'; then
+        echo "[\\\$(date '+%Y-%m-%d %H:%M:%S')] Server closed normally"
     else
-        exit_code=\$?
-        echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server failed with code: \$exit_code"
-        if [ \$exit_code -eq 1 ] && tail -n 5 '$log_file' | grep -q "port.*already in use"; then
-            echo "[\$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Port already in use. Will not retry."
+        exit_code=\\\$?
+        echo "[\\\$(date '+%Y-%m-%d %H:%M:%S')] Server failed with code: \\\$exit_code"
+        if [ \\\$exit_code -eq 1 ] && tail -n 5 '$log_file' | grep -q "port.*already in use"; then
+            echo "[\\\$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Port already in use. Will not retry."
             break
         fi
     fi
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Restarting in 5 seconds..."
+    echo "[\\\$(date '+%Y-%m-%d %H:%M:%S')] Restarting in 5 seconds..."
     sleep 5
 done
 EOF
@@ -251,7 +237,7 @@ EOF
     screen -dmS "$SCREEN_BOT" bash -c "
         cd '$PWD'
         echo 'Starting server bot for port $port...'
-        ./bot_server.sh '$log_file' '$port'
+        ./server_bot.sh '$log_file' '$port'
     "
 
     # Verify both processes started correctly
@@ -290,15 +276,15 @@ stop_server() {
         print_step "Stopping all servers and bots..."
         
         # Stop all servers
-        for server_session in $(screen -list | grep "blockheads_server_" | awk -F. '{print $1}'); do
-            screen -S "$server_session" -X quit 2>/dev/null
-            print_success "Stopped server: $server_session"
+        for server_session in $(screen -list | grep "blockheads_server_" | awk '{print $1}'); do
+            screen -S "${server_session}" -X quit 2>/dev/null
+            print_success "Stopped server: ${server_session}"
         done
         
         # Stop all bots
-        for bot_session in $(screen -list | grep "blockheads_bot_" | awk -F. '{print $1}'); do
-            screen -S "$bot_session" -X quit 2>/dev/null
-            print_success "Stopped bot: $bot_session"
+        for bot_session in $(screen -list | grep "blockheads_bot_" | awk '{print $1}'); do
+            screen -S "${bot_session}" -X quit 2>/dev/null
+            print_success "Stopped bot: ${bot_session}"
         done
         
         pkill -f "$SERVER_BINARY" 2>/dev/null || true
@@ -331,7 +317,7 @@ stop_server() {
 list_servers() {
     print_header "LIST OF RUNNING SERVERS"
     
-    local servers=$(screen -list 2>/dev/null | grep "blockheads_server_" | awk -F. '{print $1}' | sed 's/blockheads_server_/ - Port: /')
+    local servers=$(screen -list | grep "blockheads_server_" | awk '{print $1}' | sed 's/\.blockheads_server_/ - Port: /')
     
     if [ -z "$servers" ]; then
         print_warning "No servers are currently running."
@@ -352,7 +338,7 @@ show_status() {
         print_header "THE BLOCKHEADS SERVER STATUS - ALL SERVERS"
         
         # Check all servers
-        local servers=$(screen -list 2>/dev/null | grep "blockheads_server_" | awk -F. '{print $1}' | sed 's/blockheads_server_//')
+        local servers=$(screen -list | grep "blockheads_server_" | awk '{print $1}' | sed 's/\.blockheads_server_//')
         
         if [ -z "$servers" ]; then
             print_error "No servers are currently running."
