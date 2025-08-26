@@ -56,7 +56,7 @@ TEMP_FILE="/tmp/blockheads_server171.tar.gz"
 SERVER_BINARY="blockheads_server171"
 
 # Raw URLs for helper scripts
-RAW_BASE="https://raw.githubusercontent.com/noxthewildshadow/TheBlockHeads-Server-BETA/refs/heads/main"
+RAW_BASE="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/refs/heads/main"
 SERVER_MANAGER_URL="$RAW_BASE/server_manager.sh"
 BOT_SCRIPT_URL="$RAW_BASE/server_bot.sh"
 
@@ -88,7 +88,7 @@ print_step "[2/8] Downloading helper scripts from GitHub..."
 if ! wget -q -O server_manager.sh "$SERVER_MANAGER_URL"; then
     print_error "Failed to download server_manager.sh from GitHub."
     print_status "Trying alternative URL..."
-    SERVER_MANAGER_URL="https://raw.githubusercontent.com/noxthewildshadow/TheBlockHeads-Server-BETA/main/server_manager.sh"
+    SERVER_MANAGER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/server_manager.sh"
     if ! wget -q -O server_manager.sh "$SERVER_MANAGER_URL"; then
         print_error "Completely failed to download server_manager.sh"
         exit 1
@@ -98,7 +98,7 @@ fi
 if ! wget -q -O server_bot.sh "$BOT_SCRIPT_URL"; then
     print_error "Failed to download server_bot.sh from GitHub."
     print_status "Trying alternative URL..."
-    BOT_SCRIPT_URL="https://raw.githubusercontent.com/noxthewildshadow/TheBlockHeads-Server-BETA/main/server_bot.sh"
+    BOT_SCRIPT_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/server_bot.sh"
     if ! wget -q -O server_bot.sh "$BOT_SCRIPT_URL"; then
         print_error "Completely failed to download server_bot.sh"
         exit 1
