@@ -87,25 +87,31 @@ validate_authorization() {
     # Check adminlist.txt against authorized_admins.txt
     if [ -f "$admin_list" ]; then
         while IFS= read -r admin; do
-            if [ -n "$admin" ] && ! grep -q -i "^$admin$" "$auth_admins"; then
-                print_warning "Unauthorized admin detected: $admin"
-                send_server_command "/unadmin $admin"
-                remove_from_list_file "$admin" "admin"
-                print_success "Removed unauthorized admin: $admin"
+            # Skip comment lines and empty lines
+            if [[ -n "$admin" && ! "$admin" =~ ^[[:space:]]*# && ! "$admin" =~ "Usernames in this file" ]]; then
+                if ! grep -q -i "^$admin$" "$auth_admins"; then
+                    print_warning "Unauthorized admin detected: $admin"
+                    send_server_command "/unadmin $admin"
+                    remove_from_list_file "$admin" "admin"
+                    print_success "Removed unauthorized admin: $admin"
+                fi
             fi
-        done < "$admin_list"
+        done < <(grep -v "^[[:space:]]*#" "$admin_list")  # Skip comment lines
     fi
     
     # Check modlist.txt against authorized_mods.txt
     if [ -f "$mod_list" ]; then
         while IFS= read -r mod; do
-            if [ -n "$mod" ] && ! grep -q -i "^$mod$" "$auth_mods"; then
-                print_warning "Unauthorized mod detected: $mod"
-                send_server_command "/unmod $mod"
-                remove_from_list_file "$mod" "mod"
-                print_success "Removed unauthorized mod: $mod"
+            # Skip comment lines and empty lines
+            if [[ -n "$mod" && ! "$mod" =~ ^[[:space:]]*# && ! "$mod" =~ "Usernames in this file" ]]; then
+                if ! grep -q -i "^$mod$" "$auth_mods"; then
+                    print_warning "Unauthorized mod detected: $mod"
+                    send_server_command "/unmod $mod"
+                    remove_from_list_file "$mod" "mod"
+                    print_success "Removed unauthorized mod: $mod"
+                fi
             fi
-        done < "$mod_list"
+        done < <(grep -v "^[[:space:]]*#" "$mod_list")  # Skip comment lines
     fi
 }
 
@@ -197,8 +203,8 @@ remove_from_list_file() {
         return 1
     fi
     
-    # Remove the player from the list file
-    if grep -q "^$lower_player_name$" "$list_file"; then
+    # Remove the player from the list file (only non-comment lines)
+    if grep -v "^[[:space:]]*#" "$list_file" | grep -q "^$lower_player_name$"; then
         # Use sed to remove the player name (case-insensitive)
         sed -i "/^$lower_player_name$/Id" "$list_file"
         print_success "Removed $player_name from ${list_type}list.txt"
@@ -247,7 +253,8 @@ is_player_in_list() {
     local list_file="$world_dir/${list_type}list.txt"
     local lower_player_name=$(echo "$player_name" | tr '[:upper:]' '[:lower:]')
     if [ -f "$list_file" ]; then
-        if grep -q "^$lower_player_name$" "$list_file"; then
+        # Skip comment lines when checking
+        if grep -v "^[[:space:]]*#" "$list_file" | grep -q "^$lower_player_name$"; then
             return 0
         fi
     fi
@@ -628,6 +635,10 @@ filter_server_log() {
             continue
         fi
         if [[ "$line" == *"SERVER: say"* && "$line" == *"Welcome"* ]]; then
+            continue
+        fi
+        # Filter adminlist/modlist related messages
+        if [[ "$line" == *"adminlist.txt"* ]] || [[ "$line" == *"modlist.txt"* ]]; then
             continue
         fi
         echo "$line"
