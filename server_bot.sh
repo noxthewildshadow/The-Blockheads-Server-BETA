@@ -51,9 +51,86 @@ else
     SCREEN_SERVER="blockheads_server"
 fi
 
+# Authorization files
+AUTHORIZED_ADMINS_FILE="authorized_admins.txt"
+AUTHORIZED_MODS_FILE="authorized_mods.txt"
+
 SCAN_INTERVAL=5
 SERVER_WELCOME_WINDOW=15
 TAIL_LINES=500
+
+# Function to initialize authorization files
+initialize_authorization_files() {
+    local world_dir=$(dirname "$LOG_FILE")
+    local auth_admins="$world_dir/$AUTHORIZED_ADMINS_FILE"
+    local auth_mods="$world_dir/$AUTHORIZED_MODS_FILE"
+    
+    if [ ! -f "$auth_admins" ]; then
+        touch "$auth_admins"
+        print_success "Created authorized admins file: $auth_admins"
+    fi
+    
+    if [ ! -f "$auth_mods" ]; then
+        touch "$auth_mods"
+        print_success "Created authorized mods file: $auth_mods"
+    fi
+}
+
+# Function to check and correct admin/mod lists
+validate_authorization() {
+    local world_dir=$(dirname "$LOG_FILE")
+    local auth_admins="$world_dir/$AUTHORIZED_ADMINS_FILE"
+    local auth_mods="$world_dir/$AUTHORIZED_MODS_FILE"
+    local admin_list="$world_dir/adminlist.txt"
+    local mod_list="$world_dir/modlist.txt"
+    
+    # Check adminlist.txt against authorized_admins.txt
+    if [ -f "$admin_list" ]; then
+        while IFS= read -r admin; do
+            if [ -n "$admin" ] && ! grep -q -i "^$admin$" "$auth_admins"; then
+                print_warning "Unauthorized admin detected: $admin"
+                send_server_command "/unadmin $admin"
+                remove_from_list_file "$admin" "admin"
+                print_success "Removed unauthorized admin: $admin"
+            fi
+        done < "$admin_list"
+    fi
+    
+    # Check modlist.txt against authorized_mods.txt
+    if [ -f "$mod_list" ]; then
+        while IFS= read -r mod; do
+            if [ -n "$mod" ] && ! grep -q -i "^$mod$" "$auth_mods"; then
+                print_warning "Unauthorized mod detected: $mod"
+                send_server_command "/unmod $mod"
+                remove_from_list_file "$mod" "mod"
+                print_success "Removed unauthorized mod: $mod"
+            fi
+        done < "$mod_list"
+    fi
+}
+
+# Function to add player to authorized list
+add_to_authorized() {
+    local player_name="$1"
+    local list_type="$2"  # "admin" or "mod"
+    local world_dir=$(dirname "$LOG_FILE")
+    local auth_file="$world_dir/authorized_${list_type}s.txt"
+    
+    if [ ! -f "$auth_file" ]; then
+        print_error "Authorization file not found: $auth_file"
+        return 1
+    fi
+    
+    # Add player if not already in the file
+    if ! grep -q -i "^$player_name$" "$auth_file"; then
+        echo "$player_name" >> "$auth_file"
+        print_success "Added $player_name to authorized ${list_type}s"
+        return 0
+    else
+        print_warning "$player_name is already in authorized ${list_type}s"
+        return 1
+    fi
+}
 
 # Initialize admin offenses tracking
 initialize_admin_offenses() {
@@ -403,6 +480,7 @@ process_message() {
                 echo "$current_data" > "$ECONOMY_FILE"
                 
                 screen -S "$SCREEN_SERVER" -X stuff "/mod $player_name$(printf \\r)"
+                add_to_authorized "$player_name" "mod"
                 send_server_command "Congratulations $player_name! You have been promoted to MOD for 10 tickets. Remaining tickets: $new_tickets"
             else
                 send_server_command "$player_name, you need $((10 - player_tickets)) more tickets to buy MOD rank."
@@ -421,6 +499,7 @@ process_message() {
                 echo "$current_data" > "$ECONOMY_FILE"
                 
                 screen -S "$SCREEN_SERVER" -X stuff "/admin $player_name$(printf \\r)"
+                add_to_authorized "$player_name" "admin"
                 send_server_command "Congratulations $player_name! You have been promoted to ADMIN for 20 tickets. Remaining tickets: $new_tickets"
             else
                 send_server_command "$player_name, you need $((20 - player_tickets)) more tickets to buy ADMIN rank."
@@ -438,6 +517,7 @@ process_message() {
                     echo "$current_data" > "$ECONOMY_FILE"
                     
                     screen -S "$SCREEN_SERVER" -X stuff "/mod $target_player$(printf \\r)"
+                    add_to_authorized "$target_player" "mod"
                     send_server_command "Congratulations! $player_name has gifted MOD rank to $target_player for 15 tickets."
                     send_server_command "$player_name, your remaining tickets: $new_tickets"
                 else
@@ -459,6 +539,7 @@ process_message() {
                     echo "$current_data" > "$ECONOMY_FILE"
                     
                     screen -S "$SCREEN_SERVER" -X stuff "/admin $target_player$(printf \\r)"
+                    add_to_authorized "$target_player" "admin"
                     send_server_command "Congratulations! $player_name has gifted ADMIN rank to $target_player for 30 tickets."
                     send_server_command "$player_name, your remaining tickets: $new_tickets"
                 else
@@ -508,12 +589,14 @@ process_admin_command() {
         print_success "Setting $player_name as MOD"
         
         screen -S "$SCREEN_SERVER" -X stuff "/mod $player_name$(printf \\r)"
+        add_to_authorized "$player_name" "mod"
         send_server_command "$player_name has been set as MOD by server console!"
     elif [[ "$command" =~ ^!set_admin\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
         print_success "Setting $player_name as ADMIN"
         
         screen -S "$SCREEN_SERVER" -X stuff "/admin $player_name$(printf \\r)"
+        add_to_authorized "$player_name" "admin"
         send_server_command "$player_name has been set as ADMIN by server console!"
     else
         print_error "Unknown admin command: $command"
@@ -554,6 +637,18 @@ filter_server_log() {
 monitor_log() {
     local log_file="$1"
     LOG_FILE="$log_file"
+
+    # Initialize authorization files
+    initialize_authorization_files
+
+    # Start authorization validation in background
+    (
+        while true; do
+            sleep 3
+            validate_authorization
+        done
+    ) &
+    local validation_pid=$!
 
     print_header "STARTING ECONOMY BOT"
     print_status "Monitoring: $log_file"
@@ -653,6 +748,7 @@ monitor_log() {
 
     wait
     rm -f "$admin_pipe"
+    kill $validation_pid 2>/dev/null
 }
 
 if [ $# -eq 1 ] || [ $# -eq 2 ]; then
