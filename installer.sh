@@ -68,7 +68,7 @@ print_step "[1/8] Installing required packages..."
 {
     add-apt-repository multiverse -y || true
     apt-get update -y
-    apt-get install -y libgnustep-base1.28 libdispatch0 patchelf wget jq screen lsof
+    apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common
 } > /dev/null 2>&1
 if [ $? -eq 0 ]; then
     print_success "Required packages installed"
@@ -78,7 +78,7 @@ else
     apt-get install -y software-properties-common
     add-apt-repository multiverse -y
     apt-get update -y
-    apt-get install -y libgnustep-base1.28 libdispatch0 patchelf wget jq screen lsof || {
+    apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof || {
         print_error "Still failed to install packages. Please check your internet connection."
         exit 1
     }
@@ -164,13 +164,13 @@ patchelf --replace-needed libdispatch.so libdispatch.so.0 "$SERVER_BINARY" || tr
 print_success "Compatibility patches applied"
 
 print_step "[6/8] Set ownership and permissions for helper scripts and binary"
-chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh "$SERVER_BINARY" || true
-chmod 755 server_manager.sh server_bot.sh "$SERVER_BINARY" || true
+chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
+chmod 755 server_manager.sh server_bot.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
 print_success "Permissions set"
 
 print_step "[7/8] Create economy data file"
 sudo -u "$ORIGINAL_USER" bash -c 'echo "{\"players\": {}, \"transactions\": []}" > economy_data.json' || true
-chown "$ORIGINAL_USER:$ORIGINAL_USER" economy_data.json || true
+chown "$ORIGINAL_USER:$ORIGINAL_USER" economy_data.json 2>/dev/null || true
 print_success "Economy data file created"
 
 rm -f "$TEMP_FILE"
