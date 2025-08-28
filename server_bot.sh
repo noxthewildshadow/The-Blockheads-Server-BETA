@@ -1,5 +1,3 @@
-#!/bin/bash
-
 # Enhanced Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -321,7 +319,7 @@ show_welcome_message() {
     local current_time=$(date +%s)
     local current_data=$(cat "$ECONOMY_FILE")
     local last_welcome_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_welcome_time // 0')
-    last_welcome_time=${last_welcome:-0}
+    last_welcome_time=${last_welcome_time:-0}
     if [ "$force_send" -eq 1 ] || [ "$last_welcome_time" -eq 0 ] || [ $((current_time - last_welcome_time)) -ge 180 ]; then
         if [ "$is_new_player" = "true" ]; then
             send_server_command "Hello $player_name! Welcome to the server. Type !tickets to check your ticket balance."
