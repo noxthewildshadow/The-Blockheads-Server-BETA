@@ -526,8 +526,9 @@ process_message() {
                     current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" --arg target "$target_player" '.transactions += [{"player": $player, "type": "gift_mod", "tickets": -60, "target": $target, "time": $time}]')
                     echo "$current_data" > "$ECONOMY_FILE"
                     
-                    screen -S "$SCREEN_SERVER" -X stuff "/mod $target_player$(printf \\r)"
+                    # Add to authorized mods and execute mod command
                     add_to_authorized "$target_player" "mod"
+                    screen -S "$SCREEN_SERVER" -X stuff "/mod $target_player$(printf \\r)"
                     send_server_command "Congratulations! $player_name has gifted MOD rank to $target_player for 60 tickets."
                     send_server_command "$player_name, your remaining tickets: $new_tickets"
                 else
@@ -548,8 +549,9 @@ process_message() {
                     current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" --arg target "$target_player" '.transactions += [{"player": $player, "type": "gift_admin", "tickets": -120, "target": $target, "time": $time}]')
                     echo "$current_data" > "$ECONOMY_FILE"
                     
-                    screen -S "$SCREEN_SERVER" -X stuff "/admin $target_player$(printf \\r)"
+                    # Add to authorized admins and execute admin command
                     add_to_authorized "$target_player" "admin"
+                    screen -S "$SCREEN_SERVER" -X stuff "/admin $target_player$(printf \\r)"
                     send_server_command "Congratulations! $player_name has gifted ADMIN rank to $target_player for 120 tickets."
                     send_server_command "$player_name, your remaining tickets: $new_tickets"
                 else
