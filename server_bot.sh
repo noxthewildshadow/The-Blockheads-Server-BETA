@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set +e  # Cambiado a set +e para prevenir terminación anticipada
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -472,7 +472,7 @@ process_message() {
     local player_tickets=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].tickets // 0')
     player_tickets=${player_tickets:-0}
     
-    # Check greeting cooldown
+    # Obtener el tiempo actual y el último saludo
     local current_time=$(date +%s)
     local last_greeting_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_greeting_time // 0')
     last_greeting_time=${last_greeting_time:-0}
@@ -480,9 +480,10 @@ process_message() {
     
     case "$message" in
         "hi"|"hello"|"Hi"|"Hello"|"hola"|"Hola")
+            # Solo saludar si ha pasado el cooldown de 10 minutos (600 segundos)
             if [ "$greeting_cooldown" -ge 600 ]; then
                 send_server_command "Hello $player_name! Welcome to the server. Type !tickets to check your ticket balance."
-                # Update last greeting time
+                # Actualizar el tiempo del último saludo
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_greeting_time = $time')
                 echo "$current_data" > "$ECONOMY_FILE"
             else
@@ -592,7 +593,7 @@ process_message() {
 process_admin_command() {
     local command="$1"
     local current_data=$(cat "$ECONOMY_FILE")
-    if [[ "$command" =~ ^!send_ticket\ ([a-zA-Z0-9_]+)\ ([0-9]+)$ ]]; then
+    if [[ "$command" =~ ^!send_ticket[[:space:]]+([a-zA-Z0-9_]+)[[:space:]]+([0-9]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
         local tickets_to_add="${BASH_REMATCH[2]}"
         local player_exists=$(echo "$current_data" | jq --arg player "$player_name" '.players | has($player)')
@@ -609,14 +610,14 @@ process_admin_command() {
         echo "$current_data" > "$ECONOMY_FILE"
         print_success "Added $tickets_to_add tickets to $player_name (Total: $new_tickets)"
         send_server_command "$player_name received $tickets_to_add tickets from admin! Total: $new_tickets"
-    elif [[ "$command" =~ ^!set_mod\ ([a-zA-Z0-9_]+)$ ]]; then
+    elif [[ "$command" =~ ^!set_mod[[:space:]]+([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
         print_success "Setting $player_name as MOD"
         
         screen -S "$SCREEN_SERVER" -X stuff "/mod $player_name$(printf \\r)"
         add_to_authorized "$player_name" "mod"
         send_server_command "$player_name has been set as MOD by server console!"
-    elif [[ "$command" =~ ^!set_admin\ ([a-zA-Z0-9_]+)$ ]]; then
+    elif [[ "$command" =~ ^!set_admin[[:space:]]+([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
         print_success "Setting $player_name as ADMIN"
         
