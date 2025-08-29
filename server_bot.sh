@@ -1,8 +1,3 @@
-Entiendo tu frustración. Voy a proporcionarte el código completo con las correcciones necesarias para que los comandos `!give_admin` y `!give_mod` funcionen correctamente:
-
-```bash
-#!/bin/bash
-
 # Enhanced Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -272,7 +267,7 @@ add_player_if_new() {
     local current_data=$(cat "$ECONOMY_FILE")
     local player_exists=$(echo "$current_data" | jq --arg player "$player_name" '.players | has($player)')
     if [ "$player_exists" = "false" ]; then
-        current_data=$(echo "$current_data" | jq --arg player "$player_name" '.players[$player] = {"tickets": 0, "last_login": 0, "last_welcome_time": 0, "last_help_time": 0, "last_chat_greeting": 0, "purchases": []}')
+        current_data=$(echo "$current_data" | jq --arg player "$player_name" '.players[$player] = {"tickets": 0, "last_login": 0, "last_welcome_time": 0, "last_help_time": 0, "purchases": []}')
         echo "$current_data" > "$ECONOMY_FILE"
         print_success "Added new player: $player_name"
         give_first_time_bonus "$player_name"
@@ -324,7 +319,7 @@ show_welcome_message() {
     local current_time=$(date +%s)
     local current_data=$(cat "$ECONOMY_FILE")
     local last_welcome_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_welcome_time // 0')
-    last_welcome_time=${last_welcome:-0}
+    last_welcome_time=${last_welcome_time:-0}
     if [ "$force_send" -eq 1 ] || [ "$last_welcome_time" -eq 0 ] || [ $((current_time - last_welcome_time)) -ge 180 ]; then
         if [ "$is_new_player" = "true" ]; then
             send_server_command "Hello $player_name! Welcome to the server. Type !tickets to check your ticket balance."
@@ -475,20 +470,7 @@ process_message() {
     player_tickets=${player_tickets:-0}
     case "$message" in
         "hi"|"hello"|"Hi"|"Hello"|"hola"|"Hola")
-            # Check if we've greeted this player in chat within the last 10 minutes
-            local current_time=$(date +%s)
-            local last_chat_greeting=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_chat_greeting // 0')
-            last_chat_greeting=${last_chat_greeting:-0}
-            
-            if [ $((current_time - last_chat_greeting)) -ge 600 ]; then
-                # Update last chat greeting time
-                current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_chat_greeting = $time')
-                echo "$current_data" > "$ECONOMY_FILE"
-                
-                send_server_command "Hello $player_name! Welcome to the server. Type !tickets to check your ticket balance."
-            else
-                print_warning "Skipping chat greeting for $player_name due to 10-minute cooldown"
-            fi
+            send_server_command "Hello $player_name! Welcome to the server. Type !tickets to check your ticket balance."
             ;;
         "!tickets")
             send_server_command "$player_name, you have $player_tickets tickets."
@@ -496,60 +478,58 @@ process_message() {
         "!buy_mod")
             if has_purchased "$player_name" "mod" || is_player_in_list "$player_name" "mod"; then
                 send_server_command "$player_name, you already have MOD rank. No need to purchase again."
-            elif [ "$player_tickets" -ge 50 ]; then
-                local new_tickets=$((player_tickets - 50))
+            elif [ "$player_tickets" -ge 10 ]; then
+                local new_tickets=$((player_tickets - 10))
                 local current_data=$(cat "$ECONOMY_FILE")
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
                 add_purchase "$player_name" "mod"
                 local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
-                current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" '.transactions += [{"player": $player, "type": "purchase", "item": "mod", "tickets": -50, "time": $time}]')
+                current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" '.transactions += [{"player": $player, "type": "purchase", "item": "mod", "tickets": -10, "time": $time}]')
                 echo "$current_data" > "$ECONOMY_FILE"
                 
                 screen -S "$SCREEN_SERVER" -X stuff "/mod $player_name$(printf \\r)"
                 add_to_authorized "$player_name" "mod"
-                send_server_command "Congratulations $player_name! You have been promoted to MOD for 50 tickets. Remaining tickets: $new_tickets"
+                send_server_command "Congratulations $player_name! You have been promoted to MOD for 10 tickets. Remaining tickets: $new_tickets"
             else
-                send_server_command "$player_name, you need $((50 - player_tickets)) more tickets to buy MOD rank."
+                send_server_command "$player_name, you need $((10 - player_tickets)) more tickets to buy MOD rank."
             fi
             ;;
         "!buy_admin")
             if has_purchased "$player_name" "admin" || is_player_in_list "$player_name" "admin"; then
                 send_server_command "$player_name, you already have ADMIN rank. No need to purchase again."
-            elif [ "$player_tickets" -ge 100 ]; then
-                local new_tickets=$((player_tickets - 100))
+            elif [ "$player_tickets" -ge 20 ]; then
+                local new_tickets=$((player_tickets - 20))
                 local current_data=$(cat "$ECONOMY_FILE")
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
                 add_purchase "$player_name" "admin"
                 local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
-                current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" '.transactions += [{"player": $player, "type": "purchase", "item": "admin", "tickets": -100, "time": $time}]')
+                current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" '.transactions += [{"player": $player, "type": "purchase", "item": "admin", "tickets": -20, "time": $time}]')
                 echo "$current_data" > "$ECONOMY_FILE"
                 
                 screen -S "$SCREEN_SERVER" -X stuff "/admin $player_name$(printf \\r)"
                 add_to_authorized "$player_name" "admin"
-                send_server_command "Congratulations $player_name! You have been promoted to ADMIN for 100 tickets. Remaining tickets: $new_tickets"
+                send_server_command "Congratulations $player_name! You have been promoted to ADMIN for 20 tickets. Remaining tickets: $new_tickets"
             else
-                send_server_command "$player_name, you need $((100 - player_tickets)) more tickets to buy ADMIN rank."
+                send_server_command "$player_name, you need $((20 - player_tickets)) more tickets to buy ADMIN rank."
             fi
             ;;
         "!give_mod")
             if [[ "$message" =~ ^!give_mod\ ([a-zA-Z0-9_]+)$ ]]; then
                 local target_player="${BASH_REMATCH[1]}"
-                if [ "$player_tickets" -ge 60 ]; then
-                    local new_tickets=$((player_tickets - 60))
+                if [ "$player_tickets" -ge 15 ]; then
+                    local new_tickets=$((player_tickets - 15))
                     local current_data=$(cat "$ECONOMY_FILE")
                     current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
                     local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
-                    current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" --arg target "$target_player" '.transactions += [{"player": $player, "type": "gift_mod", "tickets": -60, "target": $target, "time": $time}]')
+                    current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" --arg target "$target_player" '.transactions += [{"player": $player, "type": "gift_mod", "tickets": -15, "target": $target, "time": $time}]')
                     echo "$current_data" > "$ECONOMY_FILE"
                     
-                    # Dar rango de mod al jugador objetivo
                     screen -S "$SCREEN_SERVER" -X stuff "/mod $target_player$(printf \\r)"
-                    # Agregar a la lista de autorizados
                     add_to_authorized "$target_player" "mod"
-                    send_server_command "Congratulations! $player_name has gifted MOD rank to $target_player for 60 tickets."
+                    send_server_command "Congratulations! $player_name has gifted MOD rank to $target_player for 15 tickets."
                     send_server_command "$player_name, your remaining tickets: $new_tickets"
                 else
-                    send_server_command "$player_name, you need $((60 - player_tickets)) more tickets to gift MOD rank."
+                    send_server_command "$player_name, you need $((15 - player_tickets)) more tickets to gift MOD rank."
                 fi
             else
                 send_server_command "Usage: !give_mod PLAYERNAME"
@@ -558,22 +538,20 @@ process_message() {
         "!give_admin")
             if [[ "$message" =~ ^!give_admin\ ([a-zA-Z0-9_]+)$ ]]; then
                 local target_player="${BASH_REMATCH[1]}"
-                if [ "$player_tickets" -ge 120 ]; then
-                    local new_tickets=$((player_tickets - 120))
+                if [ "$player_tickets" -ge 30 ]; then
+                    local new_tickets=$((player_tickets - 30))
                     local current_data=$(cat "$ECONOMY_FILE")
                     current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
                     local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
-                    current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" --arg target "$target_player" '.transactions += [{"player": $player, "type": "gift_admin", "tickets": -120, "target": $target, "time": $time}]')
+                    current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" --arg target "$target_player" '.transactions += [{"player": $player, "type": "gift_admin", "tickets": -30, "target": $target, "time": $time}]')
                     echo "$current_data" > "$ECONOMY_FILE"
                     
-                    # Dar rango de admin al jugador objetivo
                     screen -S "$SCREEN_SERVER" -X stuff "/admin $target_player$(printf \\r)"
-                    # Agregar a la lista de autorizados
                     add_to_authorized "$target_player" "admin"
-                    send_server_command "Congratulations! $player_name has gifted ADMIN rank to $target_player for 120 tickets."
+                    send_server_command "Congratulations! $player_name has gifted ADMIN rank to $target_player for 30 tickets."
                     send_server_command "$player_name, your remaining tickets: $new_tickets"
                 else
-                    send_server_command "$player_name, you need $((120 - player_tickets)) more tickets to gift ADMIN rank."
+                    send_server_command "$player_name, you need $((30 - player_tickets)) more tickets to gift ADMIN rank."
                 fi
             else
                 send_server_command "Usage: !give_admin PLAYERNAME"
@@ -586,10 +564,10 @@ process_message() {
         "!economy_help")
             send_server_command "Economy commands:"
             send_server_command "!tickets - Check your tickets"
-            send_server_command "!buy_mod - Buy MOD rank for 50 tickets"
-            send_server_command "!buy_admin - Buy ADMIN rank for 100 tickets"
-            send_server_command "!give_mod PLAYER - Gift MOD rank to another player for 60 tickets"
-            send_server_command "!give_admin PLAYER - Gift ADMIN rank to another player for 120 tickets"
+            send_server_command "!buy_mod - Buy MOD rank for 10 tickets"
+            send_server_command "!buy_admin - Buy ADMIN rank for 20 tickets"
+            send_server_command "!give_mod PLAYER - Gift MOD rank to another player for 15 tickets"
+            send_server_command "!give_admin PLAYER - Gift ADMIN rank to another player for 30 tickets"
             ;;
     esac
 }
