@@ -81,7 +81,7 @@ validate_authorization() {
                     print_warning "Unauthorized mod detected: $mod"
                     send_server_command "/unmod $mod"
                     remove_from_list_file "$mod" "mod"
-                    print_success "Removed unauthorized mod: $mod"
+                    print_success "Remuted unauthorized mod: $mod"
                 fi
             fi
         done < <(grep -v "^[[:space:]]*#" "$mod_list")
@@ -198,7 +198,7 @@ add_player_if_new() {
     
     if [ "$player_exists" = "false" ]; then
         current_data=$(echo "$current_data" | jq --arg player "$player_name" \
-            '.players[$player] = {"tickets": 0, "last_login": 0, "last_welcome_time": 0, "last_help_time": 0, "purchases": []}')
+            '.players[$player] = {"tickets": 0, "last_login": 0, "last_welcome_time": 0, "last_help_time": 0, "last_greeting_time": 0, "purchases": []}')
         echo "$current_data" > "$ECONOMY_FILE"
         print_success "Added new player: $player_name"
         give_first_time_bonus "$player_name"
@@ -234,7 +234,7 @@ grant_login_ticket() {
             '.transactions += [{"player": $player, "type": "login_bonus", "tickets": 1, "time": $time}]')
         echo "$current_data" > "$ECONOMY_FILE"
         print_success "Granted 1 ticket to $player_name for logging in (Total: $new_tickets)"
-        send_server_command "$player_name, you received 1 login ticket! You now have $new_tickets tickets."
+        # Removed the spammy message that was sent every hour
     else
         local next_login=$((last_login + 3600))
         local time_left=$((next_login - current_time))
@@ -253,12 +253,16 @@ show_welcome_message() {
         if [ "$is_new_player" = "true" ]; then
             send_server_command "Hello $player_name! Welcome to the server. Type !tickets to check your ticket balance."
         else
-            send_server_command "Welcome back $player_name! Type !economy_help to see economy commands."
+            # Only show welcome back message if player hasn't been greeted recently
+            local last_greeting_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_greeting_time // 0')
+            if [ $((current_time - last_greeting_time)) -ge 600 ]; then
+                send_server_command "Welcome back $player_name! Type !economy_help to see economy commands."
+            fi
         fi
         current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_welcome_time = $time')
         echo "$current_data" > "$ECONOMY_FILE"
     else
-        print_warning "Skipping welcome for $player_name due to cooldown (use force to override)"
+        print_warning "Skipping welcome for $player_name due to cooldown"
     fi
 }
 
@@ -364,7 +368,18 @@ process_message() {
     
     case "$message" in
         "hi"|"hello"|"Hi"|"Hello"|"hola"|"Hola")
-            send_server_command "Hello $player_name! Welcome to the server. Type !tickets to check your ticket balance."
+            local current_time=$(date +%s)
+            local last_greeting_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_greeting_time // 0')
+            
+            # 10-minute cooldown for greetings
+            if [ "$last_greeting_time" -eq 0 ] || [ $((current_time - last_greeting_time)) -ge 600 ]; then
+                send_server_command "Hello $player_name! Welcome to the server. Type !tickets to check your ticket balance."
+                # Update last_greeting_time
+                current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_greeting_time = $time')
+                echo "$current_data" > "$ECONOMY_FILE"
+            else
+                print_warning "Skipping greeting for $player_name due to cooldown"
+            fi
             ;;
         "!tickets")
             send_server_command "$player_name, you have $player_tickets tickets."
