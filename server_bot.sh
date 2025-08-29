@@ -59,9 +59,6 @@ SCAN_INTERVAL=5
 SERVER_WELCOME_WINDOW=15
 TAIL_LINES=500
 
-# Track last greeting times for players
-declare -A LAST_GREETING_TIME
-
 # Function to initialize authorization files
 initialize_authorization_files() {
     local world_dir=$(dirname "$LOG_FILE")
@@ -475,13 +472,7 @@ process_message() {
     player_tickets=${player_tickets:-0}
     case "$message" in
         "hi"|"hello"|"Hi"|"Hello"|"hola"|"Hola")
-            # Check if player has been greeted in the last 10 minutes (600 seconds)
-            local current_time=$(date +%s)
-            local last_greeting_time=${LAST_GREETING_TIME[$player_name]:-0}
-            if [ $((current_time - last_greeting_time)) -ge 600 ]; then
-                send_server_command "Hello $player_name! Welcome to the server. Type !tickets to check your ticket balance."
-                LAST_GREETING_TIME[$player_name]=$current_time
-            fi
+            send_server_command "Hello $player_name! Welcome to the server. Type !tickets to check your ticket balance."
             ;;
         "!tickets")
             send_server_command "$player_name, you have $player_tickets tickets."
@@ -701,6 +692,8 @@ monitor_log() {
         echo "$admin_command" > "$admin_pipe"
     done &
 
+    declare -A welcome_shown
+
     # Monitor the log file
     tail -n 0 -F "$log_file" | filter_server_log | while read line; do
         # Detect player connections
@@ -750,6 +743,7 @@ monitor_log() {
             local player_name="${BASH_REMATCH[1]}"
             [ "$player_name" == "SERVER" ] && continue
             print_warning "Player disconnected: $player_name"
+            unset welcome_shown["$player_name"]
             continue
         fi
 
