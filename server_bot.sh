@@ -100,35 +100,32 @@ validate_authorization() {
         done < <(grep -v "^[[:space:]]*#" "$mod_list")
     fi
     
-    # Check blacklist.txt against authorized_blacklist.txt (SILENT VERSION)
+    # Check blacklist.txt against authorized_blacklist.txt
     if [ -f "$black_list" ]; then
-        # Skip the first line (instruction text) and process the rest
         while IFS= read -r banned; do
-            if [[ -n "$banned" && ! "$banned" =~ ^[[:space:]]*# ]]; then
+            # Skip header line and comment lines in blacklist
+            if [[ -n "$banned" && ! "$banned" =~ ^[[:space:]]*# && ! "$banned" =~ "Usernames or IP addresses" ]]; then
                 if ! grep -q -i "^$banned$" "$auth_blacklist"; then
-                    # Silent removal - no warning or success messages
+                    print_warning "Non-authorized banned player detected: $banned"
                     send_server_command_silent "/unban $banned"
-                    remove_from_list_file "$banned" "black" >/dev/null 2>&1
+                    remove_from_list_file "$banned" "black"
+                    print_success "Removed non-authorized banned player: $banned"
                 fi
             fi
-        done < <(tail -n +2 "$black_list" | grep -v "^[[:space:]]*#")
+        done < <(grep -v "^[[:space:]]*#" "$black_list")
     fi
     
-    # Ensure all authorized banned players are in blacklist.txt (SILENT VERSION)
+    # Ensure all authorized banned players are in blacklist.txt
     if [ -f "$auth_blacklist" ]; then
         while IFS= read -r banned; do
             if [[ -n "$banned" && ! "$banned" =~ ^[[:space:]]*# ]]; then
-                if ! tail -n +2 "$black_list" 2>/dev/null | grep -v "^[[:space:]]*#" | grep -q -i "^$banned$"; then
-                    # Silent addition - no warning or success messages
+                # Skip header line when checking blacklist
+                if ! (tail -n +2 "$black_list" 2>/dev/null | grep -v "^[[:space:]]*#" | grep -q -i "^$banned$"); then
+                    print_warning "Authorized banned player $banned not found in blacklist.txt, adding..."
                     send_server_command_silent "/ban $banned"
-                    # Add to blacklist.txt file directly, preserving the first line
-                    if [ -f "$black_list" ]; then
-                        local temp_file=$(mktemp)
-                        head -n 1 "$black_list" > "$temp_file"
-                        tail -n +2 "$black_list" | grep -v "^[[:space:]]*#" >> "$temp_file"
-                        echo "$banned" >> "$temp_file"
-                        mv "$temp_file" "$black_list"
-                    fi
+                    # Also add to blacklist.txt file directly
+                    echo "$banned" >> "$black_list"
+                    print_success "Added $banned to blacklist.txt"
                 fi
             fi
         done < "$auth_blacklist"
