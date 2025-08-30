@@ -42,6 +42,11 @@ SCAN_INTERVAL=5
 SERVER_WELCOME_WINDOW=15
 TAIL_LINES=500
 
+# Function to clean string (remove spaces and convert to lowercase)
+clean_string() {
+    echo "$1" | tr '[:upper:]' '[:lower:]' | tr -d ' '
+}
+
 # Function to initialize authorization files
 initialize_authorization_files() {
     local world_dir=$(dirname "$LOG_FILE")
@@ -79,37 +84,40 @@ validate_authorization() {
     # Check adminlist.txt against authorized_admins.txt
     if [ -f "$admin_list" ]; then
         while IFS= read -r admin; do
-            if [[ -n "$admin" && ! "$admin" =~ ^[[:space:]]*# && ! "$admin" =~ "Usernames in this file" ]]; then
-                if ! grep -q -i "^$admin$" "$auth_admins"; then
+            admin_clean=$(clean_string "$admin")
+            if [[ -n "$admin_clean" && ! "$admin_clean" =~ ^[[:space:]]*# && ! "$admin_clean" =~ "usernamesinthisfile" ]]; then
+                if ! grep -q -i "^$admin_clean$" "$auth_admins"; then
                     print_warning "Unauthorized admin detected: $admin"
                     send_server_command_silent "/unadmin $admin"
                     remove_from_list_file "$admin" "admin"
                     print_success "Removed unauthorized admin: $admin"
                 fi
             fi
-        done < <(grep -v "^[[:space:]]*#" "$admin_list" | grep -v "Usernames in this file")
+        done < <(grep -v "^[[:space:]]*#" "$admin_list")
     fi
     
     # Check modlist.txt against authorized_mods.txt
     if [ -f "$mod_list" ]; then
         while IFS= read -r mod; do
-            if [[ -n "$mod" && ! "$mod" =~ ^[[:space:]]*# && ! "$mod" =~ "Usernames in this file" ]]; then
-                if ! grep -q -i "^$mod$" "$auth_mods"; then
+            mod_clean=$(clean_string "$mod")
+            if [[ -n "$mod_clean" && ! "$mod_clean" =~ ^[[:space:]]*# && ! "$mod_clean" =~ "usernamesinthisfile" ]]; then
+                if ! grep -q -i "^$mod_clean$" "$auth_mods"; then
                     print_warning "Unauthorized mod detected: $mod"
                     send_server_command_silent "/unmod $mod"
                     remove_from_list_file "$mod" "mod"
                     print_success "Removed unauthorized mod: $mod"
                 fi
             fi
-        done < <(grep -v "^[[:space:]]*#" "$mod_list" | grep -v "Usernames in this file")
+        done < <(grep -v "^[[:space:]]*#" "$mod_list")
     fi
     
     # Check blacklist.txt against authorized_blacklist.txt
     if [ -f "$black_list" ] && [ -f "$auth_blacklist" ]; then
         # First, ensure all authorized banned players are in blacklist.txt
         while IFS= read -r banned_player; do
-            if [[ -n "$banned_player" && ! "$banned_player" =~ ^[[:space:]]*# ]]; then
-                if ! grep -v "^[[:space:]]*#" "$black_list" | grep -v "Usernames or IP addresses" | grep -q -i "^$banned_player$"; then
+            banned_player_clean=$(clean_string "$banned_player")
+            if [[ -n "$banned_player_clean" && ! "$banned_player_clean" =~ ^[[:space:]]*# ]]; then
+                if ! grep -v "^[[:space:]]*#" "$black_list" | grep -v "Usernames or IP addresses" | grep -q -i "^$banned_player_clean$"; then
                     print_warning "Authorized banned player $banned_player not found in blacklist.txt, adding..."
                     send_server_command_silent "/ban $banned_player"
                     # Also add to blacklist.txt file directly
@@ -121,15 +129,16 @@ validate_authorization() {
         
         # Second, remove any players from blacklist.txt that aren't in authorized_blacklist.txt
         while IFS= read -r banned_player; do
-            if [[ -n "$banned_player" && ! "$banned_player" =~ ^[[:space:]]*# && ! "$banned_player" =~ "Usernames or IP addresses" ]]; then
-                if ! grep -q -i "^$banned_player$" "$auth_blacklist"; then
+            banned_player_clean=$(clean_string "$banned_player")
+            if [[ -n "$banned_player_clean" && ! "$banned_player_clean" =~ ^[[:space:]]*# && ! "$banned_player_clean" =~ "usernamesoripaddresses" ]]; then
+                if ! grep -q -i "^$banned_player_clean$" "$auth_blacklist"; then
                     print_warning "Non-authorized banned player detected: $banned_player"
                     send_server_command_silent "/unban $banned_player"
                     remove_from_list_file "$banned_player" "black"
                     print_success "Removed non-authorized banned player: $banned_player"
                 fi
             fi
-        done < <(grep -v "^[[:space:]]*#" "$black_list" | grep -v "Usernames or IP addresses")
+        done < <(grep -v "^[[:space:]]*#" "$black_list")
     fi
 }
 
@@ -156,7 +165,7 @@ remove_from_authorized() {
     local player_name="$1" list_type="$2"
     local world_dir=$(dirname "$LOG_FILE")
     local auth_file="$world_dir/authorized_${list_type}s.txt"
-    local lower_player_name=$(echo "$player_name" | tr '[:upper:]' '[:lower:]')
+    local lower_player_name=$(clean_string "$player_name")
     
     [ ! -f "$auth_file" ] && print_error "Authorization file not found: $auth_file" && return 1
     
@@ -209,11 +218,11 @@ remove_from_list_file() {
     local player_name="$1" list_type="$2"
     local world_dir=$(dirname "$LOG_FILE")
     local list_file="$world_dir/${list_type}list.txt"
-    local lower_player_name=$(echo "$player_name" | tr '[:upper:]' '[:lower:]')
+    local lower_player_name=$(clean_string "$player_name")
     
     [ ! -f "$list_file" ] && print_error "List file not found: $list_file" && return 1
     
-    if grep -v "^[[:space:]]*#" "$list_file" | grep -v "Usernames" | grep -q "^$lower_player_name$"; then
+    if grep -v "^[[:space:]]*#" "$list_file" | grep -q "^$lower_player_name$"; then
         sed -i "/^$lower_player_name$/Id" "$list_file"
         print_success "Removed $player_name from ${list_type}list.txt"
         return 0
@@ -249,9 +258,9 @@ is_player_in_list() {
     local player_name="$1" list_type="$2"
     local world_dir=$(dirname "$LOG_FILE")
     local list_file="$world_dir/${list_type}list.txt"
-    local lower_player_name=$(echo "$player_name" | tr '[:upper:]' '[:lower:]')
+    local lower_player_name=$(clean_string "$player_name")
     
-    [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" | grep -v "Usernames" | grep -q "^$lower_player_name$" && return 0
+    [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" | grep -q "^$lower_player_name$" && return 0
     return 1
 }
 
@@ -547,7 +556,7 @@ process_admin_command() {
 server_sent_welcome_recently() {
     local player_name="$1" conn_epoch="${2:-0}"
     [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ] && return 1
-    local player_lc=$(echo "$player_name" | tr '[:upper:]' '[:lower:]')
+    local player_lc=$(clean_string "$player_name")
     tail -n "$TAIL_LINES" "$LOG_FILE" 2>/dev/null | grep -i "server:.*welcome.*$player_lc" | head -1 | grep -q . && return 0
     return 1
 }
