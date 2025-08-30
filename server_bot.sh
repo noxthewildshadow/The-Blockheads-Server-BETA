@@ -100,30 +100,35 @@ validate_authorization() {
         done < <(grep -v "^[[:space:]]*#" "$mod_list")
     fi
     
-    # Check blacklist.txt against authorized_blacklist.txt
+    # Check blacklist.txt against authorized_blacklist.txt (SILENT VERSION)
     if [ -f "$black_list" ]; then
+        # Skip the first line (instruction text) and process the rest
         while IFS= read -r banned; do
-            if [[ -n "$banned" && ! "$banned" =~ ^[[:space:]]*# && ! "$banned" =~ "Usernames in this file" ]]; then
+            if [[ -n "$banned" && ! "$banned" =~ ^[[:space:]]*# ]]; then
                 if ! grep -q -i "^$banned$" "$auth_blacklist"; then
-                    print_warning "Non-authorized banned player detected: $banned"
+                    # Silent removal - no warning or success messages
                     send_server_command_silent "/unban $banned"
-                    remove_from_list_file "$banned" "black"
-                    print_success "Removed non-authorized banned player: $banned"
+                    remove_from_list_file "$banned" "black" >/dev/null 2>&1
                 fi
             fi
-        done < <(grep -v "^[[:space:]]*#" "$black_list")
+        done < <(tail -n +2 "$black_list" | grep -v "^[[:space:]]*#")
     fi
     
-    # Ensure all authorized banned players are in blacklist.txt
+    # Ensure all authorized banned players are in blacklist.txt (SILENT VERSION)
     if [ -f "$auth_blacklist" ]; then
         while IFS= read -r banned; do
             if [[ -n "$banned" && ! "$banned" =~ ^[[:space:]]*# ]]; then
-                if ! grep -v "^[[:space:]]*#" "$black_list" 2>/dev/null | grep -q -i "^$banned$"; then
-                    print_warning "Authorized banned player $banned not found in blacklist.txt, adding..."
+                if ! tail -n +2 "$black_list" 2>/dev/null | grep -v "^[[:space:]]*#" | grep -q -i "^$banned$"; then
+                    # Silent addition - no warning or success messages
                     send_server_command_silent "/ban $banned"
-                    # Also add to blacklist.txt file directly
-                    echo "$banned" >> "$black_list"
-                    print_success "Added $banned to blacklist.txt"
+                    # Add to blacklist.txt file directly, preserving the first line
+                    if [ -f "$black_list" ]; then
+                        local temp_file=$(mktemp)
+                        head -n 1 "$black_list" > "$temp_file"
+                        tail -n +2 "$black_list" | grep -v "^[[:space:]]*#" >> "$temp_file"
+                        echo "$banned" >> "$temp_file"
+                        mv "$temp_file" "$black_list"
+                    fi
                 fi
             fi
         done < "$auth_blacklist"
