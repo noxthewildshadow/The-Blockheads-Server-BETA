@@ -133,7 +133,7 @@ validate_authorization() {
                     print_success "Removed unauthorized admin: $admin"
                 fi
             fi
-        done < <(grep -v "^[[:space:]]*#" "$admin_list")
+        done < <(grep -v "^[[:space:]]*#" "$admin_list" | grep -v "Usernames in this file")
     fi
     
     # Check modlist.txt against authorized_mods.txt
@@ -148,7 +148,7 @@ validate_authorization() {
                     print_success "Removed unauthorized mod: $mod"
                 fi
             fi
-        done < <(grep -v "^[[:space:]]*#" "$mod_list")
+        done < <(grep -v "^[[:space:]]*#" "$mod_list" | grep -v "Usernames in this file")
     fi
     
     # Check blacklist.txt against authorized_blacklist.txt
@@ -168,28 +168,18 @@ validate_authorization() {
         done < <(grep -v "^[[:space:]]*#" "$auth_blacklist")
         
         # Second, remove any players from blacklist.txt that aren't in authorized_blacklist.txt
-        # Improved validation to prevent false positives
+        # Only check exact matches, not partial matches
         while IFS= read -r banned_player; do
             banned_player_clean=$(clean_string "$banned_player")
             if [[ -n "$banned_player_clean" && ! "$banned_player_clean" =~ ^[[:space:]]*# && ! "$banned_player_clean" =~ "usernamesoripaddresses" ]]; then
-                # Skip if this is a partial match to authorized players (like packetsxero when packets is authorized)
-                local is_partial_match=0
-                while IFS= read -r authorized_player; do
-                    authorized_player_clean=$(clean_string "$authorized_player")
-                    if [[ -n "$authorized_player_clean" && "$banned_player_clean" == *"$authorized_player_clean"* ]]; then
-                        is_partial_match=1
-                        break
-                    fi
-                done < <(grep -v "^[[:space:]]*#" "$auth_blacklist")
-                
-                if [ $is_partial_match -eq 0 ] && ! grep -q -i "^$banned_player_clean$" "$auth_blacklist"; then
+                if ! grep -q -i "^$banned_player_clean$" "$auth_blacklist"; then
                     print_warning "Non-authorized banned player detected: $banned_player"
                     send_server_command_silent "/unban $banned_player"
                     remove_from_list_file "$banned_player" "black"
                     print_success "Removed non-authorized banned player: $banned_player"
                 fi
             fi
-        done < <(grep -v "^[[:space:]]*#" "$black_list")
+        done < <(grep -v "^[[:space:]]*#" "$black_list" | grep -v "Usernames or IP addresses")
     fi
 }
 
@@ -273,13 +263,13 @@ remove_from_list_file() {
     
     [ ! -f "$list_file" ] && print_error "List file not found: $list_file" && return 1
     
-    if grep -v "^[[:space:]]*#" "$list_file" | grep -q "^$lower_player_name$"; then
+    if grep -v "^[[:space:]]*#" "$list_file" | grep -v "Usernames" | grep -q -i "^$lower_player_name$"; then
         sed -i "/^$lower_player_name$/Id" "$list_file"
         print_success "Removed $player_name from ${list_type}list.txt"
         return 0
     else
-        print_warning "Player $player_name not found in ${list_type}list.txt"
-        return 1
+        print_status "Player $player_name not found in ${list_type}list.txt (already removed?)"
+        return 0
     fi
 }
 
@@ -311,7 +301,7 @@ is_player_in_list() {
     local list_file="$world_dir/${list_type}list.txt"
     local lower_player_name=$(clean_string "$player_name")
     
-    [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" | grep -q "^$lower_player_name$" && return 0
+    [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" | grep -v "Usernames" | grep -q -i "^$lower_player_name$" && return 0
     return 1
 }
 
@@ -577,7 +567,7 @@ process_admin_command() {
         current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" --argjson amount "$tickets_to_add" \
             '.transactions += [{"player": $player, "type": "admin_gift", "tickets": $amount, "time": $time}]')
         echo "$current_data" > "$ECONOMY_FILE"
-        print_success "Added $tickets_to_add tickets to $player_name (Total: $new_tickets")
+        print_success "Added $tickets_to_add tickets to $player_name (Total: $new_tickets)"
         send_server_command "$player_name received $tickets_to_add tickets from admin! Total: $new_tickets"
     elif [[ "$command" =~ ^!set_mod\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
