@@ -168,35 +168,28 @@ validate_authorization() {
         done < <(grep -v "^[[:space:]]*#" "$auth_blacklist")
         
         # Second, remove any players from blacklist.txt that aren't in authorized_blacklist.txt
-        # Create a temporary file for the new blacklist
-        temp_file=$(mktemp)
-        while IFS= read -r original_line; do
-            # Skip empty lines
-            if [[ -z "$original_line" ]]; then
-                echo "$original_line" >> "$temp_file"
-                continue
+        # Improved validation to prevent false positives
+        while IFS= read -r banned_player; do
+            banned_player_clean=$(clean_string "$banned_player")
+            if [[ -n "$banned_player_clean" && ! "$banned_player_clean" =~ ^[[:space:]]*# && ! "$banned_player_clean" =~ "usernamesoripaddresses" ]]; then
+                # Skip if this is a partial match to authorized players (like packetsxero when packets is authorized)
+                local is_partial_match=0
+                while IFS= read -r authorized_player; do
+                    authorized_player_clean=$(clean_string "$authorized_player")
+                    if [[ -n "$authorized_player_clean" && "$banned_player_clean" == *"$authorized_player_clean"* ]]; then
+                        is_partial_match=1
+                        break
+                    fi
+                done < <(grep -v "^[[:space:]]*#" "$auth_blacklist")
+                
+                if [ $is_partial_match -eq 0 ] && ! grep -q -i "^$banned_player_clean$" "$auth_blacklist"; then
+                    print_warning "Non-authorized banned player detected: $banned_player"
+                    send_server_command_silent "/unban $banned_player"
+                    remove_from_list_file "$banned_player" "black"
+                    print_success "Removed non-authorized banned player: $banned_player"
+                fi
             fi
-            # Check if it's a comment or header
-            if [[ "$original_line" =~ ^[[:space:]]*# ]]; then
-                echo "$original_line" >> "$temp_file"
-                continue
-            fi
-            if [[ "$original_line" =~ [Uu]sernames[[:space:]]*or[[:space:]]*IP[[:space:]]*addresses ]]; then
-                echo "$original_line" >> "$temp_file"
-                continue
-            fi
-
-            banned_player_clean=$(clean_string "$original_line")
-            if grep -v "^[[:space:]]*#" "$auth_blacklist" | grep -q -i "^$banned_player_clean$"; then
-                echo "$original_line" >> "$temp_file"
-            else
-                print_warning "Non-authorized banned player detected: $original_line"
-                send_server_command_silent "/unban $original_line"
-                print_success "Removed non-authorized banned player: $original_line"
-            fi
-        done < "$black_list"
-
-        mv "$temp_file" "$black_list"
+        done < <(grep -v "^[[:space:]]*#" "$black_list")
     fi
 }
 
@@ -584,7 +577,7 @@ process_admin_command() {
         current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" --argjson amount "$tickets_to_add" \
             '.transactions += [{"player": $player, "type": "admin_gift", "tickets": $amount, "time": $time}]')
         echo "$current_data" > "$ECONOMY_FILE"
-        print_success "Added $tickets_to_add tickets to $player_name (Total: $new_tickets)"
+        print_success "Added $tickets_to_add tickets to $player_name (Total: $new_tickets")
         send_server_command "$player_name received $tickets_to_add tickets from admin! Total: $new_tickets"
     elif [[ "$command" =~ ^!set_mod\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
