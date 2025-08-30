@@ -53,16 +53,20 @@ initialize_authorization_files() {
     [ ! -f "$auth_mods" ] && touch "$auth_mods" && print_success "Created authorized mods file: $auth_mods"
     [ ! -f "$auth_blacklist" ] && touch "$auth_blacklist" && print_success "Created authorized blacklist file: $auth_blacklist"
     
-    # Add xero and packets to authorized blacklist if not already present
-    for player in "xero" "packets"; do
-        if ! grep -q -i "^$player$" "$auth_blacklist"; then
-            echo "$player" >> "$auth_blacklist"
-            print_success "Added $player to authorized blacklist"
+    # Add default banned players (xero and packets) if they don't exist
+    if [ -f "$auth_blacklist" ]; then
+        if ! grep -q -i "^xero$" "$auth_blacklist"; then
+            echo "xero" >> "$auth_blacklist"
+            print_success "Added xero to authorized blacklist"
         fi
-    done
+        if ! grep -q -i "^packets$" "$auth_blacklist"; then
+            echo "packets" >> "$auth_blacklist"
+            print_success "Added packets to authorized blacklist"
+        fi
+    fi
 }
 
-# Function to check and correct admin/mod lists
+# Function to check and correct admin/mod/black lists
 validate_authorization() {
     local world_dir=$(dirname "$LOG_FILE")
     local auth_admins="$world_dir/$AUTHORIZED_ADMINS_FILE"
@@ -78,7 +82,7 @@ validate_authorization() {
             if [[ -n "$admin" && ! "$admin" =~ ^[[:space:]]*# && ! "$admin" =~ "Usernames in this file" ]]; then
                 if ! grep -q -i "^$admin$" "$auth_admins"; then
                     print_warning "Unauthorized admin detected: $admin"
-                    send_server_command "/unadmin $admin"
+                    send_server_command_silent "/unadmin $admin"
                     remove_from_list_file "$admin" "admin"
                     print_success "Removed unauthorized admin: $admin"
                 fi
@@ -92,7 +96,7 @@ validate_authorization() {
             if [[ -n "$mod" && ! "$mod" =~ ^[[:space:]]*# && ! "$mod" =~ "Usernames in this file" ]]; then
                 if ! grep -q -i "^$mod$" "$auth_mods"; then
                     print_warning "Unauthorized mod detected: $mod"
-                    send_server_command "/unmod $mod"
+                    send_server_command_silent "/unmod $mod"
                     remove_from_list_file "$mod" "mod"
                     print_success "Removed unauthorized mod: $mod"
                 fi
@@ -101,32 +105,31 @@ validate_authorization() {
     fi
     
     # Check blacklist.txt against authorized_blacklist.txt
-    if [ -f "$black_list" ]; then
-        while IFS= read -r banned; do
-            if [[ -n "$banned" && ! "$banned" =~ ^[[:space:]]*# && ! "$banned" =~ "Usernames in this file" ]]; then
-                if ! grep -q -i "^$banned$" "$auth_blacklist"; then
-                    print_warning "Non-authorized banned player detected: $banned"
-                    send_server_command_silent "/unban $banned"
-                    remove_from_list_file "$banned" "black"
-                    print_success "Removed non-authorized banned player: $banned"
+    if [ -f "$black_list" ] && [ -f "$auth_blacklist" ]; then
+        # First, ensure all authorized banned players are in blacklist.txt
+        while IFS= read -r banned_player; do
+            if [[ -n "$banned_player" && ! "$banned_player" =~ ^[[:space:]]*# ]]; then
+                if ! grep -v "^[[:space:]]*#" "$black_list" | grep -q -i "^$banned_player$"; then
+                    print_warning "Authorized banned player $banned_player not found in blacklist.txt, adding..."
+                    send_server_command_silent "/ban $banned_player"
+                    # Also add to blacklist.txt file directly
+                    echo "$banned_player" >> "$black_list"
+                    print_success "Added $banned_player to blacklist.txt"
+                fi
+            fi
+        done < <(grep -v "^[[:space:]]*#" "$auth_blacklist")
+        
+        # Second, remove any players from blacklist.txt that aren't in authorized_blacklist.txt
+        while IFS= read -r banned_player; do
+            if [[ -n "$banned_player" && ! "$banned_player" =~ ^[[:space:]]*# && ! "$banned_player" =~ "Usernames in this file" ]]; then
+                if ! grep -q -i "^$banned_player$" "$auth_blacklist"; then
+                    print_warning "Non-authorized banned player detected: $banned_player"
+                    send_server_command_silent "/unban $banned_player"
+                    remove_from_list_file "$banned_player" "black"
+                    print_success "Removed non-authorized banned player: $banned_player"
                 fi
             fi
         done < <(grep -v "^[[:space:]]*#" "$black_list")
-    fi
-    
-    # Ensure all authorized banned players are in blacklist.txt
-    if [ -f "$auth_blacklist" ]; then
-        while IFS= read -r banned; do
-            if [[ -n "$banned" && ! "$banned" =~ ^[[:space:]]*# ]]; then
-                if ! grep -v "^[[:space:]]*#" "$black_list" 2>/dev/null | grep -q -i "^$banned$"; then
-                    print_warning "Authorized banned player $banned not found in blacklist.txt, adding..."
-                    send_server_command_silent "/ban $banned"
-                    # Also add to blacklist.txt file directly
-                    echo "$banned" >> "$black_list"
-                    print_success "Added $banned to blacklist.txt"
-                fi
-            fi
-        done < "$auth_blacklist"
     fi
 }
 
@@ -532,21 +535,12 @@ process_admin_command() {
         add_to_authorized "$player_name" "admin"
         screen -S "$SCREEN_SERVER" -X stuff "/admin $player_name$(printf \\r)"
         send_server_command "$player_name has been set as ADMIN by server console!"
-    elif [[ "$command" =~ ^!ban\ ([a-zA-Z0-9_]+)$ ]]; then
-        local player_name="${BASH_REMATCH[1]}"
-        print_success "Banning $player_name"
-        # Add to authorized blacklist first
-        add_to_authorized "$player_name" "blacklist"
-        # Then execute ban command
-        send_server_command "/ban $player_name"
-        send_server_command "$player_name has been banned by server console!"
     else
         print_error "Unknown admin command: $command"
         print_status "Available admin commands:"
         echo -e "!send_ticket <player> <amount>"
         echo -e "!set_mod <player> (console only)"
         echo -e "!set_admin <player> (console only)"
-        echo -e "!ban <player> (console only)"
     fi
 }
 
@@ -562,8 +556,7 @@ filter_server_log() {
     while read line; do
         [[ "$line" == *"Server closed"* || "$line" == *"Starting server"* || \
           ("$line" == *"SERVER: say"* && "$line" == *"Welcome"*) || \
-          "$line" == *"adminlist.txt"* || "$line" == *"modlist.txt"* || \
-          "$line" == *"blacklist.txt"* ]] && continue
+          "$line" == *"adminlist.txt"* || "$line" == *"modlist.txt"* || "$line" == *"blacklist.txt"* ]] && continue
         echo "$line"
     done
 }
@@ -583,7 +576,7 @@ monitor_log() {
     print_header "STARTING ECONOMY BOT"
     print_status "Monitoring: $log_file"
     print_status "Bot commands: !tickets, !buy_mod, !buy_admin, !economy_help"
-    print_status "Admin commands: !send_ticket <player> <amount>, !set_mod <player>, !set_admin <player>, !ban <player>"
+    print_status "Admin commands: !send_ticket <player> <amount>, !set_mod <player>, !set_admin <player>"
     print_header "IMPORTANT: Admin commands must be typed in THIS terminal, NOT in the game chat!"
     print_status "Type admin commands below and press Enter:"
     print_header "READY FOR COMMANDS"
@@ -595,10 +588,10 @@ monitor_log() {
     # Background process to read admin commands from the pipe
     while read -r admin_command < "$admin_pipe"; do
         print_status "Processing admin command: $admin_command"
-        if [[ "$admin_command" == "!send_ticket "* || "$admin_command" == "!set_mod "* || "$admin_command" == "!set_admin "* || "$admin_command" == "!ban "* ]]; then
+        if [[ "$admin_command" == "!send_ticket "* || "$admin_command" == "!set_mod "* || "$admin_command" == "!set_admin "* ]]; then
             process_admin_command "$admin_command"
         else
-            print_error "Unknown admin command. Use: !send_ticket <player> <amount>, !set_mod <player>, !set_admin <player>, or !ban <player>"
+            print_error "Unknown admin command. Use: !send_ticket <player> <amount>, !set_mod <player>, or !set_admin <player>"
         fi
         print_header "READY FOR NEXT COMMAND"
     done &
