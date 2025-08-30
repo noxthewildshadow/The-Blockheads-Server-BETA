@@ -71,6 +71,46 @@ initialize_authorization_files() {
     fi
 }
 
+# Function to add player to authorized list with delay before adding to actual list
+add_to_authorized_with_delay() {
+    local player_name="$1" list_type="$2"
+    local world_dir=$(dirname "$LOG_FILE")
+    local auth_file="$world_dir/authorized_${list_type}s.txt"
+    local list_file="$world_dir/${list_type}list.txt"
+    
+    [ ! -f "$auth_file" ] && print_error "Authorization file not found: $auth_file" && return 1
+    
+    # First add to authorized list
+    if ! grep -q -i "^$player_name$" "$auth_file"; then
+        echo "$player_name" >> "$auth_file"
+        print_success "Added $player_name to authorized ${list_type}s"
+        
+        # Then after 3 seconds, add to the actual list
+        (
+            sleep 3
+            if grep -q -i "^$player_name$" "$auth_file"; then
+                if ! grep -q -i "^$player_name$" "$list_file"; then
+                    echo "$player_name" >> "$list_file"
+                    print_success "Added $player_name to ${list_type}list.txt after authorization delay"
+                    
+                    # Send the appropriate server command
+                    if [ "$list_type" = "black" ]; then
+                        send_server_command_silent "/ban $player_name"
+                    elif [ "$list_type" = "admin" ]; then
+                        send_server_command_silent "/admin $player_name"
+                    elif [ "$list_type" = "mod" ]; then
+                        send_server_command_silent "/mod $player_name"
+                    fi
+                fi
+            fi
+        ) &
+    else
+        print_warning "$player_name is already in authorized ${list_type}s"
+        return 1
+    fi
+    return 0
+}
+
 # Function to check and correct admin/mod/black lists
 validate_authorization() {
     local world_dir=$(dirname "$LOG_FILE")
@@ -472,10 +512,9 @@ process_message() {
                     '.transactions += [{"player": $player, "type": "purchase", "item": "mod", "tickets": -50, "time": $time}]')
                 echo "$current_data" > "$ECONOMY_FILE"
                 
-                # First add to authorized mods, then assign rank
-                add_to_authorized "$player_name" "mod"
-                screen -S "$SCREEN_SERVER" -X stuff "/mod $player_name$(printf \\r)"
-                send_server_command "Congratulations $player_name! You have been promoted to MOD for 50 tickets. Remaining tickets: $new_tickets"
+                # First add to authorized mods with delay, then assign rank
+                add_to_authorized_with_delay "$player_name" "mod"
+                send_server_command "Congratulations $player_name! You have purchased MOD rank for 50 tickets. It will be activated shortly."
             else
                 send_server_command "$player_name, you need $((50 - player_tickets)) more tickets to buy MOD rank."
             fi
@@ -492,10 +531,9 @@ process_message() {
                     '.transactions += [{"player": $player, "type": "purchase", "item": "admin", "tickets": -100, "time": $time}]')
                 echo "$current_data" > "$ECONOMY_FILE"
                 
-                # First add to authorized admins, then assign rank
-                add_to_authorized "$player_name" "admin"
-                screen -S "$SCREEN_SERVER" -X stuff "/admin $player_name$(printf \\r)"
-                send_server_command "Congratulations $player_name! You have been promoted to ADMIN for 100 tickets. Remaining tickets: $new_tickets"
+                # First add to authorized admins with delay, then assign rank
+                add_to_authorized_with_delay "$player_name" "admin"
+                send_server_command "Congratulations $player_name! You have purchased ADMIN rank for 100 tickets. It will be activated shortly."
             else
                 send_server_command "$player_name, you need $((100 - player_tickets)) more tickets to buy ADMIN rank."
             fi
@@ -533,23 +571,28 @@ process_admin_command() {
     elif [[ "$command" =~ ^!set_mod\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
         print_success "Setting $player_name as MOD"
-        # First add to authorized mods, then assign rank
-        add_to_authorized "$player_name" "mod"
-        screen -S "$SCREEN_SERVER" -X stuff "/mod $player_name$(printf \\r)"
-        send_server_command "$player_name has been set as MOD by server console!"
+        # First add to authorized mods with delay, then assign rank
+        add_to_authorized_with_delay "$player_name" "mod"
+        send_server_command "$player_name has been set as MOD by server console! It will be activated shortly."
     elif [[ "$command" =~ ^!set_admin\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
         print_success "Setting $player_name as ADMIN"
-        # First add to authorized admins, then assign rank
-        add_to_authorized "$player_name" "admin"
-        screen -S "$SCREEN_SERVER" -X stuff "/admin $player_name$(printf \\r)"
-        send_server_command "$player_name has been set as ADMIN by server console!"
+        # First add to authorized admins with delay, then assign rank
+        add_to_authorized_with_delay "$player_name" "admin"
+        send_server_command "$player_name has been set as ADMIN by server console! It will be activated shortly."
+    elif [[ "$command" =~ ^!ban_player\ ([a-zA-Z0-9_]+)$ ]]; then
+        local player_name="${BASH_REMATCH[1]}"
+        print_success "Banning $player_name"
+        # First add to authorized blacklist with delay, then ban
+        add_to_authorized_with_delay "$player_name" "black"
+        send_server_command "$player_name has been banned by server console! The ban will be activated shortly."
     else
         print_error "Unknown admin command: $command"
         print_status "Available admin commands:"
         echo -e "!send_ticket <player> <amount>"
         echo -e "!set_mod <player> (console only)"
         echo -e "!set_admin <player> (console only)"
+        echo -e "!ban_player <player> (console only)"
     fi
 }
 
@@ -585,7 +628,7 @@ monitor_log() {
     print_header "STARTING ECONOMY BOT"
     print_status "Monitoring: $log_file"
     print_status "Bot commands: !tickets, !buy_mod, !buy_admin, !economy_help"
-    print_status "Admin commands: !send_ticket <player> <amount>, !set_mod <player>, !set_admin <player>"
+    print_status "Admin commands: !send_ticket <player> <amount>, !set_mod <player>, !set_admin <player>, !ban_player <player>"
     print_header "IMPORTANT: Admin commands must be typed in THIS terminal, NOT in the game chat!"
     print_status "Type admin commands below and press Enter:"
     print_header "READY FOR COMMANDS"
@@ -597,10 +640,10 @@ monitor_log() {
     # Background process to read admin commands from the pipe
     while read -r admin_command < "$admin_pipe"; do
         print_status "Processing admin command: $admin_command"
-        if [[ "$admin_command" == "!send_ticket "* || "$admin_command" == "!set_mod "* || "$admin_command" == "!set_admin "* ]]; then
+        if [[ "$admin_command" == "!send_ticket "* || "$admin_command" == "!set_mod "* || "$admin_command" == "!set_admin "* || "$admin_command" == "!ban_player "* ]]; then
             process_admin_command "$admin_command"
         else
-            print_error "Unknown admin command. Use: !send_ticket <player> <amount>, !set_mod <player>, or !set_admin <player>"
+            print_error "Unknown admin command. Use: !send_ticket <player> <amount>, !set_mod <player>, !set_admin <player>, or !ban_player <player>"
         fi
         print_header "READY FOR NEXT COMMAND"
     done &
