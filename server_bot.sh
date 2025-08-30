@@ -37,6 +37,7 @@ fi
 # Authorization files
 AUTHORIZED_ADMINS_FILE="authorized_admins.txt"
 AUTHORIZED_MODS_FILE="authorized_mods.txt"
+AUTHORIZED_BLACKLIST_FILE="authorized_blacklist.txt"
 SCAN_INTERVAL=5
 SERVER_WELCOME_WINDOW=15
 TAIL_LINES=500
@@ -46,9 +47,19 @@ initialize_authorization_files() {
     local world_dir=$(dirname "$LOG_FILE")
     local auth_admins="$world_dir/$AUTHORIZED_ADMINS_FILE"
     local auth_mods="$world_dir/$AUTHORIZED_MODS_FILE"
+    local auth_blacklist="$world_dir/$AUTHORIZED_BLACKLIST_FILE"
     
     [ ! -f "$auth_admins" ] && touch "$auth_admins" && print_success "Created authorized admins file: $auth_admins"
     [ ! -f "$auth_mods" ] && touch "$auth_mods" && print_success "Created authorized mods file: $auth_mods"
+    [ ! -f "$auth_blacklist" ] && touch "$auth_blacklist" && print_success "Created authorized blacklist file: $auth_blacklist"
+    
+    # Add xero and packets to authorized blacklist if not already present
+    for player in "xero" "packets"; do
+        if ! grep -q -i "^$player$" "$auth_blacklist"; then
+            echo "$player" >> "$auth_blacklist"
+            print_success "Added $player to authorized blacklist"
+        fi
+    done
 }
 
 # Function to check and correct admin/mod lists
@@ -56,8 +67,10 @@ validate_authorization() {
     local world_dir=$(dirname "$LOG_FILE")
     local auth_admins="$world_dir/$AUTHORIZED_ADMINS_FILE"
     local auth_mods="$world_dir/$AUTHORIZED_MODS_FILE"
+    local auth_blacklist="$world_dir/$AUTHORIZED_BLACKLIST_FILE"
     local admin_list="$world_dir/adminlist.txt"
     local mod_list="$world_dir/modlist.txt"
+    local black_list="$world_dir/blacklist.txt"
     
     # Check adminlist.txt against authorized_admins.txt
     if [ -f "$admin_list" ]; then
@@ -81,10 +94,39 @@ validate_authorization() {
                     print_warning "Unauthorized mod detected: $mod"
                     send_server_command "/unmod $mod"
                     remove_from_list_file "$mod" "mod"
-                    print_success "Remuted unauthorized mod: $mod"
+                    print_success "Removed unauthorized mod: $mod"
                 fi
             fi
         done < <(grep -v "^[[:space:]]*#" "$mod_list")
+    fi
+    
+    # Check blacklist.txt against authorized_blacklist.txt
+    if [ -f "$black_list" ]; then
+        while IFS= read -r banned; do
+            if [[ -n "$banned" && ! "$banned" =~ ^[[:space:]]*# && ! "$banned" =~ "Usernames in this file" ]]; then
+                if ! grep -q -i "^$banned$" "$auth_blacklist"; then
+                    print_warning "Non-authorized banned player detected: $banned"
+                    send_server_command_silent "/unban $banned"
+                    remove_from_list_file "$banned" "black"
+                    print_success "Removed non-authorized banned player: $banned"
+                fi
+            fi
+        done < <(grep -v "^[[:space:]]*#" "$black_list")
+    fi
+    
+    # Ensure all authorized banned players are in blacklist.txt
+    if [ -f "$auth_blacklist" ]; then
+        while IFS= read -r banned; do
+            if [[ -n "$banned" && ! "$banned" =~ ^[[:space:]]*# ]]; then
+                if ! grep -v "^[[:space:]]*#" "$black_list" 2>/dev/null | grep -q -i "^$banned$"; then
+                    print_warning "Authorized banned player $banned not found in blacklist.txt, adding..."
+                    send_server_command_silent "/ban $banned"
+                    # Also add to blacklist.txt file directly
+                    echo "$banned" >> "$black_list"
+                    print_success "Added $banned to blacklist.txt"
+                fi
+            fi
+        done < "$auth_blacklist"
     fi
 }
 
@@ -102,6 +144,25 @@ add_to_authorized() {
         return 0
     else
         print_warning "$player_name is already in authorized ${list_type}s"
+        return 1
+    fi
+}
+
+# Function to remove player from authorized list
+remove_from_authorized() {
+    local player_name="$1" list_type="$2"
+    local world_dir=$(dirname "$LOG_FILE")
+    local auth_file="$world_dir/authorized_${list_type}s.txt"
+    local lower_player_name=$(echo "$player_name" | tr '[:upper:]' '[:lower:]')
+    
+    [ ! -f "$auth_file" ] && print_error "Authorization file not found: $auth_file" && return 1
+    
+    if grep -q -i "^$lower_player_name$" "$auth_file"; then
+        sed -i "/^$lower_player_name$/Id" "$auth_file"
+        print_success "Removed $player_name from authorized ${list_type}s"
+        return 0
+    else
+        print_warning "Player $player_name not found in authorized ${list_type}s"
         return 1
     fi
 }
@@ -234,7 +295,6 @@ grant_login_ticket() {
             '.transactions += [{"player": $player, "type": "login_bonus", "tickets": 1, "time": $time}]')
         echo "$current_data" > "$ECONOMY_FILE"
         print_success "Granted 1 ticket to $player_name for logging in (Total: $new_tickets)"
-        # Removed the spammy message that was sent every hour
     else
         local next_login=$((last_login + 3600))
         local time_left=$((next_login - current_time))
@@ -253,10 +313,11 @@ show_welcome_message() {
         if [ "$is_new_player" = "true" ]; then
             send_server_command "Hello $player_name! Welcome to the server. Type !tickets to check your ticket balance."
         else
-            # Only show welcome back message if player hasn't been greeted recently
             local last_greeting_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_greeting_time // 0')
             if [ $((current_time - last_greeting_time)) -ge 600 ]; then
                 send_server_command "Welcome back $player_name! Type !economy_help to see economy commands."
+                # Update last_greeting_time to prevent spam
+                current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_greeting_time = $time')
             fi
         fi
         current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_welcome_time = $time')
@@ -332,6 +393,9 @@ handle_unauthorized_command() {
             # First add to authorized mods before removing admin privileges
             add_to_authorized "$player_name" "mod"
             
+            # Remove from authorized admins
+            remove_from_authorized "$player_name" "admin"
+            
             # Remove admin privileges
             send_server_command_silent "/unadmin $player_name"
             remove_from_list_file "$player_name" "admin"
@@ -396,8 +460,9 @@ process_message() {
                     '.transactions += [{"player": $player, "type": "purchase", "item": "mod", "tickets": -50, "time": $time}]')
                 echo "$current_data" > "$ECONOMY_FILE"
                 
-                screen -S "$SCREEN_SERVER" -X stuff "/mod $player_name$(printf \\r)"
+                # First add to authorized mods, then assign rank
                 add_to_authorized "$player_name" "mod"
+                screen -S "$SCREEN_SERVER" -X stuff "/mod $player_name$(printf \\r)"
                 send_server_command "Congratulations $player_name! You have been promoted to MOD for 50 tickets. Remaining tickets: $new_tickets"
             else
                 send_server_command "$player_name, you need $((50 - player_tickets)) more tickets to buy MOD rank."
@@ -415,8 +480,9 @@ process_message() {
                     '.transactions += [{"player": $player, "type": "purchase", "item": "admin", "tickets": -100, "time": $time}]')
                 echo "$current_data" > "$ECONOMY_FILE"
                 
-                screen -S "$SCREEN_SERVER" -X stuff "/admin $player_name$(printf \\r)"
+                # First add to authorized admins, then assign rank
                 add_to_authorized "$player_name" "admin"
+                screen -S "$SCREEN_SERVER" -X stuff "/admin $player_name$(printf \\r)"
                 send_server_command "Congratulations $player_name! You have been promoted to ADMIN for 100 tickets. Remaining tickets: $new_tickets"
             else
                 send_server_command "$player_name, you need $((100 - player_tickets)) more tickets to buy ADMIN rank."
@@ -455,21 +521,32 @@ process_admin_command() {
     elif [[ "$command" =~ ^!set_mod\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
         print_success "Setting $player_name as MOD"
-        screen -S "$SCREEN_SERVER" -X stuff "/mod $player_name$(printf \\r)"
+        # First add to authorized mods, then assign rank
         add_to_authorized "$player_name" "mod"
+        screen -S "$SCREEN_SERVER" -X stuff "/mod $player_name$(printf \\r)"
         send_server_command "$player_name has been set as MOD by server console!"
     elif [[ "$command" =~ ^!set_admin\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
         print_success "Setting $player_name as ADMIN"
-        screen -S "$SCREEN_SERVER" -X stuff "/admin $player_name$(printf \\r)"
+        # First add to authorized admins, then assign rank
         add_to_authorized "$player_name" "admin"
+        screen -S "$SCREEN_SERVER" -X stuff "/admin $player_name$(printf \\r)"
         send_server_command "$player_name has been set as ADMIN by server console!"
+    elif [[ "$command" =~ ^!ban\ ([a-zA-Z0-9_]+)$ ]]; then
+        local player_name="${BASH_REMATCH[1]}"
+        print_success "Banning $player_name"
+        # Add to authorized blacklist first
+        add_to_authorized "$player_name" "blacklist"
+        # Then execute ban command
+        send_server_command "/ban $player_name"
+        send_server_command "$player_name has been banned by server console!"
     else
         print_error "Unknown admin command: $command"
         print_status "Available admin commands:"
         echo -e "!send_ticket <player> <amount>"
         echo -e "!set_mod <player> (console only)"
         echo -e "!set_admin <player> (console only)"
+        echo -e "!ban <player> (console only)"
     fi
 }
 
@@ -485,7 +562,8 @@ filter_server_log() {
     while read line; do
         [[ "$line" == *"Server closed"* || "$line" == *"Starting server"* || \
           ("$line" == *"SERVER: say"* && "$line" == *"Welcome"*) || \
-          "$line" == *"adminlist.txt"* || "$line" == *"modlist.txt"* ]] && continue
+          "$line" == *"adminlist.txt"* || "$line" == *"modlist.txt"* || \
+          "$line" == *"blacklist.txt"* ]] && continue
         echo "$line"
     done
 }
@@ -505,7 +583,7 @@ monitor_log() {
     print_header "STARTING ECONOMY BOT"
     print_status "Monitoring: $log_file"
     print_status "Bot commands: !tickets, !buy_mod, !buy_admin, !economy_help"
-    print_status "Admin commands: !send_ticket <player> <amount>, !set_mod <player>, !set_admin <player>"
+    print_status "Admin commands: !send_ticket <player> <amount>, !set_mod <player>, !set_admin <player>, !ban <player>"
     print_header "IMPORTANT: Admin commands must be typed in THIS terminal, NOT in the game chat!"
     print_status "Type admin commands below and press Enter:"
     print_header "READY FOR COMMANDS"
@@ -517,10 +595,10 @@ monitor_log() {
     # Background process to read admin commands from the pipe
     while read -r admin_command < "$admin_pipe"; do
         print_status "Processing admin command: $admin_command"
-        if [[ "$admin_command" == "!send_ticket "* || "$admin_command" == "!set_mod "* || "$admin_command" == "!set_admin "* ]]; then
+        if [[ "$admin_command" == "!send_ticket "* || "$admin_command" == "!set_mod "* || "$admin_command" == "!set_admin "* || "$admin_command" == "!ban "* ]]; then
             process_admin_command "$admin_command"
         else
-            print_error "Unknown admin command. Use: !send_ticket <player> <amount>, !set_mod <player>, or !set_admin <player>"
+            print_error "Unknown admin command. Use: !send_ticket <player> <amount>, !set_mod <player>, !set_admin <player>, or !ban <player>"
         fi
         print_header "READY FOR NEXT COMMAND"
     done &
