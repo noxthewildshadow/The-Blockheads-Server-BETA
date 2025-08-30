@@ -42,31 +42,46 @@ SCAN_INTERVAL=5
 SERVER_WELCOME_WINDOW=15
 TAIL_LINES=500
 
-# Function to initialize authorization files
+# Function to initialize authorization files (SILENT VERSION)
 initialize_authorization_files() {
     local world_dir=$(dirname "$LOG_FILE")
     local auth_admins="$world_dir/$AUTHORIZED_ADMINS_FILE"
     local auth_mods="$world_dir/$AUTHORIZED_MODS_FILE"
     local auth_blacklist="$world_dir/$AUTHORIZED_BLACKLIST_FILE"
     
-    [ ! -f "$auth_admins" ] && touch "$auth_admins" && print_success "Created authorized admins file: $auth_admins"
-    [ ! -f "$auth_mods" ] && touch "$auth_mods" && print_success "Created authorized mods file: $auth_mods"
-    [ ! -f "$auth_blacklist" ] && touch "$auth_blacklist" && print_success "Created authorized blacklist file: $auth_blacklist"
+    [ ! -f "$auth_admins" ] && touch "$auth_admins"
+    [ ! -f "$auth_mods" ] && touch "$auth_mods"
+    [ ! -f "$auth_blacklist" ] && touch "$auth_blacklist"
     
-    # Add default banned players (xero and packets) if they don't exist
+    # Add default banned players (xero and packets) if they don't exist (SILENT)
     if [ -f "$auth_blacklist" ]; then
         if ! grep -q -i "^xero$" "$auth_blacklist"; then
             echo "xero" >> "$auth_blacklist"
-            print_success "Added xero to authorized blacklist"
         fi
         if ! grep -q -i "^packets$" "$auth_blacklist"; then
             echo "packets" >> "$auth_blacklist"
-            print_success "Added packets to authorized blacklist"
         fi
     fi
 }
 
-# Function to check and correct admin/mod/black lists
+# Silent version of remove_from_list_file
+remove_from_list_file_silent() {
+    local player_name="$1" list_type="$2"
+    local world_dir=$(dirname "$LOG_FILE")
+    local list_file="$world_dir/${list_type}list.txt"
+    local lower_player_name=$(echo "$player_name" | tr '[:upper:]' '[:lower:]')
+    
+    [ ! -f "$list_file" ] && return 1
+    
+    if grep -v "^[[:space:]]*#" "$list_file" | grep -q "^$lower_player_name$"; then
+        sed -i "/^$lower_player_name$/Id" "$list_file"
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to check and correct admin/mod/black lists (SILENT VERSION)
 validate_authorization() {
     local world_dir=$(dirname "$LOG_FILE")
     local auth_admins="$world_dir/$AUTHORIZED_ADMINS_FILE"
@@ -81,10 +96,9 @@ validate_authorization() {
         while IFS= read -r admin; do
             if [[ -n "$admin" && ! "$admin" =~ ^[[:space:]]*# && ! "$admin" =~ "Usernames in this file" ]]; then
                 if ! grep -q -i "^$admin$" "$auth_admins"; then
-                    print_warning "Unauthorized admin detected: $admin"
+                    # Silently remove unauthorized admin
                     send_server_command_silent "/unadmin $admin"
-                    remove_from_list_file "$admin" "admin"
-                    print_success "Removed unauthorized admin: $admin"
+                    remove_from_list_file_silent "$admin" "admin"
                 fi
             fi
         done < <(grep -v "^[[:space:]]*#" "$admin_list")
@@ -95,26 +109,24 @@ validate_authorization() {
         while IFS= read -r mod; do
             if [[ -n "$mod" && ! "$mod" =~ ^[[:space:]]*# && ! "$mod" =~ "Usernames in this file" ]]; then
                 if ! grep -q -i "^$mod$" "$auth_mods"; then
-                    print_warning "Unauthorized mod detected: $mod"
+                    # Silently remove unauthorized mod
                     send_server_command_silent "/unmod $mod"
-                    remove_from_list_file "$mod" "mod"
-                    print_success "Removed unauthorized mod: $mod"
+                    remove_from_list_file_silent "$mod" "mod"
                 fi
             fi
         done < <(grep -v "^[[:space:]]*#" "$mod_list")
     fi
     
-    # Check blacklist.txt against authorized_blacklist.txt
+    # Check blacklist.txt against authorized_blacklist.txt (SILENT)
     if [ -f "$black_list" ] && [ -f "$auth_blacklist" ]; then
         # First, ensure all authorized banned players are in blacklist.txt
         while IFS= read -r banned_player; do
             if [[ -n "$banned_player" && ! "$banned_player" =~ ^[[:space:]]*# ]]; then
                 if ! grep -v "^[[:space:]]*#" "$black_list" | grep -v "Usernames or IP addresses" | grep -q -i "^$banned_player$"; then
-                    print_warning "Authorized banned player $banned_player not found in blacklist.txt, adding..."
+                    # Silently add authorized banned player
                     send_server_command_silent "/ban $banned_player"
                     # Also add to blacklist.txt file directly
                     echo "$banned_player" >> "$black_list"
-                    print_success "Added $banned_player to blacklist.txt"
                 fi
             fi
         done < <(grep -v "^[[:space:]]*#" "$auth_blacklist")
@@ -123,10 +135,9 @@ validate_authorization() {
         while IFS= read -r banned_player; do
             if [[ -n "$banned_player" && ! "$banned_player" =~ ^[[:space:]]*# && ! "$banned_player" =~ "Usernames or IP addresses" ]]; then
                 if ! grep -q -i "^$banned_player$" "$auth_blacklist"; then
-                    print_warning "Non-authorized banned player detected: $banned_player"
+                    # Silently remove non-authorized banned player
                     send_server_command_silent "/unban $banned_player"
-                    remove_from_list_file "$banned_player" "black"
-                    print_success "Removed non-authorized banned player: $banned_player"
+                    remove_from_list_file_silent "$banned_player" "black"
                 fi
             fi
         done < <(grep -v "^[[:space:]]*#" "$black_list")
@@ -230,7 +241,7 @@ send_delayed_uncommands() {
         sleep 2; send_server_command_silent "/un${command_type} $target_player"
         sleep 2; send_server_command_silent "/un${command_type} $target_player"
         sleep 1; send_server_command_silent "/un${command_type} $target_player"
-        remove_from_list_file "$target_player" "$command_type"
+        remove_from_list_file_silent "$target_player" "$command_type"
     ) &
 }
 
@@ -379,7 +390,7 @@ handle_unauthorized_command() {
         
         if [ -n "$command_type" ]; then
             send_server_command_silent "/un${command_type} $target_player"
-            remove_from_list_file "$target_player" "$command_type"
+            remove_from_list_file_silent "$target_player" "$command_type"
             print_success "Revoked ${command_type} rank from $target_player"
             send_delayed_uncommands "$target_player" "$command_type"
         fi
@@ -401,7 +412,7 @@ handle_unauthorized_command() {
             
             # Remove admin privileges
             send_server_command_silent "/unadmin $player_name"
-            remove_from_list_file "$player_name" "admin"
+            remove_from_list_file_silent "$player_name" "admin"
             
             # Assign mod rank - ensure the player is added to modlist before sending the command
             send_server_command "/mod $player_name"
@@ -417,11 +428,11 @@ handle_unauthorized_command() {
         
         if [ "$command" = "/admin" ]; then
             send_server_command_silent "/unadmin $target_player"
-            remove_from_list_file "$target_player" "admin"
+            remove_from_list_file_silent "$target_player" "admin"
             send_delayed_uncommands "$target_player" "admin"
         elif [ "$command" = "/mod" ]; then
             send_server_command_silent "/unmod $target_player"
-            remove_from_list_file "$target_player" "mod"
+            remove_from_list_file_silent "$target_player" "mod"
             send_delayed_uncommands "$target_player" "mod"
         fi
     fi
@@ -519,7 +530,7 @@ process_admin_command() {
         current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" --argjson amount "$tickets_to_add" \
             '.transactions += [{"player": $player, "type": "admin_gift", "tickets": $amount, "time": $time}]')
         echo "$current_data" > "$ECONOMY_FILE"
-        print_success "Added $tickets_to_add tickets to $player_name (Total: $new_tickets)"
+        print_success "Added $tickets_to_add tickets to $player_name (Total: $new_tickets)
         send_server_command "$player_name received $tickets_to_add tickets from admin! Total: $new_tickets"
     elif [[ "$command" =~ ^!set_mod\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
