@@ -47,6 +47,11 @@ clean_string() {
     echo "$1" | tr '[:upper:]' '[:lower:]' | tr -d ' '
 }
 
+# Function to check if a player name is valid (only contains allowed characters)
+is_valid_player_name() {
+    [[ "$1" =~ ^[a-zA-Z0-9_]+$ ]]
+}
+
 # Function to initialize authorization files
 initialize_authorization_files() {
     local world_dir=$(dirname "$LOG_FILE")
@@ -168,10 +173,12 @@ validate_authorization() {
         done < <(grep -v "^[[:space:]]*#" "$auth_blacklist")
         
         # Second, remove any players from blacklist.txt that aren't in authorized_blacklist.txt
+        # But only if they are valid player names (not combinations like packetsxero)
         while IFS= read -r banned_player; do
             banned_player_clean=$(clean_string "$banned_player")
             if [[ -n "$banned_player_clean" && ! "$banned_player_clean" =~ ^[[:space:]]*# && ! "$banned_player_clean" =~ "usernamesoripaddresses" ]]; then
-                if ! grep -q -i "^$banned_player_clean$" "$auth_blacklist"; then
+                # Only process valid player names (not combinations)
+                if is_valid_player_name "$banned_player_clean" && ! grep -q -i "^$banned_player_clean$" "$auth_blacklist"; then
                     print_warning "Non-authorized banned player detected: $banned_player"
                     send_server_command_silent "/unban $banned_player"
                     remove_from_list_file "$banned_player" "black"
@@ -346,7 +353,7 @@ grant_login_ticket() {
         current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" \
             '.transactions += [{"player": $player, "type": "login_bonus", "tickets": 1, "time": $time}]')
         echo "$current_data" > "$ECONOMY_FILE"
-        print_success "Granted 1 ticket to $player_name for logging in (Total: $new_tickets)"
+        print_success "Granted 1 ticket to $player_name for logging in (Total: $new_tickets)
     else
         local next_login=$((last_login + 3600))
         local time_left=$((next_login - current_time))
