@@ -109,7 +109,7 @@ validate_authorization() {
         # First, ensure all authorized banned players are in blacklist.txt
         while IFS= read -r banned_player; do
             if [[ -n "$banned_player" && ! "$banned_player" =~ ^[[:space:]]*# ]]; then
-                if ! grep -v "^[[:space:]]*#" "$black_list" | grep -q -i "^$banned_player$"; then
+                if ! grep -v "^[[:space:]]*#" "$black_list" | grep -v "Usernames or IP addresses" | grep -q -i "^$banned_player$"; then
                     print_warning "Authorized banned player $banned_player not found in blacklist.txt, adding..."
                     send_server_command_silent "/ban $banned_player"
                     # Also add to blacklist.txt file directly
@@ -121,7 +121,7 @@ validate_authorization() {
         
         # Second, remove any players from blacklist.txt that aren't in authorized_blacklist.txt
         while IFS= read -r banned_player; do
-            if [[ -n "$banned_player" && ! "$banned_player" =~ ^[[:space:]]*# && ! "$banned_player" =~ "Usernames in this file" ]]; then
+            if [[ -n "$banned_player" && ! "$banned_player" =~ ^[[:space:]]*# && ! "$banned_player" =~ "Usernames or IP addresses" ]]; then
                 if ! grep -q -i "^$banned_player$" "$auth_blacklist"; then
                     print_warning "Non-authorized banned player detected: $banned_player"
                     send_server_command_silent "/unban $banned_player"
