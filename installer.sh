@@ -59,6 +59,7 @@ SERVER_BINARY="blockheads_server171"
 RAW_BASE="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/refs/heads/main"
 SERVER_MANAGER_URL="$RAW_BASE/server_manager.sh"
 BOT_SCRIPT_URL="$RAW_BASE/server_bot.sh"
+ANTICHEAT_SCRIPT_URL="$RAW_BASE/anticheat_secure.sh"
 
 print_header "THE BLOCKHEADS LINUX SERVER INSTALLER"
 print_header "FOR NEW USERS: This script will install everything you need"
@@ -104,9 +105,19 @@ if ! wget -q -O server_bot.sh "$BOT_SCRIPT_URL"; then
         exit 1
     fi
 fi
+
+if ! wget -q -O anticheat_secure.sh "$ANTICHEAT_SCRIPT_URL"; then
+    print_error "Failed to download anticheat_secure.sh from GitHub."
+    print_status "Trying alternative URL..."
+    ANTICHEAT_SCRIPT_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/anticheat_secure.sh"
+    if ! wget -q -O anticheat_secure.sh "$ANTICHEAT_SCRIPT_URL"; then
+        print_error "Completely failed to download anticheat_secure.sh"
+        exit 1
+    fi
+fi
 print_success "Helper scripts downloaded"
 
-chmod +x server_manager.sh server_bot.sh
+chmod +x server_manager.sh server_bot.sh anticheat_secure.sh
 
 print_step "[3/8] Downloading server archive..."
 if ! wget -q --timeout=60 --tries=3 "$SERVER_URL" -O "$TEMP_FILE"; then
@@ -164,8 +175,8 @@ patchelf --replace-needed libdispatch.so libdispatch.so.0 "$SERVER_BINARY" || tr
 print_success "Compatibility patches applied"
 
 print_step "[6/8] Set ownership and permissions for helper scripts and binary"
-chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
-chmod 755 server_manager.sh server_bot.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
+chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh anticheat_secure.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
+chmod 755 server_manager.sh server_bot.sh anticheat_secure.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
 print_success "Permissions set"
 
 print_step "[7/8] Create economy data file"
@@ -197,6 +208,10 @@ echo "   ./server_manager.sh help"
 echo "   ./blockheads_server171 -h"
 echo ""
 print_warning "NOTE: Default port is 12153 if not specified"
+print_header "NEW FEATURES"
+print_status "Added anticheat system: anticheat_secure.sh"
+print_status "New player commands: !give_rank_mod and !give_rank_admin"
+print_status "All data files are now stored with the server world data"
 print_header "NEED HELP?"
 print_status "Visit the GitHub repository for more information:"
 print_status "https://github.com/noxthewildshadow/The-Blockheads-Server-BETA"
