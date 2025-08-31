@@ -59,45 +59,40 @@ write_json_file() {
 # Bot configuration - now supports multiple servers
 if [ $# -ge 2 ]; then
     PORT="$2"
-    ECONOMY_FILE="economy_data_$PORT.json"
-    ADMIN_OFFENSES_FILE="admin_offenses_$PORT.json"
+    LOG_DIR=$(dirname "$1")
+    ECONOMY_FILE="$LOG_DIR/economy_data_$PORT.json"
+    ADMIN_OFFENSES_FILE="$LOG_DIR/admin_offenses_$PORT.json"
     SCREEN_SERVER="blockheads_server_$PORT"
 else
-    ECONOMY_FILE="economy_data.json"
-    ADMIN_OFFENSES_FILE="admin_offenses.json"
+    LOG_DIR=$(dirname "$1")
+    ECONOMY_FILE="$LOG_DIR/economy_data.json"
+    ADMIN_OFFENSES_FILE="$LOG_DIR/admin_offenses.json"
     SCREEN_SERVER="blockheads_server"
 fi
 
 # Authorization files
-AUTHORIZED_ADMINS_FILE="authorized_admins.txt"
-AUTHORIZED_MODS_FILE="authorized_mods.txt"
+AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
+AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCAN_INTERVAL=5
 SERVER_WELCOME_WINDOW=15
 TAIL_LINES=500
 
 # Function to initialize authorization files
 initialize_authorization_files() {
-    local world_dir=$(dirname "$LOG_FILE")
-    local auth_admins="$world_dir/$AUTHORIZED_ADMINS_FILE"
-    local auth_mods="$world_dir/$AUTHORIZED_MODS_FILE"
-    
-    [ ! -f "$auth_admins" ] && touch "$auth_admins" && print_success "Created authorized admins file: $auth_admins"
-    [ ! -f "$auth_mods" ] && touch "$auth_mods" && print_success "Created authorized mods file: $auth_mods"
+    [ ! -f "$AUTHORIZED_ADMINS_FILE" ] && touch "$AUTHORIZED_ADMINS_FILE" && print_success "Created authorized admins file: $AUTHORIZED_ADMINS_FILE"
+    [ ! -f "$AUTHORIZED_MODS_FILE" ] && touch "$AUTHORIZED_MODS_FILE" && print_success "Created authorized mods file: $AUTHORIZED_MODS_FILE"
 }
 
 # Function to check and correct admin/mod lists
 validate_authorization() {
-    local world_dir=$(dirname "$LOG_FILE")
-    local auth_admins="$world_dir/$AUTHORIZED_ADMINS_FILE"
-    local auth_mods="$world_dir/$AUTHORIZED_MODS_FILE"
-    local admin_list="$world_dir/adminlist.txt"
-    local mod_list="$world_dir/modlist.txt"
+    local admin_list="$LOG_DIR/adminlist.txt"
+    local mod_list="$LOG_DIR/modlist.txt"
     
     # Check adminlist.txt against authorized_admins.txt
     if [ -f "$admin_list" ]; then
         while IFS= read -r admin; do
             if [[ -n "$admin" && ! "$admin" =~ ^[[:space:]]*# && ! "$admin" =~ "Usernames in this file" ]]; then
-                if ! grep -q -i "^$admin$" "$auth_admins"; then
+                if ! grep -q -i "^$admin$" "$AUTHORIZED_ADMINS_FILE"; then
                     print_warning "Unauthorized admin detected: $admin"
                     send_server_command "/unadmin $admin"
                     remove_from_list_file "$admin" "admin"
@@ -111,7 +106,7 @@ validate_authorization() {
     if [ -f "$mod_list" ]; then
         while IFS= read -r mod; do
             if [[ -n "$mod" && ! "$mod" =~ ^[[:space:]]*# && ! "$mod" =~ "Usernames in this file" ]]; then
-                if ! grep -q -i "^$mod$" "$auth_mods"; then
+                if ! grep -q -i "^$mod$" "$AUTHORIZED_MODS_FILE"; then
                     print_warning "Unauthorized mod detected: $mod"
                     send_server_command "/unmod $mod"
                     remove_from_list_file "$mod" "mod"
@@ -125,8 +120,7 @@ validate_authorization() {
 # Function to add player to authorized list
 add_to_authorized() {
     local player_name="$1" list_type="$2"
-    local world_dir=$(dirname "$LOG_FILE")
-    local auth_file="$world_dir/authorized_${list_type}s.txt"
+    local auth_file="$LOG_DIR/authorized_${list_type}s.txt"
     
     [ ! -f "$auth_file" ] && print_error "Authorization file not found: $auth_file" && return 1
     
@@ -143,8 +137,7 @@ add_to_authorized() {
 # Function to remove player from authorized list
 remove_from_authorized() {
     local player_name="$1" list_type="$2"
-    local world_dir=$(dirname "$LOG_FILE")
-    local auth_file="$world_dir/authorized_${list_type}s.txt"
+    local auth_file="$LOG_DIR/authorized_${list_type}s.txt"
     
     [ ! -f "$auth_file" ] && print_error "Authorization file not found: $auth_file" && return 1
     
@@ -196,8 +189,7 @@ clear_admin_offenses() {
 # Function to remove player from list file
 remove_from_list_file() {
     local player_name="$1" list_type="$2"
-    local world_dir=$(dirname "$LOG_FILE")
-    local list_file="$world_dir/${list_type}list.txt"
+    local list_file="$LOG_DIR/${list_type}list.txt"
     
     [ ! -f "$list_file" ] && print_error "List file not found: $list_file" && return 1
     
@@ -236,8 +228,7 @@ initialize_economy() {
 
 is_player_in_list() {
     local player_name="$1" list_type="$2"
-    local world_dir=$(dirname "$LOG_FILE")
-    local list_file="$world_dir/${list_type}list.txt"
+    local list_file="$LOG_DIR/${list_type}list.txt"
     
     [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" | grep -q -i "^$player_name$" && return 0
     return 1
@@ -356,6 +347,49 @@ add_purchase() {
     local current_data=$(read_json_file "$ECONOMY_FILE")
     current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg item "$item" '.players[$player].purchases += [$item]')
     write_json_file "$ECONOMY_FILE" "$current_data"
+}
+
+# Function to process give_rank commands
+process_give_rank() {
+    local giver_name="$1" target_player="$2" rank_type="$3"
+    local current_data=$(read_json_file "$ECONOMY_FILE")
+    local giver_tickets=$(echo "$current_data" | jq -r --arg player "$giver_name" '.players[$player].tickets // 0')
+    giver_tickets=${giver_tickets:-0}
+    
+    local cost=0
+    [ "$rank_type" = "admin" ] && cost=140
+    [ "$rank_type" = "mod" ] && cost=70
+    
+    if [ "$giver_tickets" -lt "$cost" ]; then
+        send_server_command "$giver_name, you need $cost tickets to give $rank_type rank, but you only have $giver_tickets."
+        return 1
+    fi
+    
+    # Validate target player name
+    if ! is_valid_player_name "$target_player"; then
+        send_server_command "$giver_name, invalid player name: $target_player"
+        return 1
+    fi
+    
+    # Deduct tickets from giver
+    local new_tickets=$((giver_tickets - cost))
+    current_data=$(echo "$current_data" | jq --arg player "$giver_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
+    
+    # Record transaction
+    local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
+    current_data=$(echo "$current_data" | jq --arg giver "$giver_name" --arg target "$target_player" \
+        --arg rank "$rank_type" --argjson cost "$cost" --arg time "$time_str" \
+        '.transactions += [{"giver": $giver, "recipient": $target, "type": "rank_gift", "rank": $rank, "tickets": -$cost, "time": $time}]')
+    
+    write_json_file "$ECONOMY_FILE" "$current_data"
+    
+    # Add to authorized list and assign rank
+    add_to_authorized "$target_player" "$rank_type"
+    screen -S "$SCREEN_SERVER" -X stuff "/$rank_type $target_player$(printf \\r)"
+    
+    send_server_command "Congratulations! $giver_name has gifted $rank_type rank to $target_player for $cost tickets."
+    send_server_command "$giver_name, your new ticket balance: $new_tickets"
+    return 0
 }
 
 # Function to handle unauthorized admin/mod commands
@@ -484,6 +518,22 @@ process_message() {
                 send_server_command "$player_name, you need $((100 - player_tickets)) more tickets to buy ADMIN rank."
             fi
             ;;
+        "!give_rank_admin "*)
+            if [[ "$message" =~ !give_rank_admin\ ([a-zA-Z0-9_]+) ]]; then
+                local target_player="${BASH_REMATCH[1]}"
+                process_give_rank "$player_name" "$target_player" "admin"
+            else
+                send_server_command "Usage: !give_rank_admin PLAYER_NAME"
+            fi
+            ;;
+        "!give_rank_mod "*)
+            if [[ "$message" =~ !give_rank_mod\ ([a-zA-Z0-9_]+) ]]; then
+                local target_player="${BASH_REMATCH[1]}"
+                process_give_rank "$player_name" "$target_player" "mod"
+            else
+                send_server_command "Usage: !give_rank_mod PLAYER_NAME"
+            fi
+            ;;
         "!set_admin"|"!set_mod")
             send_server_command "$player_name, these commands are only available to server console operators."
             ;;
@@ -492,6 +542,8 @@ process_message() {
             send_server_command "!tickets - Check your tickets"
             send_server_command "!buy_mod - Buy MOD rank for 50 tickets"
             send_server_command "!buy_admin - Buy ADMIN rank for 100 tickets"
+            send_server_command "!give_rank_mod PLAYER - Gift MOD rank (70 tickets)"
+            send_server_command "!give_rank_admin PLAYER - Gift ADMIN rank (140 tickets)"
             ;;
     esac
 }
@@ -624,7 +676,7 @@ monitor_log() {
 
     print_header "STARTING ECONOMY BOT"
     print_status "Monitoring: $log_file"
-    print_status "Bot commands: !tickets, !buy_mod, !buy_admin, !economy_help"
+    print_status "Bot commands: !tickets, !buy_mod, !buy_admin, !give_rank_mod, !give_rank_admin, !economy_help"
     print_status "Admin commands: !send_ticket <player> <amount>, !set_mod <player>, !set_admin <player>"
     print_header "IMPORTANT: Admin commands must be typed in THIS terminal, NOT in the game chat!"
     print_status "Type admin commands below and press Enter:"
