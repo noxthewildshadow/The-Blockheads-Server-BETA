@@ -297,11 +297,11 @@ show_welcome_message() {
     
     if [ "$force_send" -eq 1 ] || [ "$last_welcome_time" -eq 0 ] || [ $((current_time - last_welcome_time)) -ge 180 ]; then
         if [ "$is_new_player" = "true" ]; then
-            send_server_command "Hello $player_name! Welcome to the server. Type !tickets to check your ticket balance."
+            send_server_command "Hello $player_name! Welcome to the server. Type !help to check available commands."
         else
             local last_greeting_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_greeting_time // 0')
             if [ $((current_time - last_greeting_time)) -ge 600 ]; then
-                send_server_command "Welcome back $player_name! Type !economy_help to see economy commands."
+                send_server_command "Welcome back $player_name! Type !help to see available commands."
                 # Update last_greeting_time to prevent spam
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_greeting_time = $time')
                 write_json_file "$ECONOMY_FILE" "$current_data"
@@ -321,7 +321,7 @@ show_help_if_needed() {
     last_help_time=${last_help_time:-0}
     
     if [ "$last_help_time" -eq 0 ] || [ $((current_time - last_help_time)) -ge 300 ]; then
-        send_server_command "$player_name, type !economy_help to see economy commands."
+        send_server_command "$player_name, type !help to see available commands."
         current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_help_time = $time')
         write_json_file "$ECONOMY_FILE" "$current_data"
     fi
@@ -467,7 +467,7 @@ process_message() {
             
             # 10-minute cooldown for greetings
             if [ "$last_greeting_time" -eq 0 ] || [ $((current_time - last_greeting_time)) -ge 600 ]; then
-                send_server_command "Hello $player_name! Welcome to the server. Type !tickets to check your ticket balance."
+                send_server_command "Hello $player_name! Welcome to the server. Type !help to check available commands."
                 # Update last_greeting_time
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_greeting_time = $time')
                 write_json_file "$ECONOMY_FILE" "$current_data"
@@ -518,32 +518,32 @@ process_message() {
                 send_server_command "$player_name, you need $((100 - player_tickets)) more tickets to buy ADMIN rank."
             fi
             ;;
-        "!give_rank_admin "*)
-            if [[ "$message" =~ !give_rank_admin\ ([a-zA-Z0-9_]+) ]]; then
+        "!give_admin "*)
+            if [[ "$message" =~ !give_admin\ ([a-zA-Z0-9_]+) ]]; then
                 local target_player="${BASH_REMATCH[1]}"
                 process_give_rank "$player_name" "$target_player" "admin"
             else
-                send_server_command "Usage: !give_rank_admin PLAYER_NAME"
+                send_server_command "Usage: !give_admin PLAYER_NAME"
             fi
             ;;
-        "!give_rank_mod "*)
-            if [[ "$message" =~ !give_rank_mod\ ([a-zA-Z0-9_]+) ]]; then
+        "!give_mod "*)
+            if [[ "$message" =~ !give_mod\ ([a-zA-Z0-9_]+) ]]; then
                 local target_player="${BASH_REMATCH[1]}"
                 process_give_rank "$player_name" "$target_player" "mod"
             else
-                send_server_command "Usage: !give_rank_mod PLAYER_NAME"
+                send_server_command "Usage: !give_mod PLAYER_NAME"
             fi
             ;;
         "!set_admin"|"!set_mod")
             send_server_command "$player_name, these commands are only available to server console operators."
             ;;
-        "!economy_help")
-            send_server_command "Economy commands:"
+        "!help")
+            send_server_command "Available commands:"
             send_server_command "!tickets - Check your tickets"
             send_server_command "!buy_mod - Buy MOD rank for 50 tickets"
             send_server_command "!buy_admin - Buy ADMIN rank for 100 tickets"
-            send_server_command "!give_rank_mod PLAYER - Gift MOD rank (70 tickets)"
-            send_server_command "!give_rank_admin PLAYER - Gift ADMIN rank (140 tickets)"
+            send_server_command "!give_mod PLAYER - Gift MOD rank (70 tickets)"
+            send_server_command "!give_admin PLAYER - Gift ADMIN rank (140 tickets)"
             ;;
     esac
 }
@@ -676,7 +676,7 @@ monitor_log() {
 
     print_header "STARTING ECONOMY BOT"
     print_status "Monitoring: $log_file"
-    print_status "Bot commands: !tickets, !buy_mod, !buy_admin, !give_rank_mod, !give_rank_admin, !economy_help"
+    print_status "Bot commands: !tickets, !buy_mod, !buy_admin, !give_mod, !give_admin, !help"
     print_status "Admin commands: !send_ticket <player> <amount>, !set_mod <player>, !set_admin <player>"
     print_header "IMPORTANT: Admin commands must be typed in THIS terminal, NOT in the game chat!"
     print_status "Type admin commands below and press Enter:"
