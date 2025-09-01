@@ -40,14 +40,12 @@ print_step() {
     echo -e "${CYAN}[STEP]${NC} $1"
 }
 
-# Check for root privileges only when needed
-check_root() {
-    if [ "$EUID" -ne 0 ]; then
-        print_error "This operation requires root privileges."
-        print_status "Please run with: sudo $0"
-        exit 1
-    fi
-}
+# Check for root privileges
+if [ "$EUID" -ne 0 ]; then
+    print_error "This script requires root privileges."
+    print_status "Please run with: sudo $0"
+    exit 1
+fi
 
 ORIGINAL_USER=${SUDO_USER:-$USER}
 USER_HOME=$(getent passwd "$ORIGINAL_USER" | cut -d: -f6)
@@ -69,19 +67,19 @@ print_header "Please be patient as it may take several minutes"
 
 print_step "[1/9] Installing required packages..."
 {
-    sudo add-apt-repository multiverse -y || true
-    sudo apt-get update -y
-    sudo apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common
+    add-apt-repository multiverse -y || true
+    apt-get update -y
+    apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common iptables-persistent bc
 } > /dev/null 2>&1
 if [ $? -eq 0 ]; then
     print_success "Required packages installed"
 else
     print_error "Failed to install required packages"
     print_status "Trying alternative approach..."
-    sudo apt-get install -y software-properties-common
-    sudo add-apt-repository multiverse -y
-    sudo apt-get update -y
-    sudo apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof || {
+    apt-get install -y software-properties-common
+    add-apt-repository multiverse -y
+    apt-get update -y
+    apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof iptables-persistent bc || {
         print_error "Still failed to install packages. Please check your internet connection."
         exit 1
     }
@@ -188,21 +186,21 @@ print_success "Economy data file created"
 
 print_step "[8/9] Installing security enhancements..."
 # Create security directory
-SECURITY_DIR="$HOME/blockheads_security"
-mkdir -p "$SECURITY_DIR"
+SECURITY_DIR="$USER_HOME/blockheads_security"
+sudo -u "$ORIGINAL_USER" mkdir -p "$SECURITY_DIR"
 
 # Create firewall script
-cat > "$SECURITY_DIR/setup_firewall.sh" << 'EOF'
+sudo -u "$ORIGINAL_USER" cat > "$SECURITY_DIR/setup_firewall.sh" << 'EOF'
 #!/bin/bash
 # Blockheads Server Firewall Configuration
-PORT=12153
+PORT=${1:-12153}
 
 echo "Setting up firewall rules for Blockheads server..."
 
 # Check if we have root privileges
 if [ "$EUID" -ne 0 ]; then
     echo "ERROR: Firewall setup requires root privileges."
-    echo "Please run this script with: sudo $0"
+    echo "Please run this script with: sudo $0 [PORT]"
     exit 1
 fi
 
@@ -234,17 +232,25 @@ iptables -A INPUT -p tcp --dport $PORT -m limit --limit 10/min --limit-burst 20 
 # Allow server traffic
 iptables -A INPUT -p tcp --dport $PORT -j ACCEPT
 
-echo "Firewall rules configured successfully."
+echo "Firewall rules configured successfully for port $PORT."
 echo "Port $PORT is now protected against DDoS attacks."
+
+# Save rules for persistence
+if command -v iptables-save > /dev/null && command -v netfilter-persistent > /dev/null; then
+    iptables-save > /etc/iptables/rules.v4
+    netfilter-persistent save
+    echo "Firewall rules saved persistently."
+else
+    echo "Warning: iptables-persistent not installed. Rules will not persist after reboot."
+    echo "Install with: sudo apt-get install iptables-persistent"
+fi
 EOF
 
-chmod +x "$SECURITY_DIR/setup_firewall.sh"
-
 # Create monitoring script
-cat > "$SECURITY_DIR/monitor_resources.sh" << 'EOF'
+sudo -u "$ORIGINAL_USER" cat > "$SECURITY_DIR/monitor_resources.sh" << 'EOF'
 #!/bin/bash
 # Resource monitoring for Blockheads server
-PORT=12153
+PORT=${1:-12153}
 
 # Colors for output
 RED='\033[0;31m'
@@ -266,7 +272,7 @@ check_resources() {
     CPU_USAGE=$(top -bn1 | grep "Cpu(s)" | awk '{print $2}' | cut -d'%' -f1)
     
     # Monitor memory usage
-    MEM_USAGE=$(free | grep Mem | awk '{print $3/$2 * 100.0}')
+    MEM_USAGE=$(free | grep Mem | awk '{printf "%.0f", $3/$2 * 100.0}')
     
     # Monitor connections
     CONNECTION_COUNT=$(netstat -an | grep ":$PORT" | grep ESTABLISHED | wc -l)
@@ -277,7 +283,7 @@ check_resources() {
         echo -e "${YELLOW}WARNING: High CPU usage detected ($CPU_USAGE%)${NC}"
     fi
     
-    if (( $(echo "$MEM_USAGE > $THRESHOLD_MEMORY" | bc -l) )); then
+    if [ "$MEM_USAGE" -gt "$THRESHOLD_MEMORY" ]; then
         log_message "HIGH MEMORY USAGE: $MEM_USAGE% - Possible DDoS attack"
         echo -e "${YELLOW}WARNING: High memory usage detected ($MEM_USAGE%)${NC}"
     fi
@@ -298,10 +304,8 @@ while true; do
 done
 EOF
 
-chmod +x "$SECURITY_DIR/monitor_resources.sh"
-
 # Create security helper script
-cat > "$SECURITY_DIR/security_helper.sh" << 'EOF'
+sudo -u "$ORIGINAL_USER" cat > "$SECURITY_DIR/security_helper.sh" << 'EOF'
 #!/bin/bash
 # Security helper script for Blockheads server
 
@@ -312,9 +316,11 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+SECURITY_DIR="$HOME/blockheads_security"
+
 show_help() {
     echo -e "${BLUE}Blockheads Server Security Helper${NC}"
-    echo "Usage: $0 [command]"
+    echo "Usage: $0 [command] [port]"
     echo ""
     echo "Commands:"
     echo "  setup-firewall    - Configure firewall rules (requires sudo)"
@@ -322,33 +328,41 @@ show_help() {
     echo "  check-security    - Perform security check"
     echo "  view-logs         - View security logs"
     echo "  help              - Show this help"
+    echo ""
+    echo "Default port: 12153"
 }
 
 setup_firewall() {
-    if [ ! -f "$HOME/blockheads_security/setup_firewall.sh" ]; then
+    local PORT=${1:-12153}
+    
+    if [ ! -f "$SECURITY_DIR/setup_firewall.sh" ]; then
         echo -e "${RED}ERROR: Firewall script not found.${NC}"
+        echo -e "${YELLOW}Please run the installer first.${NC}"
         return 1
     fi
     
-    echo -e "${BLUE}Setting up firewall rules...${NC}"
-    sudo "$HOME/blockheads_security/setup_firewall.sh"
+    echo -e "${BLUE}Setting up firewall rules for port $PORT...${NC}"
+    sudo "$SECURITY_DIR/setup_firewall.sh" "$PORT"
     
     if [ $? -eq 0 ]; then
-        echo -e "${GREEN}Firewall configured successfully.${NC}"
+        echo -e "${GREEN}Firewall configured successfully for port $PORT.${NC}"
     else
         echo -e "${RED}Firewall configuration failed.${NC}"
     fi
 }
 
 start_monitoring() {
-    if [ ! -f "$HOME/blockheads_security/monitor_resources.sh" ]; then
+    local PORT=${1:-12153}
+    
+    if [ ! -f "$SECURITY_DIR/monitor_resources.sh" ]; then
         echo -e "${RED}ERROR: Monitoring script not found.${NC}"
+        echo -e "${YELLOW}Please run the installer first.${NC}"
         return 1
     fi
     
-    echo -e "${BLUE}Starting resource monitoring...${NC}"
-    nohup "$HOME/blockheads_security/monitor_resources.sh" > /dev/null 2>&1 &
-    echo -e "${GREEN}Monitoring started. Check $HOME/blockheads_security/monitor.log for details.${NC}"
+    echo -e "${BLUE}Starting resource monitoring for port $PORT...${NC}"
+    nohup "$SECURITY_DIR/monitor_resources.sh" "$PORT" > /dev/null 2>&1 &
+    echo -e "${GREEN}Monitoring started. Check $SECURITY_DIR/monitor.log for details.${NC}"
 }
 
 check_security() {
@@ -370,9 +384,9 @@ check_security() {
 }
 
 view_logs() {
-    if [ -f "$HOME/blockheads_security/monitor.log" ]; then
+    if [ -f "$SECURITY_DIR/monitor.log" ]; then
         echo -e "${BLUE}Showing security logs:${NC}"
-        tail -20 "$HOME/blockheads_security/monitor.log"
+        tail -20 "$SECURITY_DIR/monitor.log"
     else
         echo -e "${YELLOW}No security logs found.${NC}"
     fi
@@ -381,10 +395,10 @@ view_logs() {
 # Main command handling
 case "$1" in
     setup-firewall)
-        setup_firewall
+        setup_firewall "$2"
         ;;
     start-monitoring)
-        start_monitoring
+        start_monitoring "$2"
         ;;
     check-security)
         check_security
@@ -398,13 +412,17 @@ case "$1" in
 esac
 EOF
 
-chmod +x "$SECURITY_DIR/security_helper.sh"
+# Give execute permissions
+sudo -u "$ORIGINAL_USER" chmod +x "$SECURITY_DIR/setup_firewall.sh"
+sudo -u "$ORIGINAL_USER" chmod +x "$SECURITY_DIR/monitor_resources.sh"
+sudo -u "$ORIGINAL_USER" chmod +x "$SECURITY_DIR/security_helper.sh"
 
 print_success "Security enhancements installed"
 
+print_step "[9/9] Finalizing installation..."
 rm -f "$TEMP_FILE"
 
-print_step "[9/9] Installation completed successfully"
+print_success "Installation completed successfully"
 echo ""
 print_header "USAGE INSTRUCTIONS FOR NEW USERS"
 print_status "1. FIRST create a world manually with:"
@@ -422,8 +440,9 @@ print_status "4. To check status:"
 echo "   ./server_manager.sh status"
 echo ""
 print_status "5. For security setup:"
-echo "   ./blockheads_security/security_helper.sh setup-firewall"
-echo "   ./blockheads_security/security_helper.sh start-monitoring"
+echo "   sudo $SECURITY_DIR/setup_firewall.sh [PORT]"
+echo "   $SECURITY_DIR/security_helper.sh start-monitoring [PORT]"
+echo "   $SECURITY_DIR/security_helper.sh check-security"
 echo ""
 print_status "6. For help:"
 echo "   ./server_manager.sh help"
@@ -434,7 +453,7 @@ print_header "NEW SECURITY FEATURES"
 print_status "Added firewall protection against DDoS attacks"
 print_status "Added resource monitoring system"
 print_status "Enhanced security helper script"
-print_status "All security files are stored in: $HOME/blockheads_security"
+print_status "All security files are stored in: $SECURITY_DIR"
 print_header "NEED HELP?"
 print_status "Visit the GitHub repository for more information:"
 print_status "https://github.com/noxthewildshadow/The-Blockheads-Server-BETA"
