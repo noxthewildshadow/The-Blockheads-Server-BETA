@@ -14,13 +14,30 @@ Before you begin, ensure you have:
 
 ## Quick Installation
 
-Run this single command to install everything automatically:
+BEFORE YOU START MAKE SURE YOU HAVE CURL INSTALLED WITH:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/noxthewildshadow/TheBlockHeads-Server-BETA/refs/heads/main/installer.sh | sudo bash
+curl --version
+```
+IF YOU DONT HAVE ANY VERSION DO THE NEXT STEPS:
+
+```bash
+sudo apt update
 ```
 
-The script will:
+THEN:
+
+```bash
+sudo apt install curl -y
+```
+
+AND FINALLY CHECK AGAIN IF INSTALLED WITH:
+
+```bash
+curl --version
+```
+
+START - The script will:
 1. Install required dependencies
 2. Download the server files
 3. Set up the server manager and economy bot
