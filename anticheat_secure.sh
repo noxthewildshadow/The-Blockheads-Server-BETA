@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # anticheat_secure.sh - Enhanced security system for The Blockheads server
 
 # Enhanced Colors for output
@@ -27,12 +26,10 @@ print_header() {
 LOG_FILE="$1"
 PORT="$2"
 LOG_DIR=$(dirname "$LOG_FILE")
-ECONOMY_FILE="$LOG_DIR/economy_data_$PORT.json"
 ADMIN_OFFENSES_FILE="$LOG_DIR/admin_offenses_$PORT.json"
 AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCREEN_SERVER="blockheads_server_$PORT"
-SCAN_INTERVAL=5
 
 # Function to validate player names
 is_valid_player_name() {
@@ -291,24 +288,6 @@ handle_unauthorized_command() {
     fi
 }
 
-# Function to process give_rank commands from economy system
-process_give_rank_anticheat() {
-    local giver_name="$1" target_player="$2" rank_type="$3"
-    
-    # Validate target player name
-    if ! is_valid_player_name "$target_player"; then
-        print_error "Invalid player name in give_rank command: $target_player"
-        return 1
-    fi
-    
-    # Add to authorized list and assign rank
-    add_to_authorized "$target_player" "$rank_type"
-    screen -S "$SCREEN_SERVER" -X stuff "/$rank_type $target_player$(printf \\r)"
-    
-    print_success "Processed give_rank: $giver_name gifted $rank_type rank to $target_player"
-    return 0
-}
-
 # Filter server log to exclude certain messages
 filter_server_log() {
     while read line; do
@@ -353,7 +332,7 @@ monitor_log() {
     print_status "Log directory: $LOG_DIR"
     print_header "SECURITY SYSTEM ACTIVE"
 
-    # Monitor the log file for unauthorized commands and give_rank events
+    # Monitor the log file for unauthorized commands
     tail -n 0 -F "$log_file" | filter_server_log | while read line; do
         # Detect unauthorized admin/mod commands
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ \/(admin|mod)\ ([a-zA-Z0-9_]+) ]]; then
@@ -366,13 +345,6 @@ monitor_log() {
             fi
             
             [ "$command_user" != "SERVER" ] && handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
-        fi
-        
-        # Detect give_rank commands from economy system
-        if [[ "$line" =~ SERVER:\ say::\ ([a-zA-Z0-9_]+)\ has\ gifted\ (admin|mod)\ rank\ to\ ([a-zA-Z0-9_]+) ]]; then
-            local giver_name="${BASH_REMATCH[1]}" rank_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
-            print_status "Detected give_rank event: $giver_name -> $target_player ($rank_type)"
-            process_give_rank_anticheat "$giver_name" "$target_player" "$rank_type"
         fi
     done
 
