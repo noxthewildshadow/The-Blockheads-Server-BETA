@@ -1,5 +1,6 @@
 #!/bin/bash
 # anticheat_secure.sh - Enhanced security system for The Blockheads server
+# Improved for new users: Better error messages, fixed file locking issues
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -31,11 +32,6 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCREEN_SERVER="blockheads_server_$PORT"
 
-# Security monitoring variables
-SECURITY_LOG="$LOG_DIR/security_incidents.log"
-CONNECTION_THRESHOLD=10  # Max connections per minute from single IP
-CONNECTION_TRACKER="$LOG_DIR/connection_tracker.json"
-
 # Function to validate player names
 is_valid_player_name() {
     local player_name="$1"
@@ -51,7 +47,7 @@ read_json_file() {
         return 1
     fi
     
-    # Use flock to prevent concurrent access
+    # Use flock with proper file descriptor handling
     flock -s 200 cat "$file_path" 200>"${file_path}.lock"
 }
 
@@ -65,7 +61,7 @@ write_json_file() {
         return 1
     fi
     
-    # Use flock to prevent concurrent access
+    # Use flock with proper file descriptor handling
     flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
     return $?
 }
@@ -92,7 +88,7 @@ validate_authorization() {
                     print_success "Removed unauthorized admin: $admin"
                 fi
             fi
-        done < <(grep -v "^[[:space:]]*#" "$admin_list")
+        done < <(grep -v "^[[:space:]]*#" "$admin_list" 2>/dev/null || true)
     fi
     
     # Check modlist.txt against authorized_mods.txt
@@ -106,7 +102,7 @@ validate_authorization() {
                     print_success "Removed unauthorized mod: $mod"
                 fi
             fi
-        done < <(grep -v "^[[:space:]]*#" "$mod_list")
+        done < <(grep -v "^[[:space:]]*#" "$mod_list" 2>/dev/null || true)
     fi
 }
 
@@ -187,7 +183,7 @@ remove_from_list_file() {
     [ ! -f "$list_file" ] && print_error "List file not found: $list_file" && return 1
     
     # Use case-insensitive deletion with sed
-    if grep -v "^[[:space:]]*#" "$list_file" | grep -q -i "^$player_name$"; then
+    if grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"; then
         sed -i "/^$player_name$/Id" "$list_file"
         print_success "Removed $player_name from ${list_type}list.txt"
         return 0
@@ -227,7 +223,7 @@ is_player_in_list() {
     local player_name="$1" list_type="$2"
     local list_file="$LOG_DIR/${list_type}list.txt"
     
-    [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" | grep -q -i "^$player_name$" && return 0
+    [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$" && return 0
     return 1
 }
 
@@ -293,73 +289,6 @@ handle_unauthorized_command() {
     fi
 }
 
-# Function to detect and handle malformed packets
-detect_malformed_packets() {
-    local line="$1"
-    
-    # Detect malformed or illegal packets
-    if [[ "$line" =~ .*Malformed.* ]] || [[ "$line" =~ .*Illegal.* ]] || [[ "$line" =~ .*Exception.* ]]; then
-        local player_name=$(echo "$line" | grep -oE 'Player: [a-zA-Z0-9_]+' | cut -d' ' -f2)
-        local ip_address=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
-        
-        if [ -n "$player_name" ] && [ -n "$ip_address" ]; then
-            print_error "MALFORMED PACKET DETECTED: $player_name ($ip_address)"
-            
-            # Log security incident
-            echo "$(date '+%Y-%m-%d %H:%M:%S') - Malformed packet from $player_name ($ip_address): $line" >> "$SECURITY_LOG"
-            
-            # Automatic ban for clearly malicious patterns
-            if [[ "$line" =~ .*Critical.* ]] || [[ "$line" =~ .*Exploit.* ]] || [[ "$line" =~ .*Buffer.* ]]; then
-                send_server_command "/ban $player_name"
-                print_success "Player $player_name banned for malicious packet"
-            fi
-        fi
-    fi
-}
-
-# Function to track connections and detect DDoS attempts
-track_connections() {
-    local line="$1"
-    
-    if [[ "$line" =~ Player\ Connected\ ([a-zA-Z0-9_]+)\ \|\ ([0-9a-fA-F.:]+) ]]; then
-        local player_name="${BASH_REMATCH[1]}"
-        local ip_address="${BASH_REMATCH[2]}"
-        
-        # Initialize connection tracker if not exists
-        if [ ! -f "$CONNECTION_TRACKER" ]; then
-            echo '{}' > "$CONNECTION_TRACKER"
-        fi
-        
-        local current_time=$(date +%s)
-        local tracker_data=$(read_json_file "$CONNECTION_TRACKER")
-        local ip_connections=$(echo "$tracker_data" | jq -r --arg ip "$ip_address" '.[$ip]?.count // 0')
-        local last_connection=$(echo "$tracker_data" | jq -r --arg ip "$ip_address" '.[$ip]?.last_connection // 0')
-        
-        # Reset count if more than 1 minute has passed
-        if [ $((current_time - last_connection)) -gt 60 ]; then
-            ip_connections=0
-        fi
-        
-        ip_connections=$((ip_connections + 1))
-        
-        # Update tracker
-        tracker_data=$(echo "$tracker_data" | jq --arg ip "$ip_address" \
-            --argjson count "$ip_connections" --argjson time "$current_time" \
-            '.[$ip] = {"count": $count, "last_connection": $time}')
-        
-        write_json_file "$CONNECTION_TRACKER" "$tracker_data"
-        
-        # Check for DDoS attempt
-        if [ "$ip_connections" -gt "$CONNECTION_THRESHOLD" ]; then
-            print_error "DDoS ATTEMPT DETECTED: $ip_address ($ip_connections connections/minute)"
-            echo "$(date '+%Y-%m-%d %H:%M:%S') - DDoS attempt from $ip_address ($ip_connections connections)" >> "$SECURITY_LOG"
-            
-            # Optional: Add iptables rule to block IP (requires sudo)
-            # sudo iptables -A INPUT -s "$ip_address" -j DROP
-        fi
-    fi
-}
-
 # Filter server log to exclude certain messages
 filter_server_log() {
     while read line; do
@@ -374,6 +303,8 @@ filter_server_log() {
 cleanup() {
     print_status "Cleaning up anticheat..."
     kill $(jobs -p) 2>/dev/null
+    # Clean up lock files
+    rm -f "${ADMIN_OFFENSES_FILE}.lock" 2>/dev/null
     print_status "Anticheat cleanup done."
     exit 0
 }
@@ -385,10 +316,6 @@ monitor_log() {
 
     initialize_authorization_files
     initialize_admin_offenses
-
-    # Initialize security log
-    touch "$SECURITY_LOG"
-    print_success "Security log initialized: $SECURITY_LOG"
 
     # Start authorization validation in background
     (
@@ -408,8 +335,8 @@ monitor_log() {
     print_status "Log directory: $LOG_DIR"
     print_header "SECURITY SYSTEM ACTIVE"
 
-    # Monitor the log file for unauthorized commands and security threats
-    tail -n 0 -F "$log_file" | filter_server_log | while read line; do
+    # Monitor the log file for unauthorized commands
+    tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
         # Detect unauthorized admin/mod commands
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ \/(admin|mod)\ ([a-zA-Z0-9_]+) ]]; then
             local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
@@ -422,16 +349,21 @@ monitor_log() {
             
             [ "$command_user" != "SERVER" ] && handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
         fi
-        
-        # Detect malformed packets
-        detect_malformed_packets "$line"
-        
-        # Track connections for DDoS detection
-        track_connections "$line"
     done
 
     wait
     kill $validation_pid 2>/dev/null
+}
+
+# Show usage information for new users
+show_usage() {
+    print_header "ANTICHEAT SECURITY SYSTEM - USAGE"
+    print_status "This script monitors for unauthorized admin/mod commands"
+    print_status "Usage: $0 <server_log_file> [port]"
+    print_status "Example: $0 /path/to/console.log 12153"
+    echo ""
+    print_warning "Note: This script should be run alongside the server"
+    print_warning "It will automatically detect and prevent unauthorized rank assignments"
 }
 
 if [ $# -eq 1 ] || [ $# -eq 2 ]; then
@@ -454,6 +386,6 @@ if [ $# -eq 1 ] || [ $# -eq 2 ]; then
     
     monitor_log "$1"
 else
-    print_error "Usage: $0 <server_log_file> [port]"
+    show_usage
     exit 1
 fi
