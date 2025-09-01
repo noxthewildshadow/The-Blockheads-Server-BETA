@@ -66,16 +66,31 @@ print_header "FOR NEW USERS: This script will install everything you need"
 print_header "Please be patient as it may take several minutes"
 
 print_step "[1/9] Installing required packages..."
+print_status "This may take a while depending on your internet connection..."
 {
-    add-apt-repository multiverse -y || true
+    # Add multiverse repository if not already added
+    if ! grep -q "^deb.*multiverse" /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null; then
+        add-apt-repository multiverse -y
+    fi
+    
+    # Update package lists
     apt-get update -y
-    apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common iptables-persistent bc
+    
+    # Install essential packages
+    apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common
+    
+    # Install security packages
+    apt-get install -y iptables-persistent bc
+    
 } > /dev/null 2>&1
+
 if [ $? -eq 0 ]; then
     print_success "Required packages installed"
 else
     print_error "Failed to install required packages"
     print_status "Trying alternative approach..."
+    
+    # Fallback installation method
     apt-get install -y software-properties-common
     add-apt-repository multiverse -y
     apt-get update -y
@@ -370,7 +385,7 @@ check_security() {
     
     # Check if firewall rules are active
     echo -e "${YELLOW}Checking firewall rules...${NC}"
-    sudo iptables -L -n | grep -E "(DROP|ACCEPT)" || echo -e "${RED}No firewall rules found.${NC}"
+    sudo iptables -L -n | head -20
     
     # Check running processes
     echo -e "${YELLOW}Checking running processes...${NC}"
@@ -440,9 +455,9 @@ print_status "4. To check status:"
 echo "   ./server_manager.sh status"
 echo ""
 print_status "5. For security setup:"
-echo "   sudo $SECURITY_DIR/setup_firewall.sh [PORT]"
-echo "   $SECURITY_DIR/security_helper.sh start-monitoring [PORT]"
-echo "   $SECURITY_DIR/security_helper.sh check-security"
+echo "   sudo ~/blockheads_security/setup_firewall.sh [PORT]"
+echo "   ~/blockheads_security/security_helper.sh start-monitoring [PORT]"
+echo "   ~/blockheads_security/security_helper.sh check-security"
 echo ""
 print_status "6. For help:"
 echo "   ./server_manager.sh help"
