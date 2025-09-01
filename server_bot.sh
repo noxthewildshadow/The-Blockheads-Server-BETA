@@ -414,7 +414,7 @@ process_admin_command() {
 }
 
 server_sent_welcome_recently() {
-    local player_name="$1" conn_epoch="${2:-0}"
+    local player_name="$1"
     [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ] && return 1
     local player_lc=$(echo "$player_name" | tr '[:upper:]' '[:lower:]')
     
@@ -423,10 +423,14 @@ server_sent_welcome_recently() {
         return 0
     fi
     
-    # Also check for connection time if provided
-    if [ "$conn_epoch" -gt 0 ]; then
-        local current_time=$(date +%s)
-        [ $((current_time - conn_epoch)) -le 30 ] && return 0
+    # Check economy data for last welcome time
+    local current_time=$(date +%s)
+    local current_data=$(read_json_file "$ECONOMY_FILE")
+    local last_welcome_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_welcome_time // 0')
+    
+    # If we have welcomed in the last 30 seconds, then return true (already welcomed)
+    if [ "$last_welcome_time" -gt 0 ] && [ $((current_time - last_welcome_time)) -le 30 ]; then
+        return 0
     fi
     
     return 1
@@ -515,7 +519,7 @@ monitor_log() {
 
             sleep 3
 
-            if ! server_sent_welcome_recently "$player_name" "$conn_epoch"; then
+            if ! server_sent_welcome_recently "$player_name"; then
                 show_welcome_message "$player_name" "$is_new_player" 1
             else
                 print_warning "Server already welcomed $player_name"
