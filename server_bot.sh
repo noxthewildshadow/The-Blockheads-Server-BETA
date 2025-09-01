@@ -37,7 +37,7 @@ read_json_file() {
         return 1
     fi
     
-    # Use flock to prevent concurrent access
+    # Use flock with proper file descriptor handling
     flock -s 200 cat "$file_path" 200>"${file_path}.lock"
 }
 
@@ -51,7 +51,7 @@ write_json_file() {
         return 1
     fi
     
-    # Use flock to prevent concurrent access
+    # Use flock with proper file descriptor handling
     flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
     return $?
 }
@@ -98,7 +98,7 @@ is_player_in_list() {
     local player_name="$1" list_type="$2"
     local list_file="$LOG_DIR/${list_type}list.txt"
     
-    [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" | grep -q -i "^$player_name$" && return 0
+    [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$" && return 0
     return 1
 }
 
@@ -451,6 +451,8 @@ cleanup() {
     rm -f "$admin_pipe" 2>/dev/null
     # Kill background processes
     kill $(jobs -p) 2>/dev/null
+    # Clean up lock files
+    rm -f "${ECONOMY_FILE}.lock" 2>/dev/null
     print_status "Cleanup done."
     exit 0
 }
@@ -495,7 +497,7 @@ monitor_log() {
     declare -A welcome_shown
 
     # Monitor the log file
-    tail -n 0 -F "$log_file" | filter_server_log | while read line; do
+    tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
         # Detect player connections
         if [[ "$line" =~ Player\ Connected\ ([a-zA-Z0-9_]+)\ \|\ ([0-9a-fA-F.:]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}"
@@ -567,10 +569,21 @@ monitor_log() {
     rm -f "$admin_pipe"
 }
 
+# Show usage information for new users
+show_usage() {
+    print_header "ECONOMY BOT - USAGE"
+    print_status "This script manages the server economy and player commands"
+    print_status "Usage: $0 <server_log_file> [port]"
+    print_status "Example: $0 /path/to/console.log 12153"
+    echo ""
+    print_warning "Note: This script should be run alongside the server"
+    print_warning "It will automatically handle player commands and economy"
+}
+
 if [ $# -eq 1 ] || [ $# -eq 2 ]; then
     initialize_economy
     monitor_log "$1"
 else
-    print_error "Usage: $0 <server_log_file> [port]"
+    show_usage
     exit 1
 fi
