@@ -61,61 +61,16 @@ if [ $# -ge 2 ]; then
     PORT="$2"
     LOG_DIR=$(dirname "$1")
     ECONOMY_FILE="$LOG_DIR/economy_data_$PORT.json"
-    ADMIN_OFFENSES_FILE="$LOG_DIR/admin_offenses_$PORT.json"
     SCREEN_SERVER="blockheads_server_$PORT"
 else
     LOG_DIR=$(dirname "$1")
     ECONOMY_FILE="$LOG_DIR/economy_data.json"
-    ADMIN_OFFENSES_FILE="$LOG_DIR/admin_offenses.json"
     SCREEN_SERVER="blockheads_server"
 fi
 
 # Authorization files
 AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
-SCAN_INTERVAL=5
-SERVER_WELCOME_WINDOW=15
-TAIL_LINES=500
-
-# Function to initialize authorization files
-initialize_authorization_files() {
-    [ ! -f "$AUTHORIZED_ADMINS_FILE" ] && touch "$AUTHORIZED_ADMINS_FILE" && print_success "Created authorized admins file: $AUTHORIZED_ADMINS_FILE"
-    [ ! -f "$AUTHORIZED_MODS_FILE" ] && touch "$AUTHORIZED_MODS_FILE" && print_success "Created authorized mods file: $AUTHORIZED_MODS_FILE"
-}
-
-# Function to check and correct admin/mod lists
-validate_authorization() {
-    local admin_list="$LOG_DIR/adminlist.txt"
-    local mod_list="$LOG_DIR/modlist.txt"
-    
-    # Check adminlist.txt against authorized_admins.txt
-    if [ -f "$admin_list" ]; then
-        while IFS= read -r admin; do
-            if [[ -n "$admin" && ! "$admin" =~ ^[[:space:]]*# && ! "$admin" =~ "Usernames in this file" ]]; then
-                if ! grep -q -i "^$admin$" "$AUTHORIZED_ADMINS_FILE"; then
-                    print_warning "Unauthorized admin detected: $admin"
-                    send_server_command "/unadmin $admin"
-                    remove_from_list_file "$admin" "admin"
-                    print_success "Removed unauthorized admin: $admin"
-                fi
-            fi
-        done < <(grep -v "^[[:space:]]*#" "$admin_list")
-    fi
-    
-    # Check modlist.txt against authorized_mods.txt
-    if [ -f "$mod_list" ]; then
-        while IFS= read -r mod; do
-            if [[ -n "$mod" && ! "$mod" =~ ^[[:space:]]*# && ! "$mod" =~ "Usernames in this file" ]]; then
-                if ! grep -q -i "^$mod$" "$AUTHORIZED_MODS_FILE"; then
-                    print_warning "Unauthorized mod detected: $mod"
-                    send_server_command "/unmod $mod"
-                    remove_from_list_file "$mod" "mod"
-                    print_success "Removed unauthorized mod: $mod"
-                fi
-            fi
-        done < <(grep -v "^[[:space:]]*#" "$mod_list")
-    fi
-}
 
 # Function to add player to authorized list
 add_to_authorized() {
@@ -134,96 +89,9 @@ add_to_authorized() {
     fi
 }
 
-# Function to remove player from authorized list
-remove_from_authorized() {
-    local player_name="$1" list_type="$2"
-    local auth_file="$LOG_DIR/authorized_${list_type}s.txt"
-    
-    [ ! -f "$auth_file" ] && print_error "Authorization file not found: $auth_file" && return 1
-    
-    # Use case-insensitive deletion with sed
-    if grep -q -i "^$player_name$" "$auth_file"; then
-        sed -i "/^$player_name$/Id" "$auth_file"
-        print_success "Removed $player_name from authorized ${list_type}s"
-        return 0
-    else
-        print_warning "Player $player_name not found in authorized ${list_type}s"
-        return 1
-    fi
-}
-
-# Initialize admin offenses tracking
-initialize_admin_offenses() {
-    [ ! -f "$ADMIN_OFFENSES_FILE" ] && echo '{}' > "$ADMIN_OFFENSES_FILE" && 
-    print_success "Admin offenses tracking file created: $ADMIN_OFFENSES_FILE"
-}
-
-# Function to record admin offense
-record_admin_offense() {
-    local admin_name="$1" current_time=$(date +%s)
-    local offenses_data=$(read_json_file "$ADMIN_OFFENSES_FILE" 2>/dev/null || echo '{}')
-    local current_offenses=$(echo "$offenses_data" | jq -r --arg admin "$admin_name" '.[$admin]?.count // 0')
-    local last_offense_time=$(echo "$offenses_data" | jq -r --arg admin "$admin_name" '.[$admin]?.last_offense // 0')
-    
-    [ $((current_time - last_offense_time)) -gt 300 ] && current_offenses=0
-    current_offenses=$((current_offenses + 1))
-    
-    offenses_data=$(echo "$offenses_data" | jq --arg admin "$admin_name" \
-        --argjson count "$current_offenses" --argjson time "$current_time" \
-        '.[$admin] = {"count": $count, "last_offense": $time}')
-    
-    write_json_file "$ADMIN_OFFENSES_FILE" "$offenses_data"
-    print_warning "Recorded offense #$current_offenses for admin $admin_name"
-    return $current_offenses
-}
-
-# Function to clear admin offenses
-clear_admin_offenses() {
-    local admin_name="$1"
-    local offenses_data=$(read_json_file "$ADMIN_OFFENSES_FILE" 2>/dev/null || echo '{}')
-    offenses_data=$(echo "$offenses_data" | jq --arg admin "$admin_name" 'del(.[$admin])')
-    write_json_file "$ADMIN_OFFENSES_FILE" "$offenses_data"
-    print_success "Cleared offenses for admin $admin_name"
-}
-
-# Function to remove player from list file
-remove_from_list_file() {
-    local player_name="$1" list_type="$2"
-    local list_file="$LOG_DIR/${list_type}list.txt"
-    
-    [ ! -f "$list_file" ] && print_error "List file not found: $list_file" && return 1
-    
-    # Use case-insensitive deletion with sed
-    if grep -v "^[[:space:]]*#" "$list_file" | grep -q -i "^$player_name$"; then
-        sed -i "/^$player_name$/Id" "$list_file"
-        print_success "Removed $player_name from ${list_type}list.txt"
-        return 0
-    else
-        print_warning "Player $player_name not found in ${list_type}list.txt"
-        return 1
-    fi
-}
-
-# Function to send delayed unadmin/unmod commands (SILENT VERSION)
-send_delayed_uncommands() {
-    local target_player="$1" command_type="$2"
-    (
-        sleep 2; send_server_command_silent "/un${command_type} $target_player"
-        sleep 2; send_server_command_silent "/un${command_type} $target_player"
-        sleep 1; send_server_command_silent "/un${command_type} $target_player"
-        remove_from_list_file "$target_player" "$command_type"
-    ) &
-}
-
-# Silent version of send_server_command
-send_server_command_silent() {
-    screen -S "$SCREEN_SERVER" -X stuff "$1$(printf \\r)" 2>/dev/null
-}
-
 initialize_economy() {
     [ ! -f "$ECONOMY_FILE" ] && echo '{"players": {}, "transactions": []}' > "$ECONOMY_FILE" &&
     print_success "Economy data file created: $ECONOMY_FILE"
-    initialize_admin_offenses
 }
 
 is_player_in_list() {
@@ -314,19 +182,6 @@ show_welcome_message() {
     fi
 }
 
-show_help_if_needed() {
-    local player_name="$1" current_time=$(date +%s)
-    local current_data=$(read_json_file "$ECONOMY_FILE")
-    local last_help_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_help_time // 0')
-    last_help_time=${last_help_time:-0}
-    
-    if [ "$last_help_time" -eq 0 ] || [ $((current_time - last_help_time)) -ge 300 ]; then
-        send_server_command "$player_name, type !help to see available commands."
-        current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_help_time = $time')
-        write_json_file "$ECONOMY_FILE" "$current_data"
-    fi
-}
-
 send_server_command() {
     if screen -S "$SCREEN_SERVER" -X stuff "$1$(printf \\r)" 2>/dev/null; then
         print_success "Sent message to server: $1"
@@ -390,68 +245,6 @@ process_give_rank() {
     send_server_command "Congratulations! $giver_name has gifted $rank_type rank to $target_player for $cost tickets."
     send_server_command "$giver_name, your new ticket balance: $new_tickets"
     return 0
-}
-
-# Function to handle unauthorized admin/mod commands
-handle_unauthorized_command() {
-    local player_name="$1" command="$2" target_player="$3"
-    
-    if is_player_in_list "$player_name" "admin"; then
-        print_error "UNAUTHORIZED COMMAND: Admin $player_name attempted to use $command on $target_player"
-        send_server_command "WARNING: Admin $player_name attempted unauthorized rank assignment!"
-        
-        local command_type=""
-        [ "$command" = "/admin" ] && command_type="admin"
-        [ "$command" = "/mod" ] && command_type="mod"
-        
-        if [ -n "$command_type" ]; then
-            send_server_command_silent "/un${command_type} $target_player"
-            remove_from_list_file "$target_player" "$command_type"
-            print_success "Revoked ${command_type} rank from $target_player"
-            send_delayed_uncommands "$target_player" "$command_type"
-        fi
-        
-        record_admin_offense "$player_name"
-        local offense_count=$?
-        
-        if [ "$offense_count" -eq 1 ]; then
-            send_server_command "$player_name, this is your first warning! Only the server console can assign ranks using !set_admin or !set_mod."
-            print_warning "First offense recorded for admin $player_name"
-        elif [ "$offense_count" -eq 2 ]; then
-            print_warning "SECOND OFFENSE: Admin $player_name is being demoted to mod for unauthorized command usage"
-            
-            # First add to authorized mods before removing admin privileges
-            add_to_authorized "$player_name" "mod"
-            
-            # Remove from authorized admins
-            remove_from_authorized "$player_name" "admin"
-            
-            # Remove admin privileges
-            send_server_command_silent "/unadmin $player_name"
-            remove_from_list_file "$player_name" "admin"
-            
-            # Assign mod rank - ensure the player is added to modlist before sending the command
-            send_server_command "/mod $player_name"
-            send_server_command "ALERT: Admin $player_name has been demoted to moderator for repeatedly attempting unauthorized admin commands!"
-            send_server_command "Only the server console can assign ranks using !set_admin or !set_mod."
-            
-            # Clear offenses after punishment
-            clear_admin_offenses "$player_name"
-        fi
-    else
-        print_warning "Non-admin player $player_name attempted to use $command on $target_player"
-        send_server_command "$player_name, you don't have permission to assign ranks."
-        
-        if [ "$command" = "/admin" ]; then
-            send_server_command_silent "/unadmin $target_player"
-            remove_from_list_file "$target_player" "admin"
-            send_delayed_uncommands "$target_player" "admin"
-        elif [ "$command" = "/mod" ]; then
-            send_server_command_silent "/unmod $target_player"
-            remove_from_list_file "$target_player" "mod"
-            send_delayed_uncommands "$target_player" "mod"
-        fi
-    fi
 }
 
 process_message() {
@@ -653,7 +446,6 @@ cleanup() {
     print_status "Cleaning up..."
     rm -f "$admin_pipe" 2>/dev/null
     # Kill background processes
-    kill $validation_pid 2>/dev/null
     kill $(jobs -p) 2>/dev/null
     print_status "Cleanup done."
     exit 0
@@ -663,13 +455,7 @@ monitor_log() {
     local log_file="$1"
     LOG_FILE="$log_file"
 
-    initialize_authorization_files
-
-    # Start authorization validation in background
-    (
-        while true; do sleep 3; validate_authorization; done
-    ) &
-    local validation_pid=$!
+    initialize_economy
 
     # Set up signal handling
     trap cleanup EXIT INT TERM
@@ -739,20 +525,6 @@ monitor_log() {
             continue
         fi
 
-        # Detect unauthorized admin/mod commands
-        if [[ "$line" =~ ([a-zA-Z0-9_]+):\ \/(admin|mod)\ ([a-zA-Z0-9_]+) ]]; then
-            local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
-            
-            # Validate player names
-            if ! is_valid_player_name "$command_user" || ! is_valid_player_name "$target_player"; then
-                print_warning "Invalid player name in command: $command_user or $target_player"
-                continue
-            fi
-            
-            [ "$command_user" != "SERVER" ] && handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
-            continue
-        fi
-
         if [[ "$line" =~ Player\ Disconnected\ ([a-zA-Z0-9_]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             [ "$player_name" == "SERVER" ] && continue
@@ -789,7 +561,6 @@ monitor_log() {
 
     wait
     rm -f "$admin_pipe"
-    kill $validation_pid 2>/dev/null
 }
 
 if [ $# -eq 1 ] || [ $# -eq 2 ]; then
