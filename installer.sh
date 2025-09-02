@@ -7,8 +7,6 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
-ORANGE='\033[0;33m'
 PURPLE='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
@@ -37,15 +35,7 @@ print_header() {
 }
 
 print_step() {
-    echo -e "${CYAN}[STEP]${NC} $1"
-}
-
-# Function to display a progress bar
-progress_bar() {
-    local PROG_BAR='####################'
-    local BLANK_BAR='                    '
-    local PROGRESS=$1
-    printf "\r[%.*s%.*s] %d%%" $PROGRESS "$PROG_BAR" $((20-PROGRESS)) "$BLANK_BAR" $((PROGRESS*5))
+    echo -e "${CYAN}[STEP $1]${NC} $2"
 }
 
 # Function to find a library
@@ -98,11 +88,10 @@ declare -a PACKAGES_ARCH=(
 
 print_header "THE BLOCKHEADS LINUX SERVER INSTALLER"
 print_header "FOR NEW USERS: This script will install everything you need"
-print_header "Please be patient as it may take several minutes"
 
 # Function to build libdispatch from source
 build_libdispatch() {
-    print_step "Building libdispatch from source..."
+    print_status "Building libdispatch from source..."
     local DIR=$(pwd)
     if [ -d "${DIR}/swift-corelibs-libdispatch/build" ]; then
         rm -rf "${DIR}/swift-corelibs-libdispatch"
@@ -146,7 +135,7 @@ install_packages() {
     source /etc/os-release
     case $ID in
         debian|ubuntu|pop)
-            print_step "Installing packages for Debian/Ubuntu..."
+            print_status "Installing packages for Debian/Ubuntu..."
             apt-get update || return 1
             for package in "${PACKAGES_DEBIAN[@]}"; do
                 if ! apt-get install -y "$package"; then
@@ -161,7 +150,7 @@ install_packages() {
             fi
             ;;
         arch)
-            print_step "Installing packages for Arch Linux..."
+            print_status "Installing packages for Arch Linux..."
             pacman -Sy --noconfirm --needed "${PACKAGES_ARCH[@]}" || return 1
             ;;
         *)
@@ -173,7 +162,7 @@ install_packages() {
     return 0
 }
 
-print_step "[1/8] Installing required packages..."
+print_step "1/7" "Installing required packages..."
 if ! install_packages; then
     print_error "Failed to install required packages"
     print_status "Trying alternative approach..."
@@ -186,7 +175,7 @@ if ! install_packages; then
     }
 fi
 
-print_step "[2/8] Downloading helper scripts from GitHub..."
+print_step "2/7" "Downloading helper scripts from GitHub..."
 if ! wget -q -O server_manager.sh "$SERVER_MANAGER_URL"; then
     print_error "Failed to download server_manager.sh from GitHub."
     print_status "Trying alternative URL..."
@@ -220,16 +209,16 @@ print_success "Helper scripts downloaded"
 
 chmod +x server_manager.sh server_bot.sh anticheat_secure.sh
 
-print_step "[3/8] Downloading server archive..."
+print_step "3/7" "Downloading server archive..."
 DOWNLOAD_SUCCESS=0
 for URL in "${SERVER_URLS[@]}"; do
-    print_status "Trying: $URL"
+    print_status "Trying: $(echo "$URL" | cut -d'/' -f3)"
     if wget -q --timeout=30 --tries=2 "$URL" -O "$TEMP_FILE"; then
         DOWNLOAD_SUCCESS=1
-        print_success "Download successful from $URL"
+        print_success "Download successful"
         break
     else
-        print_warning "Failed to download from $URL"
+        print_warning "Failed to download from this source"
     fi
 done
 
@@ -238,7 +227,7 @@ if [ $DOWNLOAD_SUCCESS -eq 0 ]; then
     exit 1
 fi
 
-print_step "[4/8] Extracting files..."
+print_step "4/7" "Extracting files..."
 EXTRACT_DIR="/tmp/blockheads_extract_$$"
 mkdir -p "$EXTRACT_DIR"
 
@@ -271,7 +260,7 @@ fi
 
 chmod +x "$SERVER_BINARY"
 
-print_step "[5/8] Applying comprehensive patchelf compatibility patches..."
+print_step "5/7" "Applying compatibility patches..."
 # Define libraries to patch
 declare -A LIBS=(
     ["libgnustep-base.so.1.24"]="$(find_library 'libgnustep-base.so' || echo 'libgnustep-base.so.1.28')"
@@ -285,39 +274,32 @@ declare -A LIBS=(
     ["libdispatch.so"]="$(find_library 'libdispatch.so' || echo 'libdispatch.so.0')"
 )
 
-TOTAL_LIBS=${#LIBS[@]}
-COUNT=0
-
 for LIB in "${!LIBS[@]}"; do
     if [ -z "${LIBS[$LIB]}" ]; then
         print_warning "Failed to locate up-to-date matching library for $LIB, skipping..."
         continue
     fi
-    COUNT=$((COUNT+1))
-    PERCENTAGE=$((COUNT * 100 / TOTAL_LIBS / 5))
-    echo -n "Patching $LIB -> ${LIBS[$LIB]} "
-    progress_bar $PERCENTAGE
+    print_status "Patching $LIB -> ${LIBS[$LIB]}"
     if ! patchelf --replace-needed "$LIB" "${LIBS[$LIB]}" "$SERVER_BINARY"; then
         print_warning "Failed to patch $LIB, trying to continue..."
     fi
 done
 
-echo -e "\n"
 print_success "Compatibility patches applied"
 
-print_step "[6/8] Set ownership and permissions for helper scripts and binary"
+print_step "6/7" "Setting permissions..."
 chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh anticheat_secure.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
 chmod 755 server_manager.sh server_bot.sh anticheat_secure.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
 print_success "Permissions set"
 
-print_step "[7/8] Create economy data file"
+print_step "7/7" "Creating data files..."
 sudo -u "$ORIGINAL_USER" bash -c 'echo "{\"players\": {}, \"transactions\": []}" > economy_data.json' || true
 chown "$ORIGINAL_USER:$ORIGINAL_USER" economy_data.json 2>/dev/null || true
 print_success "Economy data file created"
 
 rm -f "$TEMP_FILE"
 
-print_step "[8/8] Installation completed successfully"
+print_header "INSTALLATION COMPLETED SUCCESSFULLY"
 echo ""
 print_header "USAGE INSTRUCTIONS FOR NEW USERS"
 print_status "1. FIRST create a world manually with:"
@@ -339,11 +321,6 @@ echo "   ./server_manager.sh help"
 echo "   ./blockheads_server171 -h"
 echo ""
 print_warning "NOTE: Default port is 12153 if not specified"
-print_header "NEW FEATURES"
-print_status "Added anticheat system: anticheat_secure.sh"
-print_status "New player commands: !give_rank_mod and !give_rank_admin"
-print_status "All data files are now stored with the server world data"
 print_header "NEED HELP?"
 print_status "Visit the GitHub repository for more information:"
 print_status "https://github.com/noxthewildshadow/The-Blockheads-Server-BETA"
-print_header "INSTALLATION COMPLETE"
