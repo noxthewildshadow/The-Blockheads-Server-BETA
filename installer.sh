@@ -40,6 +40,24 @@ print_step() {
     echo -e "${CYAN}[STEP]${NC} $1"
 }
 
+# Function to display a progress bar
+progress_bar() {
+    local PROG_BAR='####################'
+    local BLANK_BAR='                    '
+    local PROGRESS=$1
+    printf "\r[%.*s%.*s] %d%%" $PROGRESS "$PROG_BAR" $((20-PROGRESS)) "$BLANK_BAR" $((PROGRESS*5))
+}
+
+# Function to find a library
+find_library() {
+    SEARCH=$1
+    LIBRARY=$(ldconfig -p | grep -F "$SEARCH" -m 1 | awk '{print $1}')
+    if [ -z "$LIBRARY" ]; then
+        return 1
+    fi
+    printf '%s' "$LIBRARY"
+}
+
 # Check for root privileges
 if [ "$EUID" -ne 0 ]; then
     print_error "This script requires root privileges."
@@ -51,7 +69,10 @@ ORIGINAL_USER=${SUDO_USER:-$USER}
 USER_HOME=$(getent passwd "$ORIGINAL_USER" | cut -d: -f6)
 
 # Configuration
-SERVER_URL="https://web.archive.org/web/20240309015235if_/https://majicdave.com/share/blockheads_server171.tar.gz"
+SERVER_URLS=(
+    "https://web.archive.org/web/20240309015235if_/https://majicdave.com/share/blockheads_server171.tar.gz"
+    "https://archive.org/download/BHSv171/blockheads_server171.tar.gz"
+)
 TEMP_FILE="/tmp/blockheads_server171.tar.gz"
 SERVER_BINARY="blockheads_server171"
 
@@ -61,25 +82,105 @@ SERVER_MANAGER_URL="$RAW_BASE/server_manager.sh"
 BOT_SCRIPT_URL="$RAW_BASE/server_bot.sh"
 ANTICHEAT_SCRIPT_URL="$RAW_BASE/anticheat_secure.sh"
 
+# Package lists for different distributions
+declare -a PACKAGES_DEBIAN=(
+    'git' 'cmake' 'ninja-build' 'clang' 'systemtap-sdt-dev' 'libbsd-dev' 'linux-libc-dev'
+    'curl' 'tar' 'grep' 'mawk' 'patchelf' '^libgnustep-base1\.[0-9]*$' 'libobjc4'
+    '^libgnutls[0-9]*$' '^libgcrypt[0-9]*$' 'libxml2' '^libffi[0-9]*$' '^libnsl[0-9]*$'
+    'zlib1g' '^libicu[0-9]*$' 'libicu-dev' 'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof'
+)
+
+declare -a PACKAGES_ARCH=(
+    'base-devel' 'git' 'cmake' 'ninja' 'clang' 'systemtap' 'libbsd' 'curl' 'tar' 'grep'
+    'gawk' 'patchelf' 'gnustep-base' 'gcc-libs' 'gnutls' 'libgcrypt' 'libxml2' 'libffi'
+    'libnsl' 'zlib' 'icu' 'libdispatch' 'wget' 'jq' 'screen' 'lsof'
+)
+
 print_header "THE BLOCKHEADS LINUX SERVER INSTALLER"
 print_header "FOR NEW USERS: This script will install everything you need"
 print_header "Please be patient as it may take several minutes"
 
+# Function to build libdispatch from source
+build_libdispatch() {
+    print_step "Building libdispatch from source..."
+    local DIR=$(pwd)
+    if [ -d "${DIR}/swift-corelibs-libdispatch/build" ]; then
+        rm -rf "${DIR}/swift-corelibs-libdispatch"
+    fi
+    
+    if ! git clone --depth 1 'https://github.com/swiftlang/swift-corelibs-libdispatch.git' "${DIR}/swift-corelibs-libdispatch"; then
+        print_error "Failed to clone libdispatch repository"
+        return 1
+    fi
+    
+    mkdir -p "${DIR}/swift-corelibs-libdispatch/build" || return 1
+    cd "${DIR}/swift-corelibs-libdispatch/build" || return 1
+    
+    if ! cmake -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ ..; then
+        print_error "CMake configuration failed for libdispatch"
+        return 1
+    fi
+    
+    if ! ninja "-j$(nproc)"; then
+        print_error "Failed to build libdispatch"
+        return 1
+    fi
+    
+    if ! ninja install; then
+        print_error "Failed to install libdispatch"
+        return 1
+    fi
+    
+    cd "${DIR}" || return 1
+    ldconfig
+    return 0
+}
+
+# Function to install packages based on distribution
+install_packages() {
+    if [ ! -f /etc/os-release ]; then
+        print_error "Could not detect the operating system because /etc/os-release does not exist."
+        return 1
+    fi
+    
+    source /etc/os-release
+    case $ID in
+        debian|ubuntu|pop)
+            print_step "Installing packages for Debian/Ubuntu..."
+            apt-get update || return 1
+            for package in "${PACKAGES_DEBIAN[@]}"; do
+                if ! apt-get install -y "$package"; then
+                    print_warning "Failed to install $package, trying to continue..."
+                fi
+            done
+            
+            # Check if libdispatch is available
+            if ! find_library 'libdispatch.so'; then
+                print_warning "libdispatch.so not found, building from source..."
+                build_libdispatch
+            fi
+            ;;
+        arch)
+            print_step "Installing packages for Arch Linux..."
+            pacman -Sy --noconfirm --needed "${PACKAGES_ARCH[@]}" || return 1
+            ;;
+        *)
+            print_error "Unsupported operating system: $ID"
+            return 1
+            ;;
+    esac
+    
+    return 0
+}
+
 print_step "[1/8] Installing required packages..."
-{
-    add-apt-repository multiverse -y || true
-    apt-get update -y
-    apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common
-} > /dev/null 2>&1
-if [ $? -eq 0 ]; then
-    print_success "Required packages installed"
-else
+if ! install_packages; then
     print_error "Failed to install required packages"
     print_status "Trying alternative approach..."
-    apt-get install -y software-properties-common
-    add-apt-repository multiverse -y
+    
+    # Fallback to basic package installation
     apt-get update -y
-    apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof || {
+    apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common || {
         print_error "Still failed to install packages. Please check your internet connection."
         exit 1
     }
@@ -120,14 +221,22 @@ print_success "Helper scripts downloaded"
 chmod +x server_manager.sh server_bot.sh anticheat_secure.sh
 
 print_step "[3/8] Downloading server archive..."
-if ! wget -q --timeout=60 --tries=3 "$SERVER_URL" -O "$TEMP_FILE"; then
-    print_error "Failed to download server file."
-    print_status "This might be due to:"
-    print_status "1. Internet connection issues"
-    print_status "2. The server file is no longer available at the expected URL"
+DOWNLOAD_SUCCESS=0
+for URL in "${SERVER_URLS[@]}"; do
+    print_status "Trying: $URL"
+    if wget -q --timeout=30 --tries=2 "$URL" -O "$TEMP_FILE"; then
+        DOWNLOAD_SUCCESS=1
+        print_success "Download successful from $URL"
+        break
+    else
+        print_warning "Failed to download from $URL"
+    fi
+done
+
+if [ $DOWNLOAD_SUCCESS -eq 0 ]; then
+    print_error "Failed to download server file from all sources."
     exit 1
 fi
-print_success "Server archive downloaded"
 
 print_step "[4/8] Extracting files..."
 EXTRACT_DIR="/tmp/blockheads_extract_$$"
@@ -162,16 +271,38 @@ fi
 
 chmod +x "$SERVER_BINARY"
 
-print_step "[5/8] Applying patchelf compatibility patches (best-effort)..."
-patchelf --replace-needed libgnustep-base.so.1.24 libgnustep-base.so.1.28 "$SERVER_BINARY" || print_warning "libgnustep-base patch may have failed"
-patchelf --replace-needed libobjc.so.4.6 libobjc.so.4 "$SERVER_BINARY" || true
-patchelf --replace-needed libgnutls.so.26 libgnutls.so.30 "$SERVER_BINARY" || true
-patchelf --replace-needed libgcrypt.so.11 libgcrypt.so.20 "$SERVER_BINARY" || true
-patchelf --replace-needed libffi.so.6 libffi.so.8 "$SERVER_BINARY" || true
-patchelf --replace-needed libicui18n.so.48 libicui18n.so.70 "$SERVER_BINARY" || true
-patchelf --replace-needed libicuuc.so.48 libicuuc.so.70 "$SERVER_BINARY" || true
-patchelf --replace-needed libicudata.so.48 libicudata.so.70 "$SERVER_BINARY" || true
-patchelf --replace-needed libdispatch.so libdispatch.so.0 "$SERVER_BINARY" || true
+print_step "[5/8] Applying comprehensive patchelf compatibility patches..."
+# Define libraries to patch
+declare -A LIBS=(
+    ["libgnustep-base.so.1.24"]="$(find_library 'libgnustep-base.so' || echo 'libgnustep-base.so.1.28')"
+    ["libobjc.so.4.6"]="$(find_library 'libobjc.so' || echo 'libobjc.so.4')"
+    ["libgnutls.so.26"]="$(find_library 'libgnutls.so' || echo 'libgnutls.so.30')"
+    ["libgcrypt.so.11"]="$(find_library 'libgcrypt.so' || echo 'libgcrypt.so.20')"
+    ["libffi.so.6"]="$(find_library 'libffi.so' || echo 'libffi.so.8')"
+    ["libicui18n.so.48"]="$(find_library 'libicui18n.so' || echo 'libicui18n.so.70')"
+    ["libicuuc.so.48"]="$(find_library 'libicuuc.so' || echo 'libicuuc.so.70')"
+    ["libicudata.so.48"]="$(find_library 'libicudata.so' || echo 'libicudata.so.70')"
+    ["libdispatch.so"]="$(find_library 'libdispatch.so' || echo 'libdispatch.so.0')"
+)
+
+TOTAL_LIBS=${#LIBS[@]}
+COUNT=0
+
+for LIB in "${!LIBS[@]}"; do
+    if [ -z "${LIBS[$LIB]}" ]; then
+        print_warning "Failed to locate up-to-date matching library for $LIB, skipping..."
+        continue
+    fi
+    COUNT=$((COUNT+1))
+    PERCENTAGE=$((COUNT * 100 / TOTAL_LIBS / 5))
+    echo -n "Patching $LIB -> ${LIBS[$LIB]} "
+    progress_bar $PERCENTAGE
+    if ! patchelf --replace-needed "$LIB" "${LIBS[$LIB]}" "$SERVER_BINARY"; then
+        print_warning "Failed to patch $LIB, trying to continue..."
+    fi
+done
+
+echo -e "\n"
 print_success "Compatibility patches applied"
 
 print_step "[6/8] Set ownership and permissions for helper scripts and binary"
