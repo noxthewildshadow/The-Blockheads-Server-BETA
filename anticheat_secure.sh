@@ -282,7 +282,7 @@ handle_unauthorized_command() {
             send_server_command "Only the server console can assign ranks using !set_admin or !set_mod."
             
             # Clear offenses after punishment
-            clear_admin_offenses "$admin_name"
+            clear_admin_offenses "$player_name"
         fi
     else
         print_warning "Non-admin player $player_name attempted to use $command on $target_player"
@@ -333,7 +333,8 @@ handle_invalid_player_name() {
         # Wait 3 seconds and then kick the player
         (
             sleep 3
-            # Use quotes around the player name to handle spaces
+            # Use the exact player name with all spaces for the kick command
+            # This ensures players with spaces in their names are properly kicked
             send_server_command "/kick \"$player_name\""
             print_success "Kicked player with invalid name: '$player_name'"
         ) &
@@ -372,15 +373,15 @@ monitor_log() {
 
     # Monitor the log file for unauthorized commands and invalid player names
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
-        # Detect player connections with invalid names - MODIFIED REGEX TO CAPTURE SPACES
-        if [[ "$line" =~ Player\ Connected\ (.*)\ \|\ ([0-9a-fA-F.:]+) ]]; then
+        # Detect player connections with invalid names
+        if [[ "$line" =~ Player\ Connected\ ([^|]+)\ \|\ ([0-9a-fA-F.:]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}"
             [ "$player_name" == "SERVER" ] && continue
             
-            # Trim leading/trailing spaces from player name
-            player_name=$(echo "$player_name" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            # Trim leading/trailing spaces from player name for display
+            local display_name=$(echo "$player_name" | xargs)
             
-            # Check for invalid player names
+            # Check for invalid player names - use the original name with spaces
             handle_invalid_player_name "$player_name" "$player_ip"
         fi
 
