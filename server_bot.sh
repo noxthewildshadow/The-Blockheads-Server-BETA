@@ -22,26 +22,59 @@ print_header() {
 }
 print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
-# Function to validate player names - IMPROVED VALIDATION
+# Function to validate player names - ENHANCED TO DETECT SPACES
 is_valid_player_name() {
     local player_name="$1"
-    # Trim leading/trailing spaces
-    local trimmed_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    # Check if name is empty, contains only spaces, or matches unnamed pattern
-    [[ -n "$trimmed_name" && ! "$trimmed_name" =~ ^[[:space:]]*$ && ! "$trimmed_name" =~ ^[uU]nnamed[0-9]*$ ]]
+    # Check if name contains only valid characters and is not empty/whitespace
+    [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]] && [[ ! "$player_name" =~ ^[[:space:]]*$ ]]
 }
 
-# Function to kick player after delay for invalid name
-kick_invalid_name_player() {
+# Function to detect and handle invalid player names
+handle_invalid_player_name() {
     local player_name="$1"
-    local port="$2"
-    local screen_server="blockheads_server_$port"
+    local player_ip="$2"
     
-    print_warning "Player '$player_name' has invalid name. Kicking in 3 seconds..."
-    send_server_command "WARNING: Player '$player_name' has an invalid name. Please use a proper name without spaces."
+    # Check if name is empty or contains only spaces
+    if [[ "$player_name" =~ ^[[:space:]]*$ ]]; then
+        print_error "EMPTY PLAYER NAME DETECTED from IP: $player_ip"
+        return 1
+    fi
     
-    # Wait 3 seconds then kick
-    (sleep 3; screen -S "$screen_server" -X stuff "/kick $player_name$(printf \\r)") &
+    # Check if name contains spaces
+    if [[ "$player_name" =~ [[:space:]] ]]; then
+        print_error "INVALID PLAYER NAME DETECTED: '$player_name' from IP: $player_ip"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Function to safely read JSON files with locking
+read_json_file() {
+    local file_path="$1"
+    if [ ! -f "$file_path" ]; then
+        print_error "JSON file not found: $file_path"
+        echo "{}"
+        return 1
+    fi
+    
+    # Use flock with proper file descriptor handling
+    flock -s 200 cat "$file_path" 200>"${file_path}.lock"
+}
+
+# Function to safely write JSON files with locking
+write_json_file() {
+    local file_path="$1"
+    local content="$2"
+    
+    if [ ! -f "$file_path" ]; then
+        print_error "JSON file not found: $file_path"
+        return 1
+    fi
+    
+    # Use flock with proper file descriptor handling
+    flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
+    return $?
 }
 
 # Bot configuration - now supports multiple servers
@@ -149,7 +182,6 @@ show_welcome_message() {
     local current_time=$(date +%s)
     local current_data=$(read_json_file "$ECONOMY_FILE")
     local last_welcome_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_welcome_time // 0')
-    last_welcome_time=${last_welcome_time:-0}
     
     if [ "$force_send" -eq 1 ] || [ "$last_welcome_time" -eq 0 ] || [ $((current_time - last_welcome_time)) -ge 180 ]; then
         if [ "$is_new_player" = "true" ]; then
@@ -300,20 +332,16 @@ process_message() {
             fi
             ;;
         "!give_admin "*)
-            if [[ "$message" =~ !give_admin\ ([^:]+) ]]; then
+            if [[ "$message" =~ !give_admin\ ([a-zA-Z0-9_]+) ]]; then
                 local target_player="${BASH_REMATCH[1]}"
-                # Trim spaces from target player name
-                target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
                 process_give_rank "$player_name" "$target_player" "admin"
             else
                 send_server_command "Usage: !give_admin PLAYER_NAME"
             fi
             ;;
         "!give_mod "*)
-            if [[ "$message" =~ !give_mod\ ([^:]+) ]]; then
+            if [[ "$message" =~ !give_mod\ ([a-zA-Z0-9_]+) ]]; then
                 local target_player="${BASH_REMATCH[1]}"
-                # Trim spaces from target player name
-                target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
                 process_give_rank "$player_name" "$target_player" "mod"
             else
                 send_server_command "Usage: !give_mod PLAYER_NAME"
@@ -336,15 +364,12 @@ process_message() {
 process_admin_command() {
     local command="$1" current_data=$(read_json_file "$ECONOMY_FILE")
     
-    if [[ "$command" =~ ^!send_ticket\ ([^:]+)\ ([0-9]+)$ ]]; then
+    if [[ "$command" =~ ^!send_ticket\ ([a-zA-Z0-9_]+)\ ([0-9]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}" tickets_to_add="${BASH_REMATCH[2]}"
-        
-        # Trim spaces from player name
-        player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         
         # Validate player name
         if ! is_valid_player_name "$player_name"; then
-            print_error "Invalid player name: '$player_name'"
+            print_error "Invalid player name: $player_name"
             return 1
         fi
         
@@ -371,15 +396,12 @@ process_admin_command() {
         write_json_file "$ECONOMY_FILE" "$current_data"
         print_success "Added $tickets_to_add tickets to $player_name (Total: $new_tickets)"
         send_server_command "$player_name received $tickets_to_add tickets from admin! Total: $new_tickets"
-    elif [[ "$command" =~ ^!set_mod\ ([^:]+)$ ]]; then
+    elif [[ "$command" =~ ^!set_mod\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
-        
-        # Trim spaces from player name
-        player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         
         # Validate player name
         if ! is_valid_player_name "$player_name"; then
-            print_error "Invalid player name: '$player_name'"
+            print_error "Invalid player name: $player_name"
             return 1
         fi
         
@@ -388,15 +410,12 @@ process_admin_command() {
         add_to_authorized "$player_name" "mod"
         screen -S "$SCREEN_SERVER" -X stuff "/mod $player_name$(printf \\r)"
         send_server_command "$player_name has been set as MOD by server console!"
-    elif [[ "$command" =~ ^!set_admin\ ([^:]+)$ ]]; then
+    elif [[ "$command" =~ ^!set_admin\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
-        
-        # Trim spaces from player name
-        player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         
         # Validate player name
         if ! is_valid_player_name "$player_name"; then
-            print_error "Invalid player name: '$player_name'"
+            print_error "Invalid player name: $player_name"
             return 1
         fi
         
@@ -499,19 +518,20 @@ monitor_log() {
 
     # Monitor the log file
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
-        # Detect player connections - FIXED REGEX FOR NAMES WITH SPACES
-        if [[ "$line" =~ Player\ Connected\ ([^:]+)\ \|\ ([0-9a-fA-F.:]+) ]]; then
+        # Detect player connections
+        if [[ "$line" =~ Player\ Connected\ ([^|]+)\ \|\ ([0-9a-fA-F.:]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}"
+            player_name=$(echo "$player_name" | xargs)  # Trim whitespace
             [ "$player_name" == "SERVER" ] && continue
-            
-            # Trim spaces from player name
-            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
-            # Validate player name - NEW SECURITY FEATURE
+            # Check for invalid player names (spaces or empty)
+            if ! handle_invalid_player_name "$player_name" "$player_ip"; then
+                continue  # Skip processing if player is invalid
+            fi
+
+            # Validate player name
             if ! is_valid_player_name "$player_name"; then
-                print_warning "Player with invalid name detected: '$player_name' (IP: $player_ip)"
-                # Kick player after 3 seconds
-                kick_invalid_name_player "$player_name" "$PORT"
+                print_warning "Invalid player name detected: $player_name"
                 continue
             fi
 
@@ -537,16 +557,14 @@ monitor_log() {
             continue
         fi
 
-        if [[ "$line" =~ Player\ Disconnected\ ([^:]+) ]]; then
+        if [[ "$line" =~ Player\ Disconnected\ ([^|]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
+            player_name=$(echo "$player_name" | xargs)  # Trim whitespace
             [ "$player_name" == "SERVER" ] && continue
-            
-            # Trim spaces from player name
-            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             # Validate player name
             if ! is_valid_player_name "$player_name"; then
-                print_warning "Invalid player name detected: '$player_name'"
+                print_warning "Invalid player name detected: $player_name"
                 continue
             fi
             
@@ -555,17 +573,19 @@ monitor_log() {
             continue
         fi
 
-        # FIXED REGEX FOR NAMES WITH SPACES IN CHAT MESSAGES
         if [[ "$line" =~ ([^:]+):\ (.+)$ ]]; then
             local player_name="${BASH_REMATCH[1]}" message="${BASH_REMATCH[2]}"
+            player_name=$(echo "$player_name" | xargs)  # Trim whitespace
             [ "$player_name" == "SERVER" ] && continue
             
-            # Trim spaces from player name
-            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            
+            # Check for invalid player names (spaces or empty)
+            if ! handle_invalid_player_name "$player_name" "unknown"; then
+                continue  # Skip processing if player is invalid
+            fi
+
             # Validate player name
             if ! is_valid_player_name "$player_name"; then
-                print_warning "Invalid player name detected in chat: '$player_name'"
+                print_warning "Invalid player name detected: $player_name"
                 continue
             fi
             
