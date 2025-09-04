@@ -470,21 +470,23 @@ cleanup() {
 
 # Function to handle invalid player names
 handle_invalid_player_name() {
-    local player_name="$1" player_ip="$2"
+    local raw_player_name="$1"
+    local player_ip="$2"
+    local player_name_trimmed="$3"
     
     # Check if player name is invalid (empty, only spaces, or contains spaces)
-    if ! is_valid_player_name "$player_name"; then
-        print_warning "INVALID PLAYER NAME DETECTED: '$player_name' (IP: $player_ip)"
+    if ! is_valid_player_name "$player_name_trimmed"; then
+        print_warning "INVALID PLAYER NAME DETECTED: '$raw_player_name' (IP: $player_ip)"
         send_server_command "WARNING: Empty player names are not allowed!"
         send_server_command "Kicking player with empty name in 3 seconds..."
         
         # Wait 3 seconds and then kick the player
         (
             sleep 3
-            # Escape any special characters in the player name for the kick command
-            local safe_player_name=$(printf '%q' "$player_name")
-            send_server_command "/kick $safe_player_name"
-            print_success "Kicked player with invalid name: $player_name"
+            # Use the exact player name with all spaces for the kick command
+            # This ensures players with spaces in their names are properly kicked
+            send_server_command "/kick \"$raw_player_name\""
+            print_success "Kicked player with invalid name: '$raw_player_name'"
         ) &
         
         return 1
@@ -515,7 +517,7 @@ monitor_log() {
     mkfifo "$admin_pipe"
 
     # Background process to read admin commands from the pipe
-    while read -r admin_command < "$admin_pipe"; do
+    while read -r admin_command < "$admin_pipe"; then
         print_status "Processing admin command: $admin_command"
         if [[ "$admin_command" == "!send_ticket "* || "$admin_command" == "!set_mod "* || "$admin_command" == "!set_admin "* ]]; then
             process_admin_command "$admin_command"
@@ -536,16 +538,20 @@ monitor_log() {
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
         # Detect player connections with invalid names
         if [[ "$line" =~ Player\ Connected\ ([^|]+)\ \|\ ([0-9a-fA-F.:]+) ]]; then
-            local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}"
-            [ "$player_name" == "SERVER" ] && continue
+            local raw_player_name="${BASH_REMATCH[1]}"
+            local player_ip="${BASH_REMATCH[2]}"
+            [ "$raw_player_name" == "SERVER" ] && continue
             
-            # Trim leading/trailing spaces from player name
-            player_name=$(echo "$player_name" | xargs)
+            # Trim leading/trailing spaces from player name for validation
+            local player_name_trimmed=$(echo "$raw_player_name" | xargs)
             
-            # Check for invalid player names
-            if ! handle_invalid_player_name "$player_name" "$player_ip"; then
+            # Check for invalid player names - use the original name with spaces
+            if ! handle_invalid_player_name "$raw_player_name" "$player_ip" "$player_name_trimmed"; then
                 continue
             fi
+
+            # Use the trimmed name for economy functions
+            local player_name="$player_name_trimmed"
 
             print_success "Player connected: $player_name (IP: $player_ip)"
 
