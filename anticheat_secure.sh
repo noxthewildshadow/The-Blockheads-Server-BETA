@@ -1,5 +1,7 @@
 #!/bin/bash
 # anticheat_secure.sh - Enhanced security system for The Blockheads server
+# Improved for new users: Better error messages, fixed file locking issues
+# Enhanced to detect and kick players with invalid names (spaces, special characters)
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -31,8 +33,8 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCREEN_SERVER="blockheads_server_$PORT"
 
-# Track warned players to prevent duplicate messages
-declare -A warned_players
+# Track kicked players to avoid duplicate messages
+declare -A KICKED_PLAYERS
 
 # Function to validate player names
 is_valid_player_name() {
@@ -46,40 +48,61 @@ is_valid_player_name() {
 handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="$3"
     
-    # Check if we've already warned this player
-    if [[ -n "${warned_players["$player_hash"]}" ]]; then
-        return 0
-    fi
+    # Skip if already kicked
+    [[ -n "${KICKED_PLAYERS[$player_hash]}" ]] && return 0
     
     # Trim spaces for validation
     local player_name_trimmed=$(echo "$player_name" | xargs)
     
     # Check if name is empty after trimming or contains invalid characters
     if [[ -z "$player_name_trimmed" ]]; then
-        print_warning "EMPTY PLAYER NAME: '$player_name' (IP: $player_ip, Hash: $player_hash)"
-        send_server_command "WARNING: Empty player names are not allowed! Kicking player..."
-        warned_players["$player_hash"]=1
-    elif ! is_valid_player_name "$player_name"; then
-        print_warning "INVALID PLAYER NAME: '$player_name' (IP: $player_ip, Hash: $player_hash)"
+        print_warning "INVALID PLAYER NAME DETECTED: '$player_name' (IP: $player_ip, Hash: $player_hash) - Empty name"
+        send_server_command "WARNING: Empty player names are not allowed! This player will be kicked immediately."
         
-        # Determine specific reason for invalid name
-        if [[ "$player_name" =~ [^a-zA-Z0-9_] ]]; then
-            send_server_command "WARNING: Player name '$player_name' contains invalid characters! Only letters, numbers and underscores are allowed. Kicking player..."
-        else
-            send_server_command "WARNING: Player name '$player_name' is invalid! Kicking player..."
-        fi
-        warned_players["$player_hash"]=1
-    else
-        return 1  # Name is valid
+        # Mark as kicked to avoid duplicate processing
+        KICKED_PLAYERS[$player_hash]=1
+        
+        # Immediate kick (10ms)
+        (
+            usleep 10000  # 10 milliseconds
+            print_warning "Kicking player with empty name: '$player_name'"
+            send_server_command "/kick $player_name"
+        ) &
+        
+        # Safety kick after 3 seconds
+        (
+            sleep 3
+            if [[ -n "${KICKED_PLAYERS[$player_hash]}" ]]; then
+                print_warning "Safety kick for empty name: '$player_name'"
+                send_server_command "/kick $player_name"
+            fi
+        ) &
+        return 0
+    elif ! is_valid_player_name "$player_name"; then
+        print_warning "INVALID PLAYER NAME DETECTED: '$player_name' (IP: $player_ip, Hash: $player_hash) - Contains spaces or special characters"
+        send_server_command "WARNING: Player names with spaces or special characters are not allowed! This player will be kicked immediately."
+        
+        # Mark as kicked to avoid duplicate processing
+        KICKED_PLAYERS[$player_hash]=1
+        
+        # Immediate kick (10ms)
+        (
+            usleep 10000  # 10 milliseconds
+            print_warning "Kicking player with invalid name: '$player_name'"
+            send_server_command "/kick $player_name"
+        ) &
+        
+        # Safety kick after 3 seconds
+        (
+            sleep 3
+            if [[ -n "${KICKED_PLAYERS[$player_hash]}" ]]; then
+                print_warning "Safety kick for invalid name: '$player_name'"
+                send_server_command "/kick $player_name"
+            fi
+        ) &
+        return 0
     fi
-    
-    # Schedule kick after 10ms
-    (
-        usleep 10000  # 10ms delay
-        print_warning "Kicking player with invalid name: '$player_name'"
-        send_server_command "/kick $player_name"
-    ) &
-    return 0
+    return 1
 }
 
 # Function to safely read JSON files with locking
