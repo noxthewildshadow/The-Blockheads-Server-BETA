@@ -46,6 +46,9 @@ fi
 AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 
+# Track warned players to prevent duplicate messages
+declare -A warned_players_bot
+
 # Function to add player to authorized list
 add_to_authorized() {
     local player_name="$1" list_type="$2"
@@ -81,7 +84,11 @@ add_player_if_new() {
     
     # Skip invalid player names
     if ! is_valid_player_name "$player_name"; then
-        print_warning "Skipping economy setup for invalid player name: '$player_name'"
+        # Only warn once per player session
+        if [[ -z "${warned_players_bot["$player_name"]}" ]]; then
+            print_warning "Skipping economy setup for invalid player name: '$player_name'"
+            warned_players_bot["$player_name"]=1
+        fi
         return 1
     fi
     
@@ -142,7 +149,11 @@ show_welcome_message() {
     
     # Skip invalid player names
     if ! is_valid_player_name "$player_name"; then
-        print_warning "Skipping welcome message for invalid player name: '$player_name'"
+        # Only warn once per player session
+        if [[ -z "${warned_players_bot["$player_name"]}" ]]; then
+            print_warning "Skipping welcome message for invalid player name: '$player_name'"
+            warned_players_bot["$player_name"]=1
+        fi
         return
     fi
     
@@ -240,7 +251,11 @@ process_message() {
     
     # Skip invalid player names
     if ! is_valid_player_name "$player_name"; then
-        print_warning "Skipping message processing for invalid player name: '$player_name'"
+        # Only warn once per player session
+        if [[ -z "${warned_players_bot["$player_name"]}" ]]; then
+            print_warning "Skipping message processing for invalid player name: '$player_name'"
+            warned_players_bot["$player_name"]=1
+        fi
         return
     fi
     
@@ -500,7 +515,11 @@ monitor_log() {
 
             # Skip invalid player names
             if ! is_valid_player_name "$player_name"; then
-                print_warning "Skipping invalid player name: '$player_name' (IP: $player_ip)"
+                # Only warn once per player session
+                if [[ -z "${warned_players_bot["$player_name"]}" ]]; then
+                    print_warning "Skipping invalid player name: '$player_name' (IP: $player_ip)"
+                    warned_players_bot["$player_name"]=1
+                fi
                 continue
             fi
 
@@ -532,7 +551,11 @@ monitor_log() {
             
             # Skip invalid player names
             if ! is_valid_player_name "$player_name"; then
-                print_warning "Skipping invalid player name: '$player_name'"
+                # Only warn once per player session
+                if [[ -z "${warned_players_bot["$player_name"]}" ]]; then
+                    print_warning "Skipping invalid player name: '$player_name'"
+                    warned_players_bot["$player_name"]=1
+                fi
                 continue
             fi
             
@@ -547,7 +570,11 @@ monitor_log() {
             
             # Skip invalid player names
             if ! is_valid_player_name "$player_name"; then
-                print_warning "Skipping message from invalid player name: '$player_name'"
+                # Only warn once per player session
+                if [[ -z "${warned_players_bot["$player_name"]}" ]]; then
+                    print_warning "Skipping message from invalid player name: '$player_name'"
+                    warned_players_bot["$player_name"]=1
+                fi
                 continue
             fi
             
