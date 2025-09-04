@@ -42,12 +42,12 @@ else
     SCREEN_SERVER="blockheads_server"
 fi
 
+# Track processed players to avoid duplicate welcome messages
+declare -A PROCESSED_PLAYERS
+
 # Authorization files
 AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
-
-# Track warned players to prevent duplicate messages
-declare -A warned_players_bot
 
 # Function to add player to authorized list
 add_to_authorized() {
@@ -84,11 +84,7 @@ add_player_if_new() {
     
     # Skip invalid player names
     if ! is_valid_player_name "$player_name"; then
-        # Only warn once per player session
-        if [[ -z "${warned_players_bot["$player_name"]}" ]]; then
-            print_warning "Skipping economy setup for invalid player name: '$player_name'"
-            warned_players_bot["$player_name"]=1
-        fi
+        print_warning "Skipping economy setup for invalid player name: '$player_name'"
         return 1
     fi
     
@@ -149,11 +145,13 @@ show_welcome_message() {
     
     # Skip invalid player names
     if ! is_valid_player_name "$player_name"; then
-        # Only warn once per player session
-        if [[ -z "${warned_players_bot["$player_name"]}" ]]; then
-            print_warning "Skipping welcome message for invalid player name: '$player_name'"
-            warned_players_bot["$player_name"]=1
-        fi
+        print_warning "Skipping welcome message for invalid player name: '$player_name'"
+        return
+    fi
+    
+    # Skip if already processed by anticheat
+    if [[ -n "${PROCESSED_PLAYERS[$player_name]}" ]]; then
+        print_warning "Skipping welcome message for $player_name (already processed by anticheat)"
         return
     fi
     
@@ -251,11 +249,7 @@ process_message() {
     
     # Skip invalid player names
     if ! is_valid_player_name "$player_name"; then
-        # Only warn once per player session
-        if [[ -z "${warned_players_bot["$player_name"]}" ]]; then
-            print_warning "Skipping message processing for invalid player name: '$player_name'"
-            warned_players_bot["$player_name"]=1
-        fi
+        print_warning "Skipping message processing for invalid player name: '$player_name'"
         return
     fi
     
@@ -271,7 +265,7 @@ process_message() {
             # 10-minute cooldown for greetings
             if [ "$last_greeting_time" -eq 0 ] || [ $((current_time - last_greeting_time)) -ge 600 ]; then
                 send_server_command "Hello $player_name! Welcome to the server. Type !help to check available commands."
-                # Update last_greeting_time
+                # Update last_greeting_time to prevent spam
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_greeting_time = $time')
                 write_json_file "$ECONOMY_FILE" "$current_data"
             else
@@ -515,11 +509,9 @@ monitor_log() {
 
             # Skip invalid player names
             if ! is_valid_player_name "$player_name"; then
-                # Only warn once per player session
-                if [[ -z "${warned_players_bot["$player_name"]}" ]]; then
-                    print_warning "Skipping invalid player name: '$player_name' (IP: $player_ip)"
-                    warned_players_bot["$player_name"]=1
-                fi
+                print_warning "Skipping invalid player name: '$player_name' (IP: $player_ip)"
+                # Mark as processed to avoid welcome messages
+                PROCESSED_PLAYERS[$player_name]=1
                 continue
             fi
 
@@ -551,16 +543,13 @@ monitor_log() {
             
             # Skip invalid player names
             if ! is_valid_player_name "$player_name"; then
-                # Only warn once per player session
-                if [[ -z "${warned_players_bot["$player_name"]}" ]]; then
-                    print_warning "Skipping invalid player name: '$player_name'"
-                    warned_players_bot["$player_name"]=1
-                fi
+                print_warning "Skipping invalid player name: '$player_name'"
                 continue
             fi
             
             print_warning "Player disconnected: $player_name"
             unset welcome_shown["$player_name"]
+            unset PROCESSED_PLAYERS["$player_name"]
             continue
         fi
 
@@ -570,11 +559,7 @@ monitor_log() {
             
             # Skip invalid player names
             if ! is_valid_player_name "$player_name"; then
-                # Only warn once per player session
-                if [[ -z "${warned_players_bot["$player_name"]}" ]]; then
-                    print_warning "Skipping message from invalid player name: '$player_name'"
-                    warned_players_bot["$player_name"]=1
-                fi
+                print_warning "Skipping message from invalid player name: '$player_name'"
                 continue
             fi
             
