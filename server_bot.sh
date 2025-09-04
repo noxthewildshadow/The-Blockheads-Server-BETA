@@ -22,49 +22,12 @@ print_header() {
 }
 print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
-# Function to validate player names - ENHANCED TO DETECT SPACES/EMPTY NAMES
+# Function to validate player names
 is_valid_player_name() {
     local player_name="$1"
-    
-    # Check if name is empty or contains only spaces
-    if [[ -z "$player_name" || "$player_name" =~ ^[[:space:]]+$ ]]; then
-        return 1
-    fi
-    
-    # Check if name contains any spaces or special characters
-    if [[ "$player_name" =~ [[:space:]] || ! "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]; then
-        return 1
-    fi
-    
-    return 0
-}
-
-# Function to safely read JSON files with locking
-read_json_file() {
-    local file_path="$1"
-    if [ ! -f "$file_path" ]; then
-        print_error "JSON file not found: $file_path"
-        echo "{}"
-        return 1
-    fi
-    
-    # Use flock with proper file descriptor handling
-    flock -s 200 cat "$file_path" 200>"${file_path}.lock"
-}
-
-# Function to safely write JSON files with locking
-write_json_file() {
-    local file_path="$1"
-    local content="$2"
-    
-    if [ ! -f "$file_path" ]; then
-        print_error "JSON file not found: $file_path"
-        return 1
-    fi
-    
-    # Use flock with proper file descriptor handling
-    flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
-    return $?
+    # Remove leading/trailing spaces first
+    player_name=$(echo "$player_name" | xargs)
+    [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]
 }
 
 # Bot configuration - now supports multiple servers
@@ -115,6 +78,13 @@ is_player_in_list() {
 
 add_player_if_new() {
     local player_name="$1"
+    
+    # Skip invalid player names
+    if ! is_valid_player_name "$player_name"; then
+        print_warning "Skipping economy setup for invalid player name: '$player_name'"
+        return 1
+    fi
+    
     local current_data=$(read_json_file "$ECONOMY_FILE")
     local player_exists=$(echo "$current_data" | jq --arg player "$player_name" '.players | has($player)')
     
@@ -169,6 +139,13 @@ grant_login_ticket() {
 
 show_welcome_message() {
     local player_name="$1" is_new_player="$2" force_send="${3:-0}"
+    
+    # Skip invalid player names
+    if ! is_valid_player_name "$player_name"; then
+        print_warning "Skipping welcome message for invalid player name: '$player_name'"
+        return
+    fi
+    
     local current_time=$(date +%s)
     local current_data=$(read_json_file "$ECONOMY_FILE")
     local last_welcome_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_welcome_time // 0')
@@ -260,6 +237,13 @@ process_give_rank() {
 
 process_message() {
     local player_name="$1" message="$2"
+    
+    # Skip invalid player names
+    if ! is_valid_player_name "$player_name"; then
+        print_warning "Skipping message processing for invalid player name: '$player_name'"
+        return
+    fi
+    
     local current_data=$(read_json_file "$ECONOMY_FILE")
     local player_tickets=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].tickets // 0')
     player_tickets=${player_tickets:-0}
@@ -468,33 +452,6 @@ cleanup() {
     exit 0
 }
 
-# Function to handle invalid player names
-handle_invalid_player_name() {
-    local raw_player_name="$1"
-    local player_ip="$2"
-    local player_name_trimmed="$3"
-    
-    # Check if player name is invalid (empty, only spaces, or contains spaces)
-    if ! is_valid_player_name "$player_name_trimmed"; then
-        print_warning "INVALID PLAYER NAME DETECTED: '$raw_player_name' (IP: $player_ip)"
-        send_server_command "WARNING: Empty player names are not allowed!"
-        send_server_command "Kicking player with empty name in 3 seconds..."
-        
-        # Wait 3 seconds and then kick the player
-        (
-            sleep 3
-            # Use the exact player name with all spaces for the kick command
-            # This ensures players with spaces in their names are properly kicked
-            send_server_command "/kick \"$raw_player_name\""
-            print_success "Kicked player with invalid name: '$raw_player_name'"
-        ) &
-        
-        return 1
-    fi
-    
-    return 0
-}
-
 monitor_log() {
     local log_file="$1"
     LOG_FILE="$log_file"
@@ -517,7 +474,7 @@ monitor_log() {
     mkfifo "$admin_pipe"
 
     # Background process to read admin commands from the pipe
-    while read -r admin_command < "$admin_pipe"; then
+    while read -r admin_command < "$admin_pipe"; do
         print_status "Processing admin command: $admin_command"
         if [[ "$admin_command" == "!send_ticket "* || "$admin_command" == "!set_mod "* || "$admin_command" == "!set_admin "* ]]; then
             process_admin_command "$admin_command"
@@ -536,22 +493,16 @@ monitor_log() {
 
     # Monitor the log file
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
-        # Detect player connections with invalid names
-        if [[ "$line" =~ Player\ Connected\ ([^|]+)\ \|\ ([0-9a-fA-F.:]+) ]]; then
-            local raw_player_name="${BASH_REMATCH[1]}"
-            local player_ip="${BASH_REMATCH[2]}"
-            [ "$raw_player_name" == "SERVER" ] && continue
-            
-            # Trim leading/trailing spaces from player name for validation
-            local player_name_trimmed=$(echo "$raw_player_name" | xargs)
-            
-            # Check for invalid player names - use the original name with spaces
-            if ! handle_invalid_player_name "$raw_player_name" "$player_ip" "$player_name_trimmed"; then
+        # Detect player connections
+        if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
+            local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
+            [ "$player_name" == "SERVER" ] && continue
+
+            # Skip invalid player names
+            if ! is_valid_player_name "$player_name"; then
+                print_warning "Skipping invalid player name: '$player_name' (IP: $player_ip)"
                 continue
             fi
-
-            # Use the trimmed name for economy functions
-            local player_name="$player_name_trimmed"
 
             print_success "Player connected: $player_name (IP: $player_ip)"
 
@@ -579,9 +530,9 @@ monitor_log() {
             local player_name="${BASH_REMATCH[1]}"
             [ "$player_name" == "SERVER" ] && continue
             
-            # Validate player name
+            # Skip invalid player names
             if ! is_valid_player_name "$player_name"; then
-                print_warning "Invalid player name detected: $player_name"
+                print_warning "Skipping invalid player name: '$player_name'"
                 continue
             fi
             
@@ -594,9 +545,9 @@ monitor_log() {
             local player_name="${BASH_REMATCH[1]}" message="${BASH_REMATCH[2]}"
             [ "$player_name" == "SERVER" ] && continue
             
-            # Validate player name
+            # Skip invalid player names
             if ! is_valid_player_name "$player_name"; then
-                print_warning "Invalid player name detected: $player_name"
+                print_warning "Skipping message from invalid player name: '$player_name'"
                 continue
             fi
             
