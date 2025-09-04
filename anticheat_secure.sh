@@ -48,8 +48,8 @@ handle_invalid_player_name() {
     if [[ "$player_name" =~ ^[[:space:]]*$ ]]; then
         print_error "EMPTY PLAYER NAME DETECTED from IP: $player_ip"
         send_server_command "WARNING: Empty player names are not allowed!"
-        send_server_command "Kicking player with empty name in 3 seconds..."
-        (sleep 3; send_server_command_silent "/kick $player_name") &
+        send_server_command "Kicking player from IP $player_ip in 3 seconds..."
+        (sleep 3; send_server_command_silent "/kick-ip $player_ip") &
         return 1
     fi
     
