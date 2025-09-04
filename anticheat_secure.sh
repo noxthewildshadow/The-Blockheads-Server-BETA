@@ -32,32 +32,17 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCREEN_SERVER="blockheads_server_$PORT"
 
-# Function to validate player names - ENHANCED TO DETECT SPACES
+# Function to validate player names - ENHANCED TO DETECT SPACES/EMPTY NAMES
 is_valid_player_name() {
     local player_name="$1"
-    # Check if name contains only valid characters and is not empty/whitespace
-    [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]] && [[ ! "$player_name" =~ ^[[:space:]]*$ ]]
-}
-
-# Function to detect and handle invalid player names
-handle_invalid_player_name() {
-    local player_name="$1" player_ip="$2"
     
     # Check if name is empty or contains only spaces
-    if [[ "$player_name" =~ ^[[:space:]]*$ ]]; then
-        print_error "EMPTY PLAYER NAME DETECTED from IP: $player_ip"
-        send_server_command "WARNING: Empty player names are not allowed!"
-        send_server_command "Kicking player with empty name in 3 seconds..."
-        (sleep 3; send_server_command_silent "/kick $player_ip") &
+    if [[ -z "$player_name" || "$player_name" =~ ^[[:space:]]+$ ]]; then
         return 1
     fi
     
-    # Check if name contains spaces
-    if [[ "$player_name" =~ [[:space:]] ]]; then
-        print_error "INVALID PLAYER NAME DETECTED: '$player_name' from IP: $player_ip"
-        send_server_command "WARNING: Player names with spaces are not allowed!"
-        send_server_command "Kicking player '$player_name' in 3 seconds..."
-        (sleep 3; send_server_command_silent "/kick $player_name") &
+    # Check if name contains any spaces or special characters
+    if [[ "$player_name" =~ [[:space:]] || ! "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]; then
         return 1
     fi
     
@@ -107,13 +92,6 @@ validate_authorization() {
     if [ -f "$admin_list" ]; then
         while IFS= read -r admin; do
             if [[ -n "$admin" && ! "$admin" =~ ^[[:space:]]*# && ! "$admin" =~ "Usernames in this file" ]]; then
-                # Check for invalid admin names (spaces or empty)
-                if [[ "$admin" =~ ^[[:space:]]*$ ]] || [[ "$admin" =~ [[:space:]] ]]; then
-                    print_warning "Removing invalid admin name: '$admin'"
-                    remove_from_list_file "$admin" "admin"
-                    continue
-                fi
-                
                 if ! grep -q -i "^$admin$" "$AUTHORIZED_ADMINS_FILE"; then
                     print_warning "Unauthorized admin detected: $admin"
                     send_server_command "/unadmin $admin"
@@ -128,13 +106,6 @@ validate_authorization() {
     if [ -f "$mod_list" ]; then
         while IFS= read -r mod; do
             if [[ -n "$mod" && ! "$mod" =~ ^[[:space:]]*# && ! "$mod" =~ "Usernames in this file" ]]; then
-                # Check for invalid mod names (spaces or empty)
-                if [[ "$mod" =~ ^[[:space:]]*$ ]] || [[ "$mod" =~ [[:space:]] ]]; then
-                    print_warning "Removing invalid mod name: '$mod'"
-                    remove_from_list_file "$mod" "mod"
-                    continue
-                fi
-                
                 if ! grep -q -i "^$mod$" "$AUTHORIZED_MODS_FILE"; then
                     print_warning "Unauthorized mod detected: $mod"
                     send_server_command "/unmod $mod"
@@ -152,12 +123,6 @@ add_to_authorized() {
     local auth_file="$LOG_DIR/authorized_${list_type}s.txt"
     
     [ ! -f "$auth_file" ] && print_error "Authorization file not found: $auth_file" && return 1
-    
-    # Validate player name before adding
-    if ! is_valid_player_name "$player_name"; then
-        print_error "Cannot add invalid player name to authorized list: $player_name"
-        return 1
-    fi
     
     if ! grep -q -i "^$player_name$" "$auth_file"; then
         echo "$player_name" >> "$auth_file"
@@ -355,6 +320,31 @@ cleanup() {
     exit 0
 }
 
+# Function to detect and handle invalid player names
+handle_invalid_player_name() {
+    local player_name="$1" player_ip="$2"
+    
+    # Check if player name is invalid (empty, only spaces, or contains spaces)
+    if ! is_valid_player_name "$player_name"; then
+        print_warning "INVALID PLAYER NAME DETECTED: '$player_name' (IP: $player_ip)"
+        send_server_command "WARNING: Empty player names are not allowed!"
+        send_server_command "Kicking player with empty name in 3 seconds..."
+        
+        # Wait 3 seconds and then kick the player
+        (
+            sleep 3
+            # Escape any special characters in the player name for the kick command
+            local safe_player_name=$(printf '%q' "$player_name")
+            send_server_command "/kick $safe_player_name"
+            print_success "Kicked player with invalid name: $player_name"
+        ) &
+        
+        return 1
+    fi
+    
+    return 0
+}
+
 # Main anticheat monitoring function
 monitor_log() {
     local log_file="$1"
@@ -386,20 +376,15 @@ monitor_log() {
         # Detect player connections with invalid names
         if [[ "$line" =~ Player\ Connected\ ([^|]+)\ \|\ ([0-9a-fA-F.:]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}"
-            player_name=$(echo "$player_name" | xargs)  # Trim whitespace
+            [ "$player_name" == "SERVER" ] && continue
             
-            # Check for invalid player names (spaces or empty)
-            if ! handle_invalid_player_name "$player_name" "$player_ip"; then
-                continue  # Skip processing if player is invalid and will be kicked
-            fi
+            # Trim leading/trailing spaces from player name
+            player_name=$(echo "$player_name" | xargs)
             
-            # Validate player names for commands
-            if ! is_valid_player_name "$player_name"; then
-                print_warning "Invalid player name detected: $player_name"
-                continue
-            fi
+            # Check for invalid player names
+            handle_invalid_player_name "$player_name" "$player_ip"
         fi
-        
+
         # Detect unauthorized admin/mod commands
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ \/(admin|mod)\ ([a-zA-Z0-9_]+) ]]; then
             local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
