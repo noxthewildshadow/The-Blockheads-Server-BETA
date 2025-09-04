@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Enhanced Colors for output
-RED='\033[0极31m'
+RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
@@ -22,13 +22,20 @@ print_header() {
 }
 print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
-# Function to validate player names
+# Function to validate player names - ENHANCED TO DETECT SPACES/EMPTY NAMES
 is_valid_player_name() {
     local player_name="$1"
-    # Check if name is empty, contains spaces, or has invalid characters
-    if [[ -z "$player_name" || "$player_name" =~ [[:space:]] || ! "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]; then
+    
+    # Check if name is empty or contains only spaces
+    if [[ -z "$player_name" || "$player_name" =~ ^[[:space:]]+$ ]]; then
         return 1
     fi
+    
+    # Check if name contains any spaces or special characters
+    if [[ "$player_name" =~ [[:space:]] || ! "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]; then
+        return 1
+    fi
+    
     return 0
 }
 
@@ -36,7 +43,7 @@ is_valid_player_name() {
 read_json_file() {
     local file_path="$1"
     if [ ! -f "$file_path" ]; then
-        print_error "JSON file not found: $极ath"
+        print_error "JSON file not found: $file_path"
         echo "{}"
         return 1
     fi
@@ -102,11 +109,11 @@ is_player_in_list() {
     local player_name="$1" list_type="$2"
     local list_file="$LOG_DIR/${list_type}list.txt"
     
-    [ -极 "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$" && return 0
+    [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$" && return 0
     return 1
 }
 
-add_player_if_new极 {
+add_player_if_new() {
     local player_name="$1"
     local current_data=$(read_json_file "$ECONOMY_FILE")
     local player_exists=$(echo "$current_data" | jq --arg player "$player_name" '.players | has($player)')
@@ -135,7 +142,7 @@ give_first_time_bonus() {
 
 grant_login_ticket() {
     local player_name="$1" current_time=$(date +%s) time_str="$(date '+%Y-%m-%d %H:%M:%S')"
-    local current_data=$(read_json_file "$极ONOMY_FILE")
+    local current_data=$(read_json_file "$ECONOMY_FILE")
     local last_login=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_login // 0')
     last_login=${last_login:-0}
     
@@ -148,7 +155,7 @@ grant_login_ticket() {
         current_data=$(echo "$current_data" | jq --arg player "$player_name" \
             --argjson tickets "$new_tickets" --argjson time "$current_time" --arg time_str "$time_str" \
             '.players[$player].tickets = $tickets | 
-             .players[$player极last_login = $time |
+             .players[$player].last_login = $time |
              .transactions += [{"player": $player, "type": "login_bonus", "tickets": 1, "time": $time_str}]')
         
         write_json_file "$ECONOMY_FILE" "$current_data"
@@ -175,11 +182,11 @@ show_welcome_message() {
             if [ $((current_time - last_greeting_time)) -ge 600 ]; then
                 send_server_command "Welcome back $player_name! Type !help to see available commands."
                 # Update last_greeting_time to prevent spam
-                current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_greeting_time = $极me')
+                current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_greeting_time = $time')
                 write_json_file "$ECONOMY_FILE" "$current_data"
             fi
         fi
-        current_data=$(echo "$current_data极 jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_welcome_time = $time')
+        current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_welcome_time = $time')
         write_json_file "$ECONOMY_FILE" "$current_data"
     else
         print_warning "Skipping welcome for $player_name due to cooldown"
@@ -210,7 +217,7 @@ add_purchase() {
 
 # Function to process give_rank commands
 process_give_rank() {
-    local giver_name="$1" target_player="$2极 rank_type="$3"
+    local giver_name="$1" target_player="$2" rank_type="$3"
     local current_data=$(read_json_file "$ECONOMY_FILE")
     local giver_tickets=$(echo "$current_data" | jq -r --arg player "$giver_name" '.players[$player].tickets // 0')
     giver_tickets=${giver_tickets:-0}
@@ -236,9 +243,9 @@ process_give_rank() {
     
     # Record transaction
     local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
-    current_data=$(echo "$current_data" |极 --arg giver "$giver_name" --arg target "$target_player" \
+    current_data=$(echo "$current_data" | jq --arg giver "$giver_name" --arg target "$target_player" \
         --arg rank "$rank_type" --argjson cost "$cost" --arg time "$time_str" \
-        '.transactions += [{"giver": $giver, "recipient": $极rget, "type": "rank_gift", "rank": $rank, "tickets": -$cost, "time": $time}]')
+        '.transactions += [{"giver": $giver, "recipient": $target, "type": "rank_gift", "rank": $rank, "tickets": -$cost, "time": $time}]')
     
     write_json_file "$ECONOMY_FILE" "$current_data"
     
@@ -280,11 +287,11 @@ process_message() {
                 send_server_command "$player_name, you already have MOD rank. No need to purchase again."
             elif [ "$player_tickets" -ge 50 ]; then
                 local new_tickets=$((player_tickets - 50))
-                current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson tickets "$new_tickets" '.players[$player].极ckets = $tickets')
+                current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
                 add_purchase "$player_name" "mod"
                 local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
-                current_data=$(echo "$current_data" | jq --arg player "$player_name极 --arg time "$time_str" \
-                    '.transactions += [{"player": $player, "type": "purchase", "item": "mod", "tickets": -50, "极me": $time}]')
+                current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" \
+                    '.transactions += [{"player": $player, "type": "purchase", "item": "mod", "tickets": -50, "time": $time}]')
                 write_json_file "$ECONOMY_FILE" "$current_data"
                 
                 # First add to authorized mods, then assign rank
@@ -394,7 +401,7 @@ process_admin_command() {
         add_to_authorized "$player_name" "mod"
         screen -S "$SCREEN_SERVER" -X stuff "/mod $player_name$(printf \\r)"
         send_server_command "$player_name has been set as MOD by server console!"
-    elif [[ "$command" =~ ^极set_admin\ ([a-zA-Z0-9_]+)$ ]]; then
+    elif [[ "$command" =~ ^!set_admin\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
         
         # Validate player name
@@ -403,7 +410,7 @@ process_admin_command() {
             return 1
         fi
         
-        print_s极ccess "Setting $player_name as ADMIN"
+        print_success "Setting $player_name as ADMIN"
         # First add to authorized admins, then assign rank
         add_to_authorized "$player_name" "admin"
         screen -S "$SCREEN_SERVER" -X stuff "/admin $player_name$(printf \\r)"
@@ -423,7 +430,7 @@ server_sent_welcome_recently() {
     local player_lc=$(echo "$player_name" | tr '[:upper:]' '[:lower:]')
     
     # Check for server welcome messages in the last 100 lines
-    if tail -n 100 "$LOG_FILE" 2>/dev/null | grep -i "server:.*welcome.*$player_lc" | head -1 | grep -q .极 then
+    if tail -n 100 "$LOG_FILE" 2>/dev/null | grep -i "server:.*welcome.*$player_lc" | head -1 | grep -q .; then
         return 0
     fi
     
@@ -461,6 +468,31 @@ cleanup() {
     exit 0
 }
 
+# Function to handle invalid player names
+handle_invalid_player_name() {
+    local player_name="$1" player_ip="$2"
+    
+    # Check if player name is invalid (empty, only spaces, or contains spaces)
+    if ! is_valid_player_name "$player_name"; then
+        print_warning "INVALID PLAYER NAME DETECTED: '$player_name' (IP: $player_ip)"
+        send_server_command "WARNING: Empty player names are not allowed!"
+        send_server_command "Kicking player with empty name in 3 seconds..."
+        
+        # Wait 3 seconds and then kick the player
+        (
+            sleep 3
+            # Escape any special characters in the player name for the kick command
+            local safe_player_name=$(printf '%q' "$player_name")
+            send_server_command "/kick $safe_player_name"
+            print_success "Kicked player with invalid name: $player_name"
+        ) &
+        
+        return 1
+    fi
+    
+    return 0
+}
+
 monitor_log() {
     local log_file="$1"
     LOG_FILE="$log_file"
@@ -483,7 +515,7 @@ monitor_log() {
     mkfifo "$admin_pipe"
 
     # Background process to read admin commands from the pipe
-    while read -r admin_command < "$admin极ipe"; do
+    while read -r admin_command < "$admin_pipe"; do
         print_status "Processing admin command: $admin_command"
         if [[ "$admin_command" == "!send_ticket "* || "$admin_command" == "!set_mod "* || "$admin_command" == "!set_admin "* ]]; then
             process_admin_command "$admin_command"
@@ -502,19 +534,16 @@ monitor_log() {
 
     # Monitor the log file
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
-        # Detect player connections
+        # Detect player connections with invalid names
         if [[ "$line" =~ Player\ Connected\ ([^|]+)\ \|\ ([0-9a-fA-F.:]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}"
-            player_name=$(echo "$player_name" | sed 's/^ *//;s/ *$//')  # Trim leading and trailing spaces
-
             [ "$player_name" == "SERVER" ] && continue
-
-            # Validate player name
-            if ! is_valid_player_name "$player_name"; then
-                print_error "INVALID PLAYER NAME: '$player_name' contains spaces or invalid characters"
-                send_server_command "WARNING: Player names with spaces are not allowed!"
-                # Schedule kick after 3 seconds
-                ( sleep 3; send_server_command "/kick $player_name" ) &
+            
+            # Trim leading/trailing spaces from player name
+            player_name=$(echo "$player_name" | xargs)
+            
+            # Check for invalid player names
+            if ! handle_invalid_player_name "$player_name" "$player_ip"; then
                 continue
             fi
 
