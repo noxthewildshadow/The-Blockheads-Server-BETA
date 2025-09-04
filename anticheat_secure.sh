@@ -1,6 +1,4 @@
 #!/bin/bash
-# anticheat_secure.sh - Enhanced security system for The Blockheads server
-# Improved for new users: Better error messages, fixed file locking issues
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -35,7 +33,8 @@ SCREEN_SERVER="blockheads_server_$PORT"
 # Function to validate player names
 is_valid_player_name() {
     local player_name="$1"
-    [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]
+    # Permite nombres con espacios pero no vacíos o solo espacios
+    [[ -n "$player_name" && ! "$player_name" =~ ^[[:space:]]*$ ]]
 }
 
 # Function to safely read JSON files with locking
@@ -338,12 +337,16 @@ monitor_log() {
     # Monitor the log file for unauthorized commands
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
         # Detect unauthorized admin/mod commands
-        if [[ "$line" =~ ([a-zA-Z0-9_]+):\ \/(admin|mod)\ ([a-zA-Z0-9_]+) ]]; then
+        if [[ "$line" =~ ([^:]+):\ \/(admin|mod)\ ([^:]+) ]]; then
             local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
+            
+            # Sanitize: remove leading/trailing spaces
+            command_user=$(echo "$command_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             # Validate player names
             if ! is_valid_player_name "$command_user" || ! is_valid_player_name "$target_player"; then
-                print_warning "Invalid player name in command: $command_user or $target_player"
+                print_warning "Invalid player name in command: '$command_user' or '$target_player'"
                 continue
             fi
             
