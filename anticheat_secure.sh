@@ -1,6 +1,7 @@
 #!/bin/bash
 # anticheat_secure.sh - Enhanced security system for The Blockheads server
 # Improved for new users: Better error messages, fixed file locking issues
+# Enhanced to detect and kick players with invalid names (spaces, special characters)
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -32,21 +33,35 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCREEN_SERVER="blockheads_server_$PORT"
 
-# Function to validate player names - ENHANCED TO DETECT SPACES/EMPTY NAMES
+# Function to validate player names
 is_valid_player_name() {
     local player_name="$1"
+    # Remove leading/trailing spaces first
+    player_name=$(echo "$player_name" | xargs)
+    [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]
+}
+
+# Function to detect and handle invalid player names
+handle_invalid_player_name() {
+    local player_name="$1" player_ip="$2" player_hash="$3"
     
-    # Check if name is empty or contains only spaces
-    if [[ -z "$player_name" || "$player_name" =~ ^[[:space:]]+$ ]]; then
-        return 1
+    # Trim spaces for validation
+    local player_name_trimmed=$(echo "$player_name" | xargs)
+    
+    # Check if name is empty after trimming or contains invalid characters
+    if [[ -z "$player_name_trimmed" ]] || ! is_valid_player_name "$player_name"; then
+        print_warning "INVALID PLAYER NAME: '$player_name' (IP: $player_ip, Hash: $player_hash)"
+        send_server_command "WARNING: Invalid player name detected! Kicking in 3 seconds..."
+        
+        # Schedule kick after 3 seconds
+        (
+            sleep 3
+            print_warning "Kicking player with invalid name: '$player_name'"
+            send_server_command "/kick $player_name"
+        ) &
+        return 0
     fi
-    
-    # Check if name contains any spaces or special characters
-    if [[ "$player_name" =~ [[:space:]] || ! "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]; then
-        return 1
-    fi
-    
-    return 0
+    return 1
 }
 
 # Function to safely read JSON files with locking
@@ -320,31 +335,6 @@ cleanup() {
     exit 0
 }
 
-# Function to detect and handle invalid player names
-handle_invalid_player_name() {
-    local player_name="$1" player_ip="$2"
-    
-    # Check if player name is invalid (empty, only spaces, or contains spaces)
-    if ! is_valid_player_name "$player_name"; then
-        print_warning "INVALID PLAYER NAME DETECTED: '$player_name' (IP: $player_ip)"
-        send_server_command "WARNING: Empty player names are not allowed!"
-        send_server_command "Kicking player with empty name in 3 seconds..."
-        
-        # Wait 3 seconds and then kick the player
-        (
-            sleep 3
-            # Use the exact player name with all spaces for the kick command
-            # This ensures players with spaces in their names are properly kicked
-            send_server_command "/kick \"$player_name\""
-            print_success "Kicked player with invalid name: '$player_name'"
-        ) &
-        
-        return 1
-    fi
-    
-    return 0
-}
-
 # Main anticheat monitoring function
 monitor_log() {
     local log_file="$1"
@@ -374,15 +364,21 @@ monitor_log() {
     # Monitor the log file for unauthorized commands and invalid player names
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
         # Detect player connections with invalid names
-        if [[ "$line" =~ Player\ Connected\ ([^|]+)\ \|\ ([0-9a-fA-F.:]+) ]]; then
-            local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}"
-            [ "$player_name" == "SERVER" ] && continue
+        if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
+            local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
             
-            # Trim leading/trailing spaces from player name for display
-            local display_name=$(echo "$player_name" | xargs)
+            # Handle invalid player names (spaces, special characters)
+            if handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"; then
+                continue  # Skip further processing for invalid names
+            fi
             
-            # Check for invalid player names - use the original name with spaces
-            handle_invalid_player_name "$player_name" "$player_ip"
+            # Validate player names for legitimate connections
+            if ! is_valid_player_name "$player_name"; then
+                print_warning "Invalid player name in connection: $player_name"
+                continue
+            fi
+            
+            print_success "Player connected: $player_name (IP: $player_ip)"
         fi
 
         # Detect unauthorized admin/mod commands
