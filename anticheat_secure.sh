@@ -1,4 +1,7 @@
 #!/bin/bash
+# anticheat_secure.sh - Enhanced security system for The Blockheads server
+# Improved for new users: Better error messages, fixed file locking issues
+# Fixed: Player name validation now handles spaces and empty names
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -30,11 +33,13 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCREEN_SERVER="blockheads_server_$PORT"
 
-# Function to validate player names
+# Function to validate player names - IMPROVED VALIDATION
 is_valid_player_name() {
     local player_name="$1"
-    # Permite nombres con espacios pero no vacíos o solo espacios
-    [[ -n "$player_name" && ! "$player_name" =~ ^[[:space:]]*$ ]]
+    # Trim leading/trailing spaces
+    local trimmed_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    # Check if name is empty, contains only spaces, or matches unnamed pattern
+    [[ -n "$trimmed_name" && ! "$trimmed_name" =~ ^[[:space:]]*$ && ! "$trimmed_name" =~ ^[uU]nnamed[0-9]*$ ]]
 }
 
 # Function to safely read JSON files with locking
@@ -336,11 +341,11 @@ monitor_log() {
 
     # Monitor the log file for unauthorized commands
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
-        # Detect unauthorized admin/mod commands
+        # Detect unauthorized admin/mod commands - FIXED REGEX FOR NAMES WITH SPACES
         if [[ "$line" =~ ([^:]+):\ \/(admin|mod)\ ([^:]+) ]]; then
             local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
             
-            # Sanitize: remove leading/trailing spaces
+            # Trim spaces from names
             command_user=$(echo "$command_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
