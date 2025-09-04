@@ -1,7 +1,6 @@
 #!/bin/bash
 # anticheat_secure.sh - Enhanced security system for The Blockheads server
 # Improved for new users: Better error messages, fixed file locking issues
-# Fixed: Player name validation now handles spaces and empty names
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -33,13 +32,37 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCREEN_SERVER="blockheads_server_$PORT"
 
-# Function to validate player names - IMPROVED VALIDATION
+# Function to validate player names - ENHANCED TO DETECT SPACES
 is_valid_player_name() {
     local player_name="$1"
-    # Trim leading/trailing spaces
-    local trimmed_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    # Check if name is empty, contains only spaces, or matches unnamed pattern
-    [[ -n "$trimmed_name" && ! "$trimmed_name" =~ ^[[:space:]]*$ && ! "$trimmed_name" =~ ^[uU]nnamed[0-9]*$ ]]
+    # Check if name contains only valid characters and is not empty/whitespace
+    [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]] && [[ ! "$player_name" =~ ^[[:space:]]*$ ]]
+}
+
+# Function to detect and handle invalid player names
+handle_invalid_player_name() {
+    local player_name="$1"
+    local player_ip="$2"
+    
+    # Check if name is empty or contains only spaces
+    if [[ "$player_name" =~ ^[[:space:]]*$ ]]; then
+        print_error "EMPTY PLAYER NAME DETECTED from IP: $player_ip"
+        send_server_command "WARNING: Empty player names are not allowed!"
+        send_server_command "Kicking player with empty name in 3 seconds..."
+        (sleep 3; send_server_command_silent "/kick $player_name") &
+        return 1
+    fi
+    
+    # Check if name contains spaces
+    if [[ "$player_name" =~ [[:space:]] ]]; then
+        print_error "INVALID PLAYER NAME DETECTED: '$player_name' from IP: $player_ip"
+        send_server_command "WARNING: Player names with spaces are not allowed!"
+        send_server_command "Kicking player '$player_name' in 3 seconds..."
+        (sleep 3; send_server_command_silent "/kick $player_name") &
+        return 1
+    fi
+    
+    return 0
 }
 
 # Function to safely read JSON files with locking
@@ -339,19 +362,32 @@ monitor_log() {
     print_status "Log directory: $LOG_DIR"
     print_header "SECURITY SYSTEM ACTIVE"
 
-    # Monitor the log file for unauthorized commands
+    # Monitor the log file for unauthorized commands and invalid player names
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
-        # Detect unauthorized admin/mod commands - FIXED REGEX FOR NAMES WITH SPACES
-        if [[ "$line" =~ ([^:]+):\ \/(admin|mod)\ ([^:]+) ]]; then
-            local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
+        # Detect player connections with invalid names
+        if [[ "$line" =~ Player\ Connected\ ([^|]+)\ \|\ ([0-9a-fA-F.:]+) ]]; then
+            local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}"
+            player_name=$(echo "$player_name" | xargs)  # Trim whitespace
             
-            # Trim spaces from names
-            command_user=$(echo "$command_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            # Check for invalid player names (spaces or empty)
+            if ! handle_invalid_player_name "$player_name" "$player_ip"; then
+                continue  # Skip processing if player is invalid and will be kicked
+            fi
+            
+            # Validate player names for commands
+            if ! is_valid_player_name "$player_name"; then
+                print_warning "Invalid player name detected: $player_name"
+                continue
+            fi
+        fi
+        
+        # Detect unauthorized admin/mod commands
+        if [[ "$line" =~ ([a-zA-Z0-9_]+):\ \/(admin|mod)\ ([a-zA-Z0-9_]+) ]]; then
+            local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
             
             # Validate player names
             if ! is_valid_player_name "$command_user" || ! is_valid_player_name "$target_player"; then
-                print_warning "Invalid player name in command: '$command_user' or '$target_player'"
+                print_warning "Invalid player name in command: $command_user or $target_player"
                 continue
             fi
             
