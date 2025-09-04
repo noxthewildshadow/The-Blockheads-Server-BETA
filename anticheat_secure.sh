@@ -41,15 +41,14 @@ is_valid_player_name() {
 
 # Function to detect and handle invalid player names
 handle_invalid_player_name() {
-    local player_name="$1"
-    local player_ip="$2"
+    local player_name="$1" player_ip="$2"
     
     # Check if name is empty or contains only spaces
     if [[ "$player_name" =~ ^[[:space:]]*$ ]]; then
         print_error "EMPTY PLAYER NAME DETECTED from IP: $player_ip"
         send_server_command "WARNING: Empty player names are not allowed!"
-        send_server_command "Kicking player from IP $player_ip in 3 seconds..."
-        (sleep 3; send_server_command_silent "/kick-ip $player_ip") &
+        send_server_command "Kicking player with empty name in 3 seconds..."
+        (sleep 3; send_server_command_silent "/kick $player_ip") &
         return 1
     fi
     
@@ -108,6 +107,13 @@ validate_authorization() {
     if [ -f "$admin_list" ]; then
         while IFS= read -r admin; do
             if [[ -n "$admin" && ! "$admin" =~ ^[[:space:]]*# && ! "$admin" =~ "Usernames in this file" ]]; then
+                # Check for invalid admin names (spaces or empty)
+                if [[ "$admin" =~ ^[[:space:]]*$ ]] || [[ "$admin" =~ [[:space:]] ]]; then
+                    print_warning "Removing invalid admin name: '$admin'"
+                    remove_from_list_file "$admin" "admin"
+                    continue
+                fi
+                
                 if ! grep -q -i "^$admin$" "$AUTHORIZED_ADMINS_FILE"; then
                     print_warning "Unauthorized admin detected: $admin"
                     send_server_command "/unadmin $admin"
@@ -122,6 +128,13 @@ validate_authorization() {
     if [ -f "$mod_list" ]; then
         while IFS= read -r mod; do
             if [[ -n "$mod" && ! "$mod" =~ ^[[:space:]]*# && ! "$mod" =~ "Usernames in this file" ]]; then
+                # Check for invalid mod names (spaces or empty)
+                if [[ "$mod" =~ ^[[:space:]]*$ ]] || [[ "$mod" =~ [[:space:]] ]]; then
+                    print_warning "Removing invalid mod name: '$mod'"
+                    remove_from_list_file "$mod" "mod"
+                    continue
+                fi
+                
                 if ! grep -q -i "^$mod$" "$AUTHORIZED_MODS_FILE"; then
                     print_warning "Unauthorized mod detected: $mod"
                     send_server_command "/unmod $mod"
@@ -139,6 +152,12 @@ add_to_authorized() {
     local auth_file="$LOG_DIR/authorized_${list_type}s.txt"
     
     [ ! -f "$auth_file" ] && print_error "Authorization file not found: $auth_file" && return 1
+    
+    # Validate player name before adding
+    if ! is_valid_player_name "$player_name"; then
+        print_error "Cannot add invalid player name to authorized list: $player_name"
+        return 1
+    fi
     
     if ! grep -q -i "^$player_name$" "$auth_file"; then
         echo "$player_name" >> "$auth_file"
