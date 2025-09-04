@@ -23,12 +23,6 @@ print_header() {
     echo -e "===============================================================${NC}"
 }
 
-# Helper: escape player name for safe quoting (escapa \ y " )
-escape_player_name() {
-    local name="$1"
-    printf '%s' "$name" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
-}
-
 # Configuration
 LOG_FILE="$1"
 PORT="$2"
@@ -49,30 +43,25 @@ is_valid_player_name() {
 handle_invalid_player_name() {
     local player_name="$1"
     local player_ip="$2"
-    local escaped
-
-    # Trim whitespace
-    player_name=$(echo "$player_name" | xargs)
-
+    
     # Check if name is empty or contains only spaces
-    if [[ -z "$player_name" ]]; then
+    if [[ "$player_name" =~ ^[[:space:]]*$ ]]; then
         print_error "EMPTY PLAYER NAME DETECTED from IP: $player_ip"
         send_server_command "WARNING: Empty player names are not allowed!"
         send_server_command "Kicking player with empty name in 3 seconds..."
-        ( sleep 3; send_server_command_silent "/kick $player_ip" ) &
+        (sleep 3; send_server_command_silent "/kick $player_name") &
         return 1
     fi
-
+    
     # Check if name contains spaces
     if [[ "$player_name" =~ [[:space:]] ]]; then
         print_error "INVALID PLAYER NAME DETECTED: '$player_name' from IP: $player_ip"
         send_server_command "WARNING: Player names with spaces are not allowed!"
         send_server_command "Kicking player '$player_name' in 3 seconds..."
-        escaped=$(escape_player_name "$player_name")
-        ( sleep 3; send_server_command_silent "/kick \"$escaped\"" ) &
+        (sleep 3; send_server_command_silent "/kick $player_name") &
         return 1
     fi
-
+    
     return 0
 }
 
@@ -84,7 +73,7 @@ read_json_file() {
         echo "{}"
         return 1
     fi
-
+    
     # Use flock with proper file descriptor handling
     flock -s 200 cat "$file_path" 200>"${file_path}.lock"
 }
@@ -93,13 +82,14 @@ read_json_file() {
 write_json_file() {
     local file_path="$1"
     local content="$2"
-
+    
     if [ ! -f "$file_path" ]; then
         print_error "JSON file not found: $file_path"
         return 1
     fi
-
-    flock -x 200 bash -c "printf '%s' \"$content\" > \"$file_path\"" 200>"${file_path}.lock"
+    
+    # Use flock with proper file descriptor handling
+    flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
     return $?
 }
 
@@ -113,7 +103,7 @@ initialize_authorization_files() {
 validate_authorization() {
     local admin_list="$LOG_DIR/adminlist.txt"
     local mod_list="$LOG_DIR/modlist.txt"
-
+    
     # Check adminlist.txt against authorized_admins.txt
     if [ -f "$admin_list" ]; then
         while IFS= read -r admin; do
@@ -127,7 +117,7 @@ validate_authorization() {
             fi
         done < <(grep -v "^[[:space:]]*#" "$admin_list" 2>/dev/null || true)
     fi
-
+    
     # Check modlist.txt against authorized_mods.txt
     if [ -f "$mod_list" ]; then
         while IFS= read -r mod; do
@@ -147,9 +137,9 @@ validate_authorization() {
 add_to_authorized() {
     local player_name="$1" list_type="$2"
     local auth_file="$LOG_DIR/authorized_${list_type}s.txt"
-
+    
     [ ! -f "$auth_file" ] && print_error "Authorization file not found: $auth_file" && return 1
-
+    
     if ! grep -q -i "^$player_name$" "$auth_file"; then
         echo "$player_name" >> "$auth_file"
         print_success "Added $player_name to authorized ${list_type}s"
@@ -164,9 +154,9 @@ add_to_authorized() {
 remove_from_authorized() {
     local player_name="$1" list_type="$2"
     local auth_file="$LOG_DIR/authorized_${list_type}s.txt"
-
+    
     [ ! -f "$auth_file" ] && print_error "Authorization file not found: $auth_file" && return 1
-
+    
     # Use case-insensitive deletion with sed
     if grep -q -i "^$player_name$" "$auth_file"; then
         sed -i "/^$player_name$/Id" "$auth_file"
@@ -180,7 +170,7 @@ remove_from_authorized() {
 
 # Initialize admin offenses tracking
 initialize_admin_offenses() {
-    [ ! -f "$ADMIN_OFFENSES_FILE" ] && echo '{}' > "$ADMIN_OFFENSES_FILE" &&
+    [ ! -f "$ADMIN_OFFENSES_FILE" ] && echo '{}' > "$ADMIN_OFFENSES_FILE" && 
     print_success "Admin offenses tracking file created: $ADMIN_OFFENSES_FILE"
 }
 
@@ -190,14 +180,14 @@ record_admin_offense() {
     local offenses_data=$(read_json_file "$ADMIN_OFFENSES_FILE" 2>/dev/null || echo '{}')
     local current_offenses=$(echo "$offenses_data" | jq -r --arg admin "$admin_name" '.[$admin]?.count // 0')
     local last_offense_time=$(echo "$offenses_data" | jq -r --arg admin "$admin_name" '.[$admin]?.last_offense // 0')
-
+    
     [ $((current_time - last_offense_time)) -gt 300 ] && current_offenses=0
     current_offenses=$((current_offenses + 1))
-
+    
     offenses_data=$(echo "$offenses_data" | jq --arg admin "$admin_name" \
         --argjson count "$current_offenses" --argjson time "$current_time" \
         '.[$admin] = {"count": $count, "last_offense": $time}')
-
+    
     write_json_file "$ADMIN_OFFENSES_FILE" "$offenses_data"
     print_warning "Recorded offense #$current_offenses for admin $admin_name"
     return $current_offenses
@@ -216,9 +206,9 @@ clear_admin_offenses() {
 remove_from_list_file() {
     local player_name="$1" list_type="$2"
     local list_file="$LOG_DIR/${list_type}list.txt"
-
+    
     [ ! -f "$list_file" ] && print_error "List file not found: $list_file" && return 1
-
+    
     # Use case-insensitive deletion with sed
     if grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"; then
         sed -i "/^$player_name$/Id" "$list_file"
@@ -233,24 +223,22 @@ remove_from_list_file() {
 # Function to send delayed unadmin/unmod commands (SILENT VERSION)
 send_delayed_uncommands() {
     local target_player="$1" command_type="$2"
-    local escaped=$(escape_player_name "$target_player")
     (
-        sleep 2; send_server_command_silent "/un${command_type} \"$escaped\""
-        sleep 2; send_server_command_silent "/un${command_type} \"$escaped\""
-        sleep 1; send_server_command_silent "/un${command_type} \"$escaped\""
+        sleep 2; send_server_command_silent "/un${command_type} $target_player"
+        sleep 2; send_server_command_silent "/un${command_type} $target_player"
+        sleep 1; send_server_command_silent "/un${command_type} $target_player"
         remove_from_list_file "$target_player" "$command_type"
     ) &
 }
 
 # Silent version of send_server_command
 send_server_command_silent() {
-    local cmd="$1"
-    screen -S "$SCREEN_SERVER" -p 0 -X stuff "$(printf '%s\r' "$cmd")" 2>/dev/null
+    screen -S "$SCREEN_SERVER" -X stuff "$1$(printf \\r)" 2>/dev/null
 }
 
 # Function to send server command
 send_server_command() {
-    if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$(printf '%s\r' "$1")" 2>/dev/null; then
+    if screen -S "$SCREEN_SERVER" -X stuff "$1$(printf \\r)" 2>/dev/null; then
         print_success "Sent message to server: $1"
     else
         print_error "Could not send message to server. Is the server running?"
@@ -261,7 +249,7 @@ send_server_command() {
 is_player_in_list() {
     local player_name="$1" list_type="$2"
     local list_file="$LOG_DIR/${list_type}list.txt"
-
+    
     [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$" && return 0
     return 1
 }
@@ -269,62 +257,59 @@ is_player_in_list() {
 # Function to handle unauthorized admin/mod commands
 handle_unauthorized_command() {
     local player_name="$1" command="$2" target_player="$3"
-
+    
     if is_player_in_list "$player_name" "admin"; then
         print_error "UNAUTHORIZED COMMAND: Admin $player_name attempted to use $command on $target_player"
         send_server_command "WARNING: Admin $player_name attempted unauthorized rank assignment!"
-
+        
         local command_type=""
         [ "$command" = "/admin" ] && command_type="admin"
         [ "$command" = "/mod" ] && command_type="mod"
-
+        
         if [ -n "$command_type" ]; then
-            local escaped_target=$(escape_player_name "$target_player")
-            send_server_command_silent "/un${command_type} \"$escaped_target\""
+            send_server_command_silent "/un${command_type} $target_player"
             remove_from_list_file "$target_player" "$command_type"
             print_success "Revoked ${command_type} rank from $target_player"
             send_delayed_uncommands "$target_player" "$command_type"
         fi
-
+        
         record_admin_offense "$player_name"
         local offense_count=$?
-
+        
         if [ "$offense_count" -eq 1 ]; then
             send_server_command "$player_name, this is your first warning! Only the server console can assign ranks using !set_admin or !set_mod."
             print_warning "First offense recorded for admin $player_name"
         elif [ "$offense_count" -eq 2 ]; then
             print_warning "SECOND OFFENSE: Admin $player_name is being demoted to mod for unauthorized command usage"
-
+            
             # First add to authorized mods before removing admin privileges
             add_to_authorized "$player_name" "mod"
-
+            
             # Remove from authorized admins
             remove_from_authorized "$player_name" "admin"
-
+            
             # Remove admin privileges
-            send_server_command_silent "/unadmin \"$player_name\""
+            send_server_command_silent "/unadmin $player_name"
             remove_from_list_file "$player_name" "admin"
-
+            
             # Assign mod rank - ensure the player is added to modlist before sending the command
             send_server_command "/mod $player_name"
             send_server_command "ALERT: Admin $player_name has been demoted to moderator for repeatedly attempting unauthorized admin commands!"
             send_server_command "Only the server console can assign ranks using !set_admin or !set_mod."
-
+            
             # Clear offenses after punishment
             clear_admin_offenses "$player_name"
         fi
     else
         print_warning "Non-admin player $player_name attempted to use $command on $target_player"
         send_server_command "$player_name, you don't have permission to assign ranks."
-
+        
         if [ "$command" = "/admin" ]; then
-            local escaped_target=$(escape_player_name "$target_player")
-            send_server_command_silent "/unadmin \"$escaped_target\""
+            send_server_command_silent "/unadmin $target_player"
             remove_from_list_file "$target_player" "admin"
             send_delayed_uncommands "$target_player" "admin"
         elif [ "$command" = "/mod" ]; then
-            local escaped_target=$(escape_player_name "$target_player")
-            send_server_command_silent "/unmod \"$escaped_target\""
+            send_server_command_silent "/unmod $target_player"
             remove_from_list_file "$target_player" "mod"
             send_delayed_uncommands "$target_player" "mod"
         fi
@@ -361,7 +346,7 @@ monitor_log() {
 
     # Start authorization validation in background
     (
-        while true; do
+        while true; do 
             sleep 3
             validate_authorization
         done
@@ -383,31 +368,29 @@ monitor_log() {
         if [[ "$line" =~ Player\ Connected\ ([^|]+)\ \|\ ([0-9a-fA-F.:]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}"
             player_name=$(echo "$player_name" | xargs)  # Trim whitespace
-
+            
             # Check for invalid player names (spaces or empty)
             if ! handle_invalid_player_name "$player_name" "$player_ip"; then
                 continue  # Skip processing if player is invalid and will be kicked
             fi
-
+            
             # Validate player names for commands
             if ! is_valid_player_name "$player_name"; then
                 print_warning "Invalid player name detected: $player_name"
                 continue
             fi
         fi
-
+        
         # Detect unauthorized admin/mod commands
-        # NOTA: este regex busca nombres sin espacios (común para comandos). Si tu servidor permite admins con espacios,
-        # deberías ajustar el parsing del log para capturar nombres entre comillas.
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ \/(admin|mod)\ ([a-zA-Z0-9_]+) ]]; then
             local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
-
+            
             # Validate player names
             if ! is_valid_player_name "$command_user" || ! is_valid_player_name "$target_player"; then
                 print_warning "Invalid player name in command: $command_user or $target_player"
                 continue
             fi
-
+            
             [ "$command_user" != "SERVER" ] && handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
         fi
     done
@@ -431,20 +414,20 @@ if [ $# -eq 1 ] || [ $# -eq 2 ]; then
     if [ ! -f "$LOG_FILE" ]; then
         print_error "Log file not found: $LOG_FILE"
         print_status "Waiting for log file to be created..."
-
+        
         # Wait for log file to be created
         local wait_time=0
         while [ ! -f "$LOG_FILE" ] && [ $wait_time -lt 30 ]; do
             sleep 1
             ((wait_time++))
         done
-
+        
         if [ ! -f "$LOG_FILE" ]; then
             print_error "Log file never appeared: $LOG_FILE"
             exit 1
         fi
     fi
-
+    
     monitor_log "$1"
 else
     show_usage
