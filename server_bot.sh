@@ -22,39 +22,26 @@ print_header() {
 }
 print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
-# Function to validate player names
+# Function to validate player names - IMPROVED VALIDATION
 is_valid_player_name() {
     local player_name="$1"
-    # Permite nombres con espacios pero no vacíos o solo espacios
-    [[ -n "$player_name" && ! "$player_name" =~ ^[[:space:]]*$ ]]
+    # Trim leading/trailing spaces
+    local trimmed_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    # Check if name is empty, contains only spaces, or matches unnamed pattern
+    [[ -n "$trimmed_name" && ! "$trimmed_name" =~ ^[[:space:]]*$ && ! "$trimmed_name" =~ ^[uU]nnamed[0-9]*$ ]]
 }
 
-# Function to safely read JSON files with locking
-read_json_file() {
-    local file_path="$1"
-    if [ ! -f "$file_path" ]; then
-        print_error "JSON file not found: $file_path"
-        echo "{}"
-        return 1
-    fi
+# Function to kick player after delay for invalid name
+kick_invalid_name_player() {
+    local player_name="$1"
+    local port="$2"
+    local screen_server="blockheads_server_$port"
     
-    # Use flock with proper file descriptor handling
-    flock -s 200 cat "$file_path" 200>"${file_path}.lock"
-}
-
-# Function to safely write JSON files with locking
-write_json_file() {
-    local file_path="$1"
-    local content="$2"
+    print_warning "Player '$player_name' has invalid name. Kicking in 3 seconds..."
+    send_server_command "WARNING: Player '$player_name' has an invalid name. Please use a proper name without spaces."
     
-    if [ ! -f "$file_path" ]; then
-        print_error "JSON file not found: $file_path"
-        return 1
-    fi
-    
-    # Use flock with proper file descriptor handling
-    flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
-    return $?
+    # Wait 3 seconds then kick
+    (sleep 3; screen -S "$screen_server" -X stuff "/kick $player_name$(printf \\r)") &
 }
 
 # Bot configuration - now supports multiple servers
@@ -313,9 +300,9 @@ process_message() {
             fi
             ;;
         "!give_admin "*)
-            if [[ "$message" =~ !give_admin\ ([^ ]+) ]]; then
+            if [[ "$message" =~ !give_admin\ ([^:]+) ]]; then
                 local target_player="${BASH_REMATCH[1]}"
-                # Sanitize: remove leading/trailing spaces
+                # Trim spaces from target player name
                 target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
                 process_give_rank "$player_name" "$target_player" "admin"
             else
@@ -323,9 +310,9 @@ process_message() {
             fi
             ;;
         "!give_mod "*)
-            if [[ "$message" =~ !give_mod\ ([^ ]+) ]]; then
+            if [[ "$message" =~ !give_mod\ ([^:]+) ]]; then
                 local target_player="${BASH_REMATCH[1]}"
-                # Sanitize: remove leading/trailing spaces
+                # Trim spaces from target player name
                 target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
                 process_give_rank "$player_name" "$target_player" "mod"
             else
@@ -349,10 +336,10 @@ process_message() {
 process_admin_command() {
     local command="$1" current_data=$(read_json_file "$ECONOMY_FILE")
     
-    if [[ "$command" =~ ^!send_ticket\ ([^ ]+)\ ([0-9]+)$ ]]; then
+    if [[ "$command" =~ ^!send_ticket\ ([^:]+)\ ([0-9]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}" tickets_to_add="${BASH_REMATCH[2]}"
         
-        # Sanitize: remove leading/trailing spaces
+        # Trim spaces from player name
         player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         
         # Validate player name
@@ -384,10 +371,10 @@ process_admin_command() {
         write_json_file "$ECONOMY_FILE" "$current_data"
         print_success "Added $tickets_to_add tickets to $player_name (Total: $new_tickets)"
         send_server_command "$player_name received $tickets_to_add tickets from admin! Total: $new_tickets"
-    elif [[ "$command" =~ ^!set_mod\ ([^ ]+)$ ]]; then
+    elif [[ "$command" =~ ^!set_mod\ ([^:]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
         
-        # Sanitize: remove leading/trailing spaces
+        # Trim spaces from player name
         player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         
         # Validate player name
@@ -401,10 +388,10 @@ process_admin_command() {
         add_to_authorized "$player_name" "mod"
         screen -S "$SCREEN_SERVER" -X stuff "/mod $player_name$(printf \\r)"
         send_server_command "$player_name has been set as MOD by server console!"
-    elif [[ "$command" =~ ^!set_admin\ ([^ ]+)$ ]]; then
+    elif [[ "$command" =~ ^!set_admin\ ([^:]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
         
-        # Sanitize: remove leading/trailing spaces
+        # Trim spaces from player name
         player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         
         # Validate player name
@@ -512,17 +499,19 @@ monitor_log() {
 
     # Monitor the log file
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
-        # Detect player connections
-        if [[ "$line" =~ Player\ Connected\ ([^ ]+)\ \|\ ([0-9a-fA-F.:]+) ]]; then
+        # Detect player connections - FIXED REGEX FOR NAMES WITH SPACES
+        if [[ "$line" =~ Player\ Connected\ ([^:]+)\ \|\ ([0-9a-fA-F.:]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}"
             [ "$player_name" == "SERVER" ] && continue
-
-            # Sanitize: remove leading/trailing spaces
+            
+            # Trim spaces from player name
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
-            # Validate player name
+            # Validate player name - NEW SECURITY FEATURE
             if ! is_valid_player_name "$player_name"; then
-                print_warning "Invalid player name detected: '$player_name'"
+                print_warning "Player with invalid name detected: '$player_name' (IP: $player_ip)"
+                # Kick player after 3 seconds
+                kick_invalid_name_player "$player_name" "$PORT"
                 continue
             fi
 
@@ -548,11 +537,11 @@ monitor_log() {
             continue
         fi
 
-        if [[ "$line" =~ Player\ Disconnected\ ([^ ]+) ]]; then
+        if [[ "$line" =~ Player\ Disconnected\ ([^:]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             [ "$player_name" == "SERVER" ] && continue
             
-            # Sanitize: remove leading/trailing spaces
+            # Trim spaces from player name
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             # Validate player name
@@ -566,16 +555,17 @@ monitor_log() {
             continue
         fi
 
+        # FIXED REGEX FOR NAMES WITH SPACES IN CHAT MESSAGES
         if [[ "$line" =~ ([^:]+):\ (.+)$ ]]; then
             local player_name="${BASH_REMATCH[1]}" message="${BASH_REMATCH[2]}"
             [ "$player_name" == "SERVER" ] && continue
             
-            # Sanitize: remove leading/trailing spaces
+            # Trim spaces from player name
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             # Validate player name
             if ! is_valid_player_name "$player_name"; then
-                print_warning "Invalid player name detected: '$player_name'"
+                print_warning "Invalid player name detected in chat: '$player_name'"
                 continue
             fi
             
