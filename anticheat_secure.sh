@@ -33,9 +33,6 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCREEN_SERVER="blockheads_server_$PORT"
 
-# Track kicked players to avoid duplicate messages
-declare -A KICKED_PLAYERS
-
 # Function to validate player names
 is_valid_player_name() {
     local player_name="$1"
@@ -48,61 +45,33 @@ is_valid_player_name() {
 handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="$3"
     
-    # Skip if already kicked
-    [[ -n "${KICKED_PLAYERS[$player_hash]}" ]] && return 0
-    
     # Trim spaces for validation
     local player_name_trimmed=$(echo "$player_name" | xargs)
     
     # Check if name is empty after trimming or contains invalid characters
     if [[ -z "$player_name_trimmed" ]]; then
-        print_warning "INVALID PLAYER NAME DETECTED: '$player_name' (IP: $player_ip, Hash: $player_hash) - Empty name"
-        send_server_command "WARNING: Empty player names are not allowed! This player will be kicked immediately."
-        
-        # Mark as kicked to avoid duplicate processing
-        KICKED_PLAYERS[$player_hash]=1
-        
-        # Immediate kick (10ms)
-        (
-            usleep 10000  # 10 milliseconds
-            print_warning "Kicking player with empty name: '$player_name'"
-            send_server_command "/kick $player_name"
-        ) &
-        
-        # Safety kick after 3 seconds
-        (
-            sleep 3
-            if [[ -n "${KICKED_PLAYERS[$player_hash]}" ]]; then
-                print_warning "Safety kick for empty name: '$player_name'"
-                send_server_command "/kick $player_name"
-            fi
-        ) &
-        return 0
+        print_warning "EMPTY PLAYER NAME: '$player_name' (IP: $player_ip, Hash: $player_hash)"
+        send_server_command "WARNING: Empty player names are not allowed! Kicking in 0.05 seconds..."
     elif ! is_valid_player_name "$player_name"; then
-        print_warning "INVALID PLAYER NAME DETECTED: '$player_name' (IP: $player_ip, Hash: $player_hash) - Contains spaces or special characters"
-        send_server_command "WARNING: Player names with spaces or special characters are not allowed! This player will be kicked immediately."
-        
-        # Mark as kicked to avoid duplicate processing
-        KICKED_PLAYERS[$player_hash]=1
-        
-        # Immediate kick (10ms)
-        (
-            usleep 10000  # 10 milliseconds
-            print_warning "Kicking player with invalid name: '$player_name'"
-            send_server_command "/kick $player_name"
-        ) &
-        
-        # Safety kick after 3 seconds
-        (
-            sleep 3
-            if [[ -n "${KICKED_PLAYERS[$player_hash]}" ]]; then
-                print_warning "Safety kick for invalid name: '$player_name'"
-                send_server_command "/kick $player_name"
-            fi
-        ) &
-        return 0
+        print_warning "INVALID PLAYER NAME: '$player_name' (IP: $player_ip, Hash: $player_hash)"
+        send_server_command "WARNING: Player names with spaces or special characters are not allowed! Kicking in 0.05 seconds..."
+    else
+        return 1  # Not invalid
     fi
-    return 1
+        
+    # Schedule kick after 50 milliseconds
+    (
+        if command -v usleep >/dev/null 2>&1; then
+            usleep 50000
+        elif command -v perl >/dev/null 2>&1; then
+            perl -e 'select(undef, undef, undef, 0.05)'
+        else
+            sleep 0.05  # Fallback to sleep with decimal, may not work on all systems
+        fi
+        print_warning "Kicking player with invalid name: '$player_name'"
+        send_server_command "/kick $player_name"
+    ) &
+    return 0
 }
 
 # Function to safely read JSON files with locking
@@ -217,7 +186,7 @@ initialize_admin_offenses() {
 # Function to record admin offense
 record_admin_offense() {
     local admin_name="$1" current_time=$(date +%s)
-    local offenses_data=$(read_json_file "$ADMIN_OFFENSES_FILE" 2>/dev/null || echo '{}')
+    local offenses_data=$(read_json_file "$ADMIN_OFFENSes_FILE" 2>/dev/null || echo '{}')
     local current_offenses=$(echo "$offenses_data" | jq -r --arg admin "$admin_name" '.[$admin]?.count // 0')
     local last_offense_time=$(echo "$offenses_data" | jq -r --arg admin "$admin_name" '.[$admin]?.last_offense // 0')
     
