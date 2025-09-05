@@ -1,6 +1,7 @@
 #!/bin/bash
 # anticheat_secure.sh - Enhanced security system for The Blockheads server
-# Improved security with name sanitization, atomic JSON operations, and safe file handling
+# Improved for new users: Better error messages, fixed file locking issues
+# Enhanced to detect and kick players with invalid names (spaces, special characters)
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -32,118 +33,20 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCREEN_SERVER="blockheads_server_$PORT"
 
-# ========== SECURITY HELPER FUNCTIONS ==========
-
-# sanitize_name: returns only allowed characters [A-Za-z0-9_]
-sanitize_name() {
-    local raw="$1"
-    # remove NUL, CR, LF, limit to printable ASCII, then remove everything except alnum and underscore
-    local cleaned
-    cleaned=$(printf '%s' "$raw" | tr -d '\000' | tr -d '\r' | tr -d '\n' | tr -cd '\11\12\15\40-\176')
-    cleaned=$(printf '%s' "$cleaned" | sed 's/[^A-Za-z0-9_]//g')
-    printf '%s' "$cleaned"
-}
-
-# clean_for_log: safe for logging (removes NUL/CR)
-clean_for_log() {
-    local raw="$1"
-    printf '%s' "$raw" | tr -d '\000' | tr -d '\r'
-}
-
-# safe_grep_exact_ic: literal case-insensitive matching
-safe_grep_exact_ic() {
-    local pattern="$1" file="$2"
-    grep -F -x -i -- "$pattern" "$file" 2>/dev/null
-}
-
-# read_json_file: safe reading with flock
-read_json_file() {
-    local file_path="$1"
-    if [ ! -f "$file_path" ]; then
-        print_error "JSON file not found: $file_path"
-        echo "{}"
-        return 1
-    fi
-
-    exec 200>"${file_path}.lock"
-    flock -s 200
-    cat "$file_path"
-    flock -u 200
-    exec 200>&-
-}
-
-# write_json_file: atomic write with flock and mktemp
-write_json_file() {
-    local file_path="$1"
-    local content="$2"
-
-    if [ ! -f "$file_path" ]; then
-        printf '%s' "{}" > "$file_path"
-    fi
-
-    exec 200>"${file_path}.lock"
-    flock -x 200
-
-    local tmp
-    tmp=$(mktemp "${file_path}.tmp.XXXXXX") || { 
-        print_error "mktemp failed"; 
-        flock -u 200; 
-        exec 200>&-; 
-        return 1; 
-    }
-    printf '%s' "$content" > "$tmp" && mv "$tmp" "$file_path"
-
-    flock -u 200
-    exec 200>&-
-
-    return 0
-}
-
-# remove_from_list_file: safe deletion using awk and mktemp
-remove_from_list_file() {
-    local player_name="$1" list_type="$2"
-    local list_file="$LOG_DIR/${list_type}list.txt"
-
-    [ ! -f "$list_file" ] && return 1
-
-    local cleaned
-    cleaned=$(sanitize_name "$player_name")
-    local tmp
-    tmp=$(mktemp) || { 
-        print_error "mktemp failed"; 
-        return 1; 
-    }
-
-    awk -v p="$cleaned" 'BEGIN{IGNORECASE=1} {
-        line=$0; sub(/\r$/, "", line)
-        tmp=line; gsub(/[^A-Za-z0-9_]/,"",tmp)
-        if (tolower(tmp) != tolower(p)) print $0
-    }' "$list_file" > "$tmp" && mv "$tmp" "$list_file"
-    return 0
-}
-
-# send_server_command_silent: safe command sending
-send_server_command_silent() {
-    local cmd="$1"
-    cmd=$(printf '%s' "$cmd" | tr -d '\000' | tr -d '\r')
-    screen -S "$SCREEN_SERVER" -X stuff "$cmd$(printf \\r)" 2>/dev/null || return 1
-}
-
-# ========== CORE FUNCTIONALITY ==========
-
 # Function to validate player names - IMPROVED DETECTION
 is_valid_player_name() {
     local player_name="$1"
-    local cleaned
-    cleaned=$(sanitize_name "$player_name")
+    
+    # Remove null bytes and other problematic characters first
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r')
     
     # Check if name is empty after cleaning
-    if [[ -z "$cleaned" ]]; then
+    if [[ -z "$player_name" ]]; then
         return 1
     fi
     
-    # Check if cleaned name matches original (no invalid characters)
-    if [[ "$cleaned" != "$player_name" ]]; then
+    # Check for invalid characters (allow only letters, numbers, underscores)
+    if [[ "$player_name" =~ [^a-zA-Z0-9_] ]]; then
         return 1
     fi
     
@@ -155,29 +58,51 @@ handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="$3"
     
     # Clean the player name for validation
-    local cleaned_name=$(sanitize_name "$player_name")
+    local cleaned_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r')
     
     # Check if name is empty after cleaning or contains invalid characters
     if [[ -z "$cleaned_name" ]] || ! is_valid_player_name "$player_name"; then
-        local safe_name=$(clean_for_log "$player_name")
-        print_warning "INVALID PLAYER NAME: '$safe_name' (IP: $player_ip, Hash: $player_hash)"
-        send_server_command "WARNING: Player name '$safe_name' contains invalid characters! Only letters, numbers, and underscores are allowed. Kicking in 0.05 seconds..."
+        print_warning "INVALID PLAYER NAME: '$player_name' (IP: $player_ip, Hash: $player_hash)"
+        send_server_command "WARNING: Player name '$player_name' contains invalid characters! Only letters, numbers, and underscores are allowed. Kicking in 0.05 seconds..."
         
-        # Schedule kick after 50 milliseconds - use player_hash if available
+        # Schedule kick after 50 milliseconds
         (
             usleep 50000  # 50 milliseconds
-            print_warning "Kicking player with invalid name: '$safe_name'"
-            if [[ -n "$player_hash" ]]; then
-                # Use player_hash for kicking (more secure)
-                send_server_command_silent "/kick $player_hash"
-            else
-                # Fallback to sanitized name
-                send_server_command_silent "/kick $cleaned_name"
-            fi
+            print_warning "Kicking player with invalid name: '$player_name'"
+            # Use the original player name for kicking (as it appears in the server)
+            send_server_command "/kick \"$player_name\""
         ) &
         return 0
     fi
     return 1
+}
+
+# Function to safely read JSON files with locking
+read_json_file() {
+    local file_path="$1"
+    if [ ! -f "$file_path" ]; then
+        print_error "JSON file not found: $file_path"
+        echo "{}"
+        return 1
+    fi
+    
+    # Use flock with proper file descriptor handling
+    flock -s 200 cat "$file_path" 200>"${file_path}.lock"
+}
+
+# Function to safely write JSON files with locking
+write_json_file() {
+    local file_path="$1"
+    local content="$2"
+    
+    if [ ! -f "$file_path" ]; then
+        print_error "JSON file not found: $file_path"
+        return 1
+    fi
+    
+    # Use flock with proper file descriptor handling
+    flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
+    return $?
 }
 
 # Function to initialize authorization files
@@ -195,12 +120,12 @@ validate_authorization() {
     if [ -f "$admin_list" ]; then
         while IFS= read -r admin; do
             # Clean admin name before checking
-            admin=$(sanitize_name "$admin")
+            admin=$(echo "$admin" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
             
             if [[ -n "$admin" && ! "$admin" =~ ^[[:space:]]*# && ! "$admin" =~ "Usernames in this file" ]]; then
-                if ! safe_grep_exact_ic "$admin" "$AUTHORIZED_ADMINS_FILE"; then
+                if ! grep -q -i "^$admin$" "$AUTHORIZED_ADMINS_FILE"; then
                     print_warning "Unauthorized admin detected: $admin"
-                    send_server_command_silent "/unadmin $admin"
+                    send_server_command "/unadmin $admin"
                     remove_from_list_file "$admin" "admin"
                     print_success "Removed unauthorized admin: $admin"
                 fi
@@ -212,12 +137,12 @@ validate_authorization() {
     if [ -f "$mod_list" ]; then
         while IFS= read -r mod; do
             # Clean mod name before checking
-            mod=$(sanitize_name "$mod")
+            mod=$(echo "$mod" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
             
             if [[ -n "$mod" && ! "$mod" =~ ^[[:space:]]*# && ! "$mod" =~ "Usernames in this file" ]]; then
-                if ! safe_grep_exact_ic "$mod" "$AUTHORIZED_MODS_FILE"; then
+                if ! grep -q -i "^$mod$" "$AUTHORIZED_MODS_FILE"; then
                     print_warning "Unauthorized mod detected: $mod"
-                    send_server_command_silent "/unmod $mod"
+                    send_server_command "/unmod $mod"
                     remove_from_list_file "$mod" "mod"
                     print_success "Removed unauthorized mod: $mod"
                 fi
@@ -234,9 +159,9 @@ add_to_authorized() {
     [ ! -f "$auth_file" ] && print_error "Authorization file not found: $auth_file" && return 1
     
     # Clean player name before adding
-    player_name=$(sanitize_name "$player_name")
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
     
-    if ! safe_grep_exact_ic "$player_name" "$auth_file"; then
+    if ! grep -q -i "^$player_name$" "$auth_file"; then
         echo "$player_name" >> "$auth_file"
         print_success "Added $player_name to authorized ${list_type}s"
         return 0
@@ -254,11 +179,11 @@ remove_from_authorized() {
     [ ! -f "$auth_file" ] && print_error "Authorization file not found: $auth_file" && return 1
     
     # Clean player name before removing
-    player_name=$(sanitize_name "$player_name")
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
     
-    # Use safe deletion with awk and mktemp
-    if safe_grep_exact_ic "$player_name" "$auth_file"; then
-        remove_from_list_file "$player_name" "${list_type}"
+    # Use case-insensitive deletion with sed
+    if grep -q -i "^$player_name$" "$auth_file"; then
+        sed -i "/^$player_name$/Id" "$auth_file"
         print_success "Removed $player_name from authorized ${list_type}s"
         return 0
     else
@@ -301,6 +226,27 @@ clear_admin_offenses() {
     print_success "Cleared offenses for admin $admin_name"
 }
 
+# Function to remove player from list file
+remove_from_list_file() {
+    local player_name="$1" list_type="$2"
+    local list_file="$LOG_DIR/${list_type}list.txt"
+    
+    [ ! -f "$list_file" ] && print_error "List file not found: $list_file" && return 1
+    
+    # Clean player name before removing
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
+    
+    # Use case-insensitive deletion with sed
+    if grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"; then
+        sed -i "/^$player_name$/Id" "$list_file"
+        print_success "Removed $player_name from ${list_type}list.txt"
+        return 0
+    else
+        print_warning "Player $player_name not found in ${list_type}list.txt"
+        return 1
+    fi
+}
+
 # Function to send delayed unadmin/unmod commands (SILENT VERSION)
 send_delayed_uncommands() {
     local target_player="$1" command_type="$2"
@@ -312,12 +258,15 @@ send_delayed_uncommands() {
     ) &
 }
 
+# Silent version of send_server_command
+send_server_command_silent() {
+    screen -S "$SCREEN_SERVER" -X stuff "$1$(printf \\r)" 2>/dev/null
+}
+
 # Function to send server command
 send_server_command() {
-    local cmd="$1"
-    cmd=$(printf '%s' "$cmd" | tr -d '\000' | tr -d '\r')
-    if screen -S "$SCREEN_SERVER" -X stuff "$cmd$(printf \\r)" 2>/dev/null; then
-        print_success "Sent message to server: $(clean_for_log "$cmd")"
+    if screen -S "$SCREEN_SERVER" -X stuff "$1$(printf \\r)" 2>/dev/null; then
+        print_success "Sent message to server: $1"
     else
         print_error "Could not send message to server. Is the server running?"
     fi
@@ -328,10 +277,7 @@ is_player_in_list() {
     local player_name="$1" list_type="$2"
     local list_file="$LOG_DIR/${list_type}list.txt"
     
-    # Clean player name before checking
-    player_name=$(sanitize_name "$player_name")
-    
-    [ -f "$list_file" ] && safe_grep_exact_ic "$player_name" "$list_file" && return 0
+    [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$" && return 0
     return 1
 }
 
@@ -340,8 +286,8 @@ handle_unauthorized_command() {
     local player_name="$1" command="$2" target_player="$3"
     
     # Clean player names before processing
-    player_name=$(sanitize_name "$player_name")
-    target_player=$(sanitize_name "$target_player")
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
+    target_player=$(echo "$target_player" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
     
     if is_player_in_list "$player_name" "admin"; then
         print_error "UNAUTHORIZED COMMAND: Admin $player_name attempted to use $command on $target_player"
@@ -460,11 +406,11 @@ monitor_log() {
             
             # Validate player names for legitimate connections
             if ! is_valid_player_name "$player_name"; then
-                print_warning "Invalid player name in connection: $(clean_for_log "$player_name")"
+                print_warning "Invalid player name in connection: $player_name"
                 continue
             fi
             
-            print_success "Player connected: $(clean_for_log "$player_name") (IP: $player_ip)"
+            print_success "Player connected: $player_name (IP: $player_ip)"
         fi
 
         # Detect unauthorized admin/mod commands
@@ -473,7 +419,7 @@ monitor_log() {
             
             # Validate player names
             if ! is_valid_player_name "$command_user" || ! is_valid_player_name "$target_player"; then
-                print_warning "Invalid player name in command: $(clean_for_log "$command_user") or $(clean_for_log "$target_player")"
+                print_warning "Invalid player name in command: $command_user or $target_player"
                 continue
             fi
             
