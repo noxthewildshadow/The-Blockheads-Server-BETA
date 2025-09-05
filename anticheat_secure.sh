@@ -1,7 +1,7 @@
 #!/bin/bash
 # anticheat_secure.sh - Enhanced security system for The Blockheads server
 # Improved for new users: Better error messages, fixed file locking issues
-# Enhanced to detect and kick players with invalid names (spaces, special characters)
+# Enhanced to detect and kick players with invalid names (spaces, special characters, nullbytes)
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -37,8 +37,19 @@ SCREEN_SERVER="blockheads_server_$PORT"
 is_valid_player_name() {
     local player_name="$1"
     # Remove leading/trailing spaces first
-    player_name=$(echo "$player_name" | xargs)
-    [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]
+    player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    
+    # Check for nullbytes and non-printable characters
+    if echo "$player_name" | grep -q -P "[^[:print:]]"; then
+        return 1
+    fi
+    
+    # Check if name is empty after trimming or contains invalid characters
+    if [[ -z "$player_name" ]] || [[ ! "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]; then
+        return 1
+    fi
+    
+    return 0
 }
 
 # Function to detect and handle invalid player names
@@ -46,20 +57,28 @@ handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="$3"
     
     # Trim spaces for validation
-    local player_name_trimmed=$(echo "$player_name" | xargs)
+    local player_name_trimmed=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    
+    # Check for nullbytes and non-printable characters
+    if echo "$player_name" | grep -q -P "[^[:print:]]"; then
+        print_warning "INVALID PLAYER NAME: '$player_name' contains nullbytes or non-printable characters (IP: $player_ip, Hash: $player_hash)"
+        send_server_command "WARNING: Player name contains invalid characters (nullbytes or non-printable characters)! Kicking immediately."
+        send_server_command "/kick $player_name"
+        return 0
+    fi
     
     # Check if name is empty after trimming
     if [[ -z "$player_name_trimmed" ]]; then
-        print_warning "INVALID PLAYER NAME: Empty name detected (IP: $player_ip, Hash: $player_hash)"
-        send_server_command "WARNING: Player with empty name detected! This is not allowed. Kicking immediately."
+        print_warning "INVALID PLAYER NAME: '$player_name' is empty or contains only spaces (IP: $player_ip, Hash: $player_hash)"
+        send_server_command "WARNING: Empty player names are not allowed! Kicking immediately."
         send_server_command "/kick $player_name"
         return 0
     fi
     
     # Check if name contains invalid characters
-    if ! [[ "$player_name_trimmed" =~ ^[a-zA-Z0-9_]+$ ]]; then
+    if [[ ! "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]; then
         print_warning "INVALID PLAYER NAME: '$player_name' contains invalid characters (IP: $player_ip, Hash: $player_hash)"
-        send_server_command "WARNING: Player name '$player_name' contains invalid characters! Only letters, numbers, and underscores are allowed. Kicking immediately."
+        send_server_command "WARNING: Player name contains invalid characters! Only letters, numbers and underscores are allowed. Kicking immediately."
         send_server_command "/kick $player_name"
         return 0
     fi
@@ -318,6 +337,30 @@ handle_unauthorized_command() {
     fi
 }
 
+# Function to block server commands
+block_server_commands() {
+    local line="$1"
+    
+    # List of commands to block
+    local blocked_commands=(
+        "/CLEAR-ADMINLIST" "/CLEAR-MODLIST" "/CLEAR-WHITELIST" "/CLEAR-BLACKLIST"
+        "/RESET-OWNER" "/UNADMIN" "/ADMIN" "/UNMOD" "/MOD" "/LOAD-LISTS"
+        "/LIST-ADMINLIST" "/LIST-MODLIST" "/STOP" "/DEBUG-LOG" "/LIST-WHITELIST"
+        "/LIST-BLACKLIST" "/UNWHITELIST" "/WHITELIST" "/UNBAN" "/BAN-NO-DEVICE"
+        "/BAN" "/KICK" "/PLAYERS" "/HELP"
+    )
+    
+    for cmd in "${blocked_commands[@]}"; do
+        if [[ "$line" == *"$cmd"* ]]; then
+            print_error "BLOCKED COMMAND: Attempted to use $cmd"
+            send_server_command "WARNING: This command ($cmd) has been disabled by the security system!"
+            return 0
+        fi
+    done
+    
+    return 1
+}
+
 # Filter server log to exclude certain messages
 filter_server_log() {
     while read line; do
@@ -366,11 +409,16 @@ monitor_log() {
 
     # Monitor the log file for unauthorized commands and invalid player names
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
+        # Block server commands first
+        if block_server_commands "$line"; then
+            continue
+        fi
+
         # Detect player connections with invalid names
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
             
-            # Handle invalid player names (spaces, special characters)
+            # Handle invalid player names (spaces, special characters, nullbytes)
             if handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"; then
                 continue  # Skip further processing for invalid names
             fi
