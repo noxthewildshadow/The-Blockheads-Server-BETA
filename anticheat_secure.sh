@@ -1,7 +1,5 @@
 #!/bin/bash
 # anticheat_secure.sh - Enhanced security system for The Blockheads server
-# Improved for new users: Better error messages, fixed file locking issues
-# Enhanced to detect and kick players with invalid names (spaces, special characters)
 
 # Enhanced Colors for output
 RED='\033[0;31m'
