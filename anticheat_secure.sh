@@ -1,5 +1,7 @@
 #!/bin/bash
 # anticheat_secure.sh - Enhanced security system for The Blockheads server
+# Improved for new users: Better error messages, fixed file locking issues
+# Enhanced to detect and kick players with invalid names (spaces, special characters)
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -50,26 +52,25 @@ handle_invalid_player_name() {
     if [[ -z "$player_name_trimmed" ]]; then
         print_warning "EMPTY PLAYER NAME: '$player_name' (IP: $player_ip, Hash: $player_hash)"
         send_server_command "WARNING: Empty player names are not allowed! Kicking in 0.05 seconds..."
+        # Schedule kick after 50 milliseconds
+        (
+            usleep 50000  # 50 milliseconds
+            print_warning "Kicking player with empty name: '$player_name'"
+            send_server_command "/kick $player_name"
+        ) &
+        return 0
     elif ! is_valid_player_name "$player_name"; then
         print_warning "INVALID PLAYER NAME: '$player_name' (IP: $player_ip, Hash: $player_hash)"
-        send_server_command "WARNING: Player names with spaces or special characters are not allowed! Kicking in 0.05 seconds..."
-    else
-        return 1  # Not invalid
+        send_server_command "WARNING: Player name contains invalid characters! Only letters, numbers, and underscores are allowed. Kicking in 0.05 seconds..."
+        # Schedule kick after 50 milliseconds
+        (
+            usleep 50000  # 50 milliseconds
+            print_warning "Kicking player with invalid name: '$player_name'"
+            send_server_command "/kick $player_name"
+        ) &
+        return 0
     fi
-        
-    # Schedule kick after 50 milliseconds
-    (
-        if command -v usleep >/dev/null 2>&1; then
-            usleep 50000
-        elif command -v perl >/dev/null 2>&1; then
-            perl -e 'select(undef, undef, undef, 0.05)'
-        else
-            sleep 0.05  # Fallback to sleep with decimal, may not work on all systems
-        fi
-        print_warning "Kicking player with invalid name: '$player_name'"
-        send_server_command "/kick $player_name"
-    ) &
-    return 0
+    return 1
 }
 
 # Function to safely read JSON files with locking
@@ -184,7 +185,7 @@ initialize_admin_offenses() {
 # Function to record admin offense
 record_admin_offense() {
     local admin_name="$1" current_time=$(date +%s)
-    local offenses_data=$(read_json_file "$ADMIN_OFFENSes_FILE" 2>/dev/null || echo '{}')
+    local offenses_data=$(read_json_file "$ADMIN_OFFENSES_FILE" 2>/dev/null || echo '{}')
     local current_offenses=$(echo "$offenses_data" | jq -r --arg admin "$admin_name" '.[$admin]?.count // 0')
     local last_offense_time=$(echo "$offenses_data" | jq -r --arg admin "$admin_name" '.[$admin]?.last_offense // 0')
     
