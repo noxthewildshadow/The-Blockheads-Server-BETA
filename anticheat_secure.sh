@@ -33,40 +33,44 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCREEN_SERVER="blockheads_server_$PORT"
 
-# Function to validate player names
+# Function to validate player names - IMPROVED DETECTION
 is_valid_player_name() {
     local player_name="$1"
-    # Remove leading/trailing spaces first
-    player_name=$(echo "$player_name" | xargs)
-    [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]
+    
+    # Remove null bytes and other problematic characters first
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r')
+    
+    # Check if name is empty after cleaning
+    if [[ -z "$player_name" ]]; then
+        return 1
+    fi
+    
+    # Check for invalid characters (allow only letters, numbers, underscores)
+    if [[ "$player_name" =~ [^a-zA-Z0-9_] ]]; then
+        return 1
+    fi
+    
+    return 0
 }
 
 # Function to detect and handle invalid player names
 handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="$3"
     
-    # Trim spaces for validation
-    local player_name_trimmed=$(echo "$player_name" | xargs)
+    # Clean the player name for validation
+    local cleaned_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r')
     
-    # Check if name is empty after trimming or contains invalid characters
-    if [[ -z "$player_name_trimmed" ]]; then
-        print_warning "EMPTY PLAYER NAME: '$player_name' (IP: $player_ip, Hash: $player_hash)"
-        send_server_command "WARNING: Empty player names are not allowed! Kicking in 0.05 seconds..."
-        # Schedule kick after 50 milliseconds
-        (
-            usleep 50000  # 50 milliseconds
-            print_warning "Kicking player with empty name: '$player_name'"
-            send_server_command "/kick $player_name"
-        ) &
-        return 0
-    elif ! is_valid_player_name "$player_name"; then
+    # Check if name is empty after cleaning or contains invalid characters
+    if [[ -z "$cleaned_name" ]] || ! is_valid_player_name "$player_name"; then
         print_warning "INVALID PLAYER NAME: '$player_name' (IP: $player_ip, Hash: $player_hash)"
-        send_server_command "WARNING: Player name contains invalid characters! Only letters, numbers, and underscores are allowed. Kicking in 0.05 seconds..."
+        send_server_command "WARNING: Player name '$player_name' contains invalid characters! Only letters, numbers, and underscores are allowed. Kicking in 0.05 seconds..."
+        
         # Schedule kick after 50 milliseconds
         (
             usleep 50000  # 50 milliseconds
             print_warning "Kicking player with invalid name: '$player_name'"
-            send_server_command "/kick $player_name"
+            # Use the original player name for kicking (as it appears in the server)
+            send_server_command "/kick \"$player_name\""
         ) &
         return 0
     fi
@@ -115,6 +119,9 @@ validate_authorization() {
     # Check adminlist.txt against authorized_admins.txt
     if [ -f "$admin_list" ]; then
         while IFS= read -r admin; do
+            # Clean admin name before checking
+            admin=$(echo "$admin" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
+            
             if [[ -n "$admin" && ! "$admin" =~ ^[[:space:]]*# && ! "$admin" =~ "Usernames in this file" ]]; then
                 if ! grep -q -i "^$admin$" "$AUTHORIZED_ADMINS_FILE"; then
                     print_warning "Unauthorized admin detected: $admin"
@@ -129,6 +136,9 @@ validate_authorization() {
     # Check modlist.txt against authorized_mods.txt
     if [ -f "$mod_list" ]; then
         while IFS= read -r mod; do
+            # Clean mod name before checking
+            mod=$(echo "$mod" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
+            
             if [[ -n "$mod" && ! "$mod" =~ ^[[:space:]]*# && ! "$mod" =~ "Usernames in this file" ]]; then
                 if ! grep -q -i "^$mod$" "$AUTHORIZED_MODS_FILE"; then
                     print_warning "Unauthorized mod detected: $mod"
@@ -148,6 +158,9 @@ add_to_authorized() {
     
     [ ! -f "$auth_file" ] && print_error "Authorization file not found: $auth_file" && return 1
     
+    # Clean player name before adding
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
+    
     if ! grep -q -i "^$player_name$" "$auth_file"; then
         echo "$player_name" >> "$auth_file"
         print_success "Added $player_name to authorized ${list_type}s"
@@ -164,6 +177,9 @@ remove_from_authorized() {
     local auth_file="$LOG_DIR/authorized_${list_type}s.txt"
     
     [ ! -f "$auth_file" ] && print_error "Authorization file not found: $auth_file" && return 1
+    
+    # Clean player name before removing
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
     
     # Use case-insensitive deletion with sed
     if grep -q -i "^$player_name$" "$auth_file"; then
@@ -217,6 +233,9 @@ remove_from_list_file() {
     
     [ ! -f "$list_file" ] && print_error "List file not found: $list_file" && return 1
     
+    # Clean player name before removing
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
+    
     # Use case-insensitive deletion with sed
     if grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"; then
         sed -i "/^$player_name$/Id" "$list_file"
@@ -265,6 +284,10 @@ is_player_in_list() {
 # Function to handle unauthorized admin/mod commands
 handle_unauthorized_command() {
     local player_name="$1" command="$2" target_player="$3"
+    
+    # Clean player names before processing
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
+    target_player=$(echo "$target_player" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
     
     if is_player_in_list "$player_name" "admin"; then
         print_error "UNAUTHORIZED COMMAND: Admin $player_name attempted to use $command on $target_player"
@@ -376,7 +399,7 @@ monitor_log() {
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
             
-            # Handle invalid player names (spaces, special characters)
+            # Handle invalid player names (spaces, special characters, null bytes)
             if handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"; then
                 continue  # Skip further processing for invalid names
             fi
