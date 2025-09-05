@@ -307,7 +307,7 @@ stop_server() {
         
         # Stop all bots
         for bot_session in $(screen -list | grep "blockheads_bot_" | awk '{print $1}'); do
-            screen -S "${bot_session" -X quit 2>/dev/null
+            screen -S "${bot_session}" -X quit 2>/dev/null
             print_success "Stopped bot: ${bot_session}"
         done
         
