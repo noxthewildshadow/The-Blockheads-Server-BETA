@@ -22,12 +22,24 @@ print_header() {
 }
 print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
-# Function to validate player names
+# Function to validate player names - IMPROVED DETECTION
 is_valid_player_name() {
     local player_name="$1"
-    # Remove leading/trailing spaces first
-    player_name=$(echo "$player_name" | xargs)
-    [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]
+    
+    # Remove null bytes and other problematic characters first
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r')
+    
+    # Check if name is empty after cleaning
+    if [[ -z "$player_name" ]]; then
+        return 1
+    fi
+    
+    # Check for invalid characters (allow only letters, numbers, underscores)
+    if [[ "$player_name" =~ [^a-zA-Z0-9_] ]]; then
+        return 1
+    fi
+    
+    return 0
 }
 
 # Function to safely read JSON files with locking
@@ -81,6 +93,9 @@ add_to_authorized() {
     
     [ ! -f "$auth_file" ] && print_error "Authorization file not found: $auth_file" && return 1
     
+    # Clean player name before adding
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
+    
     if ! grep -q -i "^$player_name$" "$auth_file"; then
         echo "$player_name" >> "$auth_file"
         print_success "Added $player_name to authorized ${list_type}s"
@@ -100,12 +115,18 @@ is_player_in_list() {
     local player_name="$1" list_type="$2"
     local list_file="$LOG_DIR/${list_type}list.txt"
     
+    # Clean player name before checking
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
+    
     [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$" && return 0
     return 1
 }
 
 add_player_if_new() {
     local player_name="$1"
+    
+    # Clean player name before processing
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
     
     # Skip invalid player names
     if ! is_valid_player_name "$player_name"; then
@@ -129,6 +150,10 @@ add_player_if_new() {
 
 give_first_time_bonus() {
     local player_name="$1" current_time=$(date +%s) time_str="$(date '+%Y-%m-%d %H:%M:%S')"
+    
+    # Clean player name before processing
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
+    
     local current_data=$(read_json_file "$ECONOMY_FILE")
     current_data=$(echo "$current_data" | jq --arg player "$player_name" '.players[$player].tickets = 1')
     current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_login = $time')
@@ -140,6 +165,10 @@ give_first_time_bonus() {
 
 grant_login_ticket() {
     local player_name="$1" current_time=$(date +%s) time_str="$(date '+%Y-%m-%d %H:%M:%S')"
+    
+    # Clean player name before processing
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
+    
     local current_data=$(read_json_file "$ECONOMY_FILE")
     local last_login=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_login // 0')
     last_login=${last_login:-0}
@@ -167,6 +196,9 @@ grant_login_ticket() {
 
 show_welcome_message() {
     local player_name="$1" is_new_player="$2" force_send="${3:-0}"
+    
+    # Clean player name before processing
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
     
     # Skip invalid player names
     if ! is_valid_player_name "$player_name"; then
@@ -208,6 +240,10 @@ send_server_command() {
 
 has_purchased() {
     local player_name="$1" item="$2"
+    
+    # Clean player name before processing
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
+    
     local current_data=$(read_json_file "$ECONOMY_FILE")
     local has_item=$(echo "$current_data" | jq --arg player "$player_name" --arg item "$item" '.players[$player].purchases | index($item) != null')
     [ "$has_item" = "true" ] && return 0 || return 1
@@ -215,6 +251,10 @@ has_purchased() {
 
 add_purchase() {
     local player_name="$1" item="$2"
+    
+    # Clean player name before processing
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
+    
     local current_data=$(read_json_file "$ECONOMY_FILE")
     current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg item "$item" '.players[$player].purchases += [$item]')
     write_json_file "$ECONOMY_FILE" "$current_data"
@@ -223,6 +263,11 @@ add_purchase() {
 # Function to process give_rank commands
 process_give_rank() {
     local giver_name="$1" target_player="$2" rank_type="$3"
+    
+    # Clean player names before processing
+    giver_name=$(echo "$giver_name" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
+    target_player=$(echo "$target_player" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
+    
     local current_data=$(read_json_file "$ECONOMY_FILE")
     local giver_tickets=$(echo "$current_data" | jq -r --arg player "$giver_name" '.players[$player].tickets // 0')
     giver_tickets=${giver_tickets:-0}
@@ -265,6 +310,9 @@ process_give_rank() {
 
 process_message() {
     local player_name="$1" message="$2"
+    
+    # Clean player name before processing
+    player_name=$(echo "$player_name" | tr -d '\000' | tr -d '\n' | tr -d '\r' | xargs)
     
     # Skip invalid player names
     if ! is_valid_player_name "$player_name"; then
