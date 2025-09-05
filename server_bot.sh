@@ -30,6 +30,34 @@ is_valid_player_name() {
     [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]
 }
 
+# Function to safely read JSON files with locking
+read_json_file() {
+    local file_path="$1"
+    if [ ! -f "$file_path" ]; then
+        print_error "JSON file not found: $file_path"
+        echo "{}"
+        return 1
+    fi
+    
+    # Use flock with proper file descriptor handling
+    flock -s 200 cat "$file_path" 200>"${file_path}.lock"
+}
+
+# Function to safely write JSON files with locking
+write_json_file() {
+    local file_path="$1"
+    local content="$2"
+    
+    if [ ! -f "$file_path" ]; then
+        print_error "JSON file not found: $file_path"
+        return 1
+    fi
+    
+    # Use flock with proper file descriptor handling
+    flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
+    return $?
+}
+
 # Bot configuration - now supports multiple servers
 if [ $# -ge 2 ]; then
     PORT="$2"
