@@ -245,7 +245,7 @@ EOF
     # Start bot
     print_step "Starting server bot..."
     screen -dmS "$SCREEN_BOT" bash -c "
-        cd '$P'
+        cd '$PWD'
         echo 'Starting server bot for port $port...'
         ./server_bot.sh '$log_file' '$port'
     "
