@@ -11,63 +11,21 @@ BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 # Function to print status messages
-print_status() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
-
-print_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
+print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
+print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 print_header() {
     echo -e "${PURPLE}================================================================"
     echo -e "$1"
     echo -e "===============================================================${NC}"
 }
+print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
-print_step() {
-    echo -e "${CYAN}[STEP]${NC} $1"
-}
-
-# Function to safely read JSON files
-read_json_file() {
-    local file_path="$1"
-    if [ ! -f "$file_path" ]; then
-        print_error "JSON file not found: $file_path"
-        echo "{}"
-        return 1
-    fi
-    jq -r '.' "$file_path" 2>/dev/null || echo "{}"
-}
-
-# Function to safely write JSON files
-write_json_file() {
-    local file_path="$1"
-    local content="$2"
-    
-    if [ ! -f "$file_path" ]; then
-        print_error "JSON file not found: $file_path"
-        return 1
-    fi
-    
-    echo "$content" | jq '.' > "$file_path"
-    return $?
-}
-
-# Function to validate player names
-is_valid_player_name() {
+# Function to validate player names (strict: only letters, numbers, underscores)
+is_valid_player_name_strict() {
     local player_name="$1"
-    # Remove leading/trailing spaces first
-    player_name=$(echo "$player_name" | xargs)
-    [[ "$player_name" =~ ^[a-zA-Z0-9_]{3,20}$ ]]
+    [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]
 }
 
 # Bot configuration - now supports multiple servers
@@ -120,7 +78,7 @@ add_player_if_new() {
     local player_name="$1"
     
     # Skip invalid player names
-    if ! is_valid_player_name "$player_name"; then
+    if ! is_valid_player_name_strict "$player_name"; then
         print_warning "Skipping economy setup for invalid player name: '$player_name'"
         return 1
     fi
@@ -181,7 +139,7 @@ show_welcome_message() {
     local player_name="$1" is_new_player="$2" force_send="${3:-0}"
     
     # Skip invalid player names
-    if ! is_valid_player_name "$player_name"; then
+    if ! is_valid_player_name_strict "$player_name"; then
         print_warning "Skipping welcome message for invalid player name: '$player_name'"
         return
     fi
@@ -249,7 +207,7 @@ process_give_rank() {
     fi
     
     # Validate target player name
-    if ! is_valid_player_name "$target_player"; then
+    if ! is_valid_player_name_strict "$target_player"; then
         send_server_command "$giver_name, invalid player name: $target_player"
         return 1
     fi
@@ -279,7 +237,7 @@ process_message() {
     local player_name="$1" message="$2"
     
     # Skip invalid player names
-    if ! is_valid_player_name "$player_name"; then
+    if ! is_valid_player_name_strict "$player_name"; then
         print_warning "Skipping message processing for invalid player name: '$player_name'"
         return
     fi
@@ -383,7 +341,7 @@ process_admin_command() {
         local player_name="${BASH_REMATCH[1]}" tickets_to_add="${BASH_REMATCH[2]}"
         
         # Validate player name
-        if ! is_valid_player_name "$player_name"; then
+        if ! is_valid_player_name_strict "$player_name"; then
             print_error "Invalid player name: $player_name"
             return 1
         fi
@@ -415,7 +373,7 @@ process_admin_command() {
         local player_name="${BASH_REMATCH[1]}"
         
         # Validate player name
-        if ! is_valid_player_name "$player_name"; then
+        if ! is_valid_player_name_strict "$player_name"; then
             print_error "Invalid player name: $player_name"
             return 1
         fi
@@ -429,7 +387,7 @@ process_admin_command() {
         local player_name="${BASH_REMATCH[1]}"
         
         # Validate player name
-        if ! is_valid_player_name "$player_name"; then
+        if ! is_valid_player_name_strict "$player_name"; then
             print_error "Invalid player name: $player_name"
             return 1
         fi
@@ -539,7 +497,7 @@ monitor_log() {
             [ "$player_name" == "SERVER" ] && continue
 
             # Skip invalid player names
-            if ! is_valid_player_name "$player_name"; then
+            if ! is_valid_player_name_strict "$player_name"; then
                 print_warning "Skipping invalid player name: '$player_name' (IP: $player_ip)"
                 continue
             fi
@@ -571,7 +529,7 @@ monitor_log() {
             [ "$player_name" == "SERVER" ] && continue
             
             # Skip invalid player names
-            if ! is_valid_player_name "$player_name"; then
+            if ! is_valid_player_name_strict "$player_name"; then
                 print_warning "Skipping invalid player name: '$player_name'"
                 continue
             fi
@@ -586,7 +544,7 @@ monitor_log() {
             [ "$player_name" == "SERVER" ] && continue
             
             # Skip invalid player names
-            if ! is_valid_player_name "$player_name"; then
+            if ! is_valid_player_name_strict "$player_name"; then
                 print_warning "Skipping message from invalid player name: '$player_name'"
                 continue
             fi
