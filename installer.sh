@@ -70,8 +70,8 @@ USER_HOME=$(getent passwd "$ORIGINAL_USER" | cut -d: -f6)
 
 # Configuration
 SERVER_URLS=(
-    "https://drive.usercontent.google.com/u/0/uc?id=1x6q7OyDr3NWG5pCnm9Zxxfet0GzUkYLb&export=download"
-    "https://drive.usercontent.google.com/u/0/uc?id=1x6q7OyDr3NWG5pCnm9Zxxfet0GzUkYLb&export=download"
+    "https://drive.usercontent.google.com/u/0/uc?id=1qbAm6r8uZfPjXb-P2hwFqzyqv_rv1FDJ&export=download"
+    "https://drive.usercontent.google.com/u/0/uc?id=1qbAm6r8uZfPjXb-P2hwFqzyqv_rv1FDJ&export=download"
 )
 TEMP_FILE="/tmp/blockheads_server171.tar.gz"
 SERVER_BINARY="blockheads_server171"
