@@ -420,12 +420,15 @@ monitor_log() {
             continue
         fi
 
-        # Detect player connections with invalid names
+        # Detect player connections with invalid names - MEJORADA LA EXPRESIÓN REGULAR
         if [[ "$line" =~ Player\ Connected\ ([^|]+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
             
             # Trim leading/trailing spaces from player name
             player_name=$(echo "$player_name" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            
+            # Debug: mostrar el nombre capturado
+            print_status "Captured player name: '$player_name'"
             
             # Handle invalid player names (spaces, special characters, nullbytes)
             if handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"; then
