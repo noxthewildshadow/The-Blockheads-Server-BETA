@@ -44,8 +44,13 @@ is_valid_player_name() {
         return 1
     fi
     
-    # Check if name is empty after trimming or contains invalid characters
-    if [[ -z "$player_name" ]] || [[ ! "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]; then
+    # Check if name is empty after trimming or contains only spaces
+    if [[ -z "$player_name" ]] || [[ "$player_name" =~ ^[[:space:]]+$ ]]; then
+        return 1
+    fi
+    
+    # Check if name contains only valid characters (letters, numbers, underscores)
+    if [[ ! "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]; then
         return 1
     fi
     
@@ -67,10 +72,10 @@ handle_invalid_player_name() {
         return 0
     fi
     
-    # Check if name is empty after trimming
-    if [[ -z "$player_name_trimmed" ]]; then
+    # Check if name is empty after trimming or contains only spaces
+    if [[ -z "$player_name_trimmed" ]] || [[ "$player_name_trimmed" =~ ^[[:space:]]+$ ]]; then
         print_warning "INVALID PLAYER NAME: '$player_name' is empty or contains only spaces (IP: $player_ip, Hash: $player_hash)"
-        send_server_command "WARNING: Empty player names are not allowed! Kicking immediately."
+        send_server_command "WARNING: Empty player names or names with only spaces are not allowed! Kicking immediately."
         send_server_command "/kick $player_name"
         return 0
     fi
@@ -259,8 +264,9 @@ send_server_command_silent() {
 
 # Function to send server command
 send_server_command() {
-    if screen -S "$SCREEN_SERVER" -X stuff "$1$(printf \\r)" 2>/dev/null; then
-        print_success "Sent message to server: $1"
+    local command="$1"
+    if screen -S "$SCREEN_SERVER" -X stuff "$command$(printf \\r)" 2>/dev/null; then
+        print_success "Sent message to server: $command"
     else
         print_error "Could not send message to server. Is the server running?"
     fi
@@ -415,8 +421,11 @@ monitor_log() {
         fi
 
         # Detect player connections with invalid names
-        if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
+        if [[ "$line" =~ Player\ Connected\ ([^|]+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
+            
+            # Trim leading/trailing spaces from player name
+            player_name=$(echo "$player_name" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
             
             # Handle invalid player names (spaces, special characters, nullbytes)
             if handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"; then
