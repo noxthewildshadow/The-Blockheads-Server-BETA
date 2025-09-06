@@ -73,7 +73,7 @@ SERVER_URLS=(
     "https://drive.usercontent.google.com/u/0/uc?id=1D3WG98SvyHx3nbe2_vJE7ZifTNunAMqJ&export=download"
     "https://drive.usercontent.google.com/u/0/uc?id=1D3WG98SvyHx3nbe2_vJE7ZifTNunAMqJ&export=download"
 )
-TEMP_FILE="/tmp/blockheads_server171.tar.gz"
+TEMP_FILE="/tmp/blockheads_server171.tar"
 SERVER_BINARY="blockheads_server171"
 
 # Raw URLs for helper scripts
@@ -242,7 +242,7 @@ print_step "[4/8] Extracting files..."
 EXTRACT_DIR="/tmp/blockheads_extract_$$"
 mkdir -p "$EXTRACT_DIR"
 
-if ! tar zf "$TEMP_FILE" -C "$EXTRACT_DIR"; then
+if ! tar -xf "$TEMP_FILE" -C "$EXTRACT_DIR"; then
     print_error "Failed to extract server files."
     rm -rf "$EXTRACT_DIR"
     exit 1
@@ -264,7 +264,7 @@ if [ ! -f "$SERVER_BINARY" ]; then
     else
         print_error "Could not find the server binary."
         print_status "Contents of the downloaded archive:"
-        tar -tzf "$TEMP_FILE" || true
+        tar -tf "$TEMP_FILE" || true
         exit 1
     fi
 fi
