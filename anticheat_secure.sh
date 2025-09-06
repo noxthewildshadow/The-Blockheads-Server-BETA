@@ -1,8 +1,7 @@
 #!/bin/bash
 # anticheat_secure.sh - Enhanced security system for The Blockheads server
 # Improved for new users: Better error messages, fixed file locking issues
-# Enhanced to detect and kick players with invalid names (spaces, special characters)
-# Now handles ! commands for administration
+# Enhanced to detect and ban players with invalid names (spaces, special characters) by IP
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -34,28 +33,38 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCREEN_SERVER="blockheads_server_$PORT"
 
-# Function to validate player names (strict: only letters, numbers, underscores)
-is_valid_player_name_strict() {
+# Function to validate player names
+is_valid_player_name() {
     local player_name="$1"
+    # Remove leading/trailing spaces first
+    player_name=$(echo "$player_name" | xargs)
     [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]
 }
 
-# Function to detect and handle invalid player names
+# Function to detect and handle invalid player names using IP ban/unban
 handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="$3"
     
-    # Check if name is empty or contains invalid characters
-    if [[ -z "$player_name" ]]; then
-        print_warning "INVALID PLAYER NAME: Empty name (IP: $player_ip, Hash: $player_hash)"
-        send_server_command "WARNING: Empty player names are not allowed! Kicking..."
-        sleep 0.01  # 10 milisegundos
-        send_server_command "/kick $player_name"
-        return 0
-    elif ! is_valid_player_name_strict "$player_name"; then
-        print_warning "INVALID PLAYER NAME: '$player_name' contains invalid characters (IP: $player_ip, Hash: $player_hash)"
-        send_server_command "WARNING: Player name '$player_name' contains invalid characters! Only letters, numbers, and underscores are allowed. Kicking..."
-        sleep 0.01
-        send_server_command "/kick $player_name"
+    # Trim spaces for validation
+    local player_name_trimmed=$(echo "$player_name" | xargs)
+    
+    # Check if name is empty after trimming or contains invalid characters
+    if [[ -z "$player_name_trimmed" ]] || ! is_valid_player_name "$player_name"; then
+        print_warning "INVALID PLAYER NAME: '$player_name' (IP: $player_ip, Hash: $player_hash)"
+        send_server_command "WARNING: Invalid player name '$player_name'! You will be banned for 5 seconds."
+        
+        # Wait 5 seconds and then ban by IP
+        (
+            sleep 5
+            print_warning "Banning player with invalid name: '$player_name' (IP: $player_ip)"
+            send_server_command "/ban $player_ip"
+            # Now schedule unban after 5 seconds
+            (
+                sleep 5
+                send_server_command "/unban $player_ip"
+                print_success "Unbanned IP: $player_ip"
+            ) &
+        ) &
         return 0
     fi
     return 1
@@ -312,151 +321,6 @@ handle_unauthorized_command() {
     fi
 }
 
-# Function to process player commands starting with !
-process_player_command() {
-    local player_name="$1" command="$2"
-    
-    # Split command into parts
-    local command_parts=($command)
-    local command_base="${command_parts[0]}"
-    local parameters="${command_parts[@]:1}"
-    
-    # Normalize command base: convert to lowercase and replace - with _
-    local normalized_command=$(echo "$command_base" | tr '[:upper:]' '[:lower:]' | tr '-' '_')
-    
-    # Check if player is admin or mod
-    local is_admin=0
-    local is_mod=0
-    if is_player_in_list "$player_name" "admin"; then
-        is_admin=1
-    elif is_player_in_list "$player_name" "mod"; then
-        is_mod=1
-    fi
-    
-    # Check permissions and process command
-    case "$normalized_command" in
-        "clear_adminlist"|"clear_modlist"|"clear_whitelist"|"clear_blacklist"|"reset_owner"|"load_lists"|"debug_log"|"stop")
-            if [ "$is_admin" -eq 1 ]; then
-                # Forward command to server with /
-                send_server_command "/${command_base}"
-            else
-                send_server_command "$player_name, only administrators can execute this command."
-            fi
-            ;;
-        "unadmin")
-            if [ "$is_admin" -eq 1 ]; then
-                # Check parameters
-                local target_player="${parameters[0]}"
-                if is_valid_player_name_strict "$target_player"; then
-                    send_server_command "/unadmin $target_player"
-                else
-                    send_server_command "$player_name, invalid player name: $target_player"
-                fi
-            else
-                send_server_command "$player_name, only administrators can execute this command."
-            fi
-            ;;
-        "admin")
-            if [ "$is_admin" -eq 1 ]; then
-                local target_player="${parameters[0]}"
-                if is_valid_player_name_strict "$target_player"; then
-                    send_server_command "/admin $target_player"
-                else
-                    send_server_command "$player_name, invalid player name: $target_player"
-                fi
-            else
-                send_server_command "$player_name, only administrators can execute this command."
-            fi
-            ;;
-        "unmod")
-            if [ "$is_admin" -eq 1 ]; then
-                local target_player="${parameters[0]}"
-                if is_valid_player_name_strict "$target_player"; then
-                    send_server_command "/unmod $target_player"
-                else
-                    send_server_command "$player_name, invalid player name: $target_player"
-                fi
-            else
-                send_server_command "$player_name, only administrators can execute this command."
-            fi
-            ;;
-        "mod")
-            if [ "$is_admin" -eq 1 ]; then
-                local target_player="${parameters[0]}"
-                if is_valid_player_name_strict "$target_player"; then
-                    send_server_command "/mod $target_player"
-                else
-                    send_server_command "$player_name, invalid player name: $target_player"
-                fi
-            else
-                send_server_command "$player_name, only administrators can execute this command."
-            fi
-            ;;
-        "unwhitelist"|"whitelist"|"unban"|"ban")
-            if [ "$is_admin" -eq 1 ]; then
-                local target_player="${parameters[0]}"
-                if is_valid_player_name_strict "$target_player"; then
-                    send_server_command "/${command_base} $target_player"
-                else
-                    send_server_command "$player_name, invalid player name: $target_player"
-                fi
-            else
-                send_server_command "$player_name, only administrators can execute this command."
-            fi
-            ;;
-        "ban_no_device")
-            if [ "$is_admin" -eq 1 ]; then
-                # This command might have different parameters, but we'll assume it's a player name
-                local target_player="${parameters[0]}"
-                if is_valid_player_name_strict "$target_player"; then
-                    send_server_command "/ban-no-device $target_player"
-                else
-                    send_server_command "$player_name, invalid player name: $target_player"
-                fi
-            else
-                send_server_command "$player_name, only administrators can execute this command."
-            fi
-            ;;
-        "kick")
-            if [ "$is_admin" -eq 1 ] || [ "$is_mod" -eq 1 ]; then
-                local target_player="${parameters[0]}"
-                if is_valid_player_name_strict "$target_player"; then
-                    send_server_command "/kick $target_player"
-                else
-                    send_server_command "$player_name, invalid player name: $target_player"
-                fi
-            else
-                send_server_command "$player_name, you don't have permission to use this command."
-            fi
-            ;;
-        "list_adminlist"|"list_modlist"|"list_whitelist"|"list_blacklist"|"players")
-            if [ "$is_admin" -eq 1 ] || [ "$is_mod" -eq 1 ]; then
-                send_server_command "/${command_base}"
-            else
-                send_server_command "$player_name, you don't have permission to use this command."
-            fi
-            ;;
-        "help_s")
-            if [ "$is_admin" -eq 1 ] || [ "$is_mod" -eq 1 ]; then
-                # Show staff help
-                send_server_command "Staff commands: !CLEAR-ADMINLIST, !CLEAR-MODLIST, !CLEAR-WHITELIST, !CLEAR-BLACKLIST, !RESET-OWNER, !UNADMIN, !UNMOD, !LOAD-LISTS, !LIST-ADMINLIST, !LIST-MODLIST, !STOP, !DEBUG-LOG, !LIST-WHITELIST, !LIST-BLACKLIST, !UNWHITELIST, !WHITELIST, !UNBAN, !BAN-NO-DEVICE, !BAN, !KICK, !PLAYERS"
-            else
-                send_server_command "$player_name, you don't have permission to use this command."
-            fi
-            ;;
-        "help")
-            # Show public help
-            send_server_command "Public commands: !HELP, !tickets, !buy_mod, !buy_admin, !give_mod, !give_admin"
-            ;;
-        "tickets"|"buy_mod"|"buy_admin"|"give_mod"|"give_admin")
-            # Do nothing, let the economy bot handle them from the log
-            ;;
-        *)
-            send_server_command "$player_name, unknown command: !$command"
-            ;;
-    esac
-}
-
 # Filter server log to exclude certain messages
 filter_server_log() {
     while read line; do
@@ -506,53 +370,29 @@ monitor_log() {
     # Monitor the log file for unauthorized commands and invalid player names
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
         # Detect player connections with invalid names
-        if echo "$line" | grep -q "Player Connected"; then
-            local player_name=$(echo "$line" | awk -F' \\| ' '{print $1}' | sed 's/.*Player Connected //')
-            local player_ip=$(echo "$line" | awk -F' \\| ' '{print $2}')
-            local player_hash=$(echo "$line" | awk -F' \\| ' '{print $3}')
-
-            # Validate that we extracted IP and hash correctly
-            if [[ -z "$player_ip" || -z "$player_hash" ]]; then
-                print_warning "Failed to parse player connection line: $line"
-                continue
-            fi
-
-            # Handle invalid player names (spaces, special characters)
+        if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
+            local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
+            
+            # Handle invalid player names (spaces, special characters) using IP ban
             if handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"; then
                 continue  # Skip further processing for invalid names
             fi
-
+            
             # Validate player names for legitimate connections
-            if ! is_valid_player_name_strict "$player_name"; then
+            if ! is_valid_player_name "$player_name"; then
                 print_warning "Invalid player name in connection: $player_name"
                 continue
             fi
-
+            
             print_success "Player connected: $player_name (IP: $player_ip)"
         fi
 
-        # Detect player commands starting with !
-        if [[ "$line" =~ ([a-zA-Z0-9_]+):\ \!(.+)$ ]]; then
-            local player_name="${BASH_REMATCH[1]}" command="${BASH_REMATCH[2]}"
-            [ "$player_name" == "SERVER" ] && continue
-            
-            # Validate player name
-            if ! is_valid_player_name_strict "$player_name"; then
-                print_warning "Invalid player name in command: $player_name"
-                continue
-            fi
-            
-            print_status "Command from $player_name: !$command"
-            process_player_command "$player_name" "$command"
-            continue
-        fi
-
-        # Detect unauthorized admin/mod commands (using /)
+        # Detect unauthorized admin/mod commands
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ \/(admin|mod)\ ([a-zA-Z0-9_]+) ]]; then
             local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
             
             # Validate player names
-            if ! is_valid_player_name_strict "$command_user" || ! is_valid_player_name_strict "$target_player"; then
+            if ! is_valid_player_name "$command_user" || ! is_valid_player_name "$target_player"; then
                 print_warning "Invalid player name in command: $command_user or $target_player"
                 continue
             fi
