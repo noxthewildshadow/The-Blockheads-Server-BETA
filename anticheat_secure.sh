@@ -505,24 +505,29 @@ monitor_log() {
 
     # Monitor the log file for unauthorized commands and invalid player names
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
-        # Detect player connections with invalid names - improved regex to capture all characters
-        if [[ "$line" =~ Player\ Connected\ ([^|]+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
-            local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
-            
-            # Trim any leading/trailing spaces from the captured name
-            player_name=$(echo "$player_name" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-            
+        # Detect player connections with invalid names
+        if echo "$line" | grep -q "Player Connected"; then
+            local player_name=$(echo "$line" | awk -F' \\| ' '{print $1}' | sed 's/.*Player Connected //')
+            local player_ip=$(echo "$line" | awk -F' \\| ' '{print $2}')
+            local player_hash=$(echo "$line" | awk -F' \\| ' '{print $3}')
+
+            # Validate that we extracted IP and hash correctly
+            if [[ -z "$player_ip" || -z "$player_hash" ]]; then
+                print_warning "Failed to parse player connection line: $line"
+                continue
+            fi
+
             # Handle invalid player names (spaces, special characters)
             if handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"; then
                 continue  # Skip further processing for invalid names
             fi
-            
+
             # Validate player names for legitimate connections
             if ! is_valid_player_name_strict "$player_name"; then
                 print_warning "Invalid player name in connection: $player_name"
                 continue
             fi
-            
+
             print_success "Player connected: $player_name (IP: $player_ip)"
         fi
 
