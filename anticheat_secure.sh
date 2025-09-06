@@ -33,17 +33,6 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCREEN_SERVER="blockheads_server_$PORT"
 
-# Function to escape special characters for shell commands
-escape_player_name() {
-    local player_name="$1"
-    # Escape backslashes first, then other special characters
-    player_name=$(echo "$player_name" | sed 's/\\/\\\\/g')
-    player_name=$(echo "$player_name" | sed 's/"/\\"/g')
-    player_name=$(echo "$player_name" | sed 's/`/\\`/g')
-    player_name=$(echo "$player_name" | sed 's/\$/\\$/g')
-    echo "$player_name"
-}
-
 # Function to validate player names
 is_valid_player_name() {
     local player_name="$1"
@@ -74,9 +63,7 @@ handle_invalid_player_name() {
     if echo "$player_name" | grep -q -P "[^[:print:]]"; then
         print_warning "INVALID PLAYER NAME: '$player_name' contains nullbytes or non-printable characters (IP: $player_ip, Hash: $player_hash)"
         send_server_command "WARNING: Player name contains invalid characters (nullbytes or non-printable characters)! Kicking immediately."
-        # Escape special characters in player name
-        local escaped_player_name=$(escape_player_name "$player_name")
-        send_server_command "/kick \"$escaped_player_name\""
+        send_server_command "/kick $player_name"
         return 0
     fi
     
@@ -84,9 +71,7 @@ handle_invalid_player_name() {
     if [[ -z "$player_name_trimmed" ]]; then
         print_warning "INVALID PLAYER NAME: '$player_name' is empty or contains only spaces (IP: $player_ip, Hash: $player_hash)"
         send_server_command "WARNING: Empty player names are not allowed! Kicking immediately."
-        # Escape special characters in player name
-        local escaped_player_name=$(escape_player_name "$player_name")
-        send_server_command "/kick \"$escaped_player_name\""
+        send_server_command "/kick $player_name"
         return 0
     fi
     
@@ -94,9 +79,7 @@ handle_invalid_player_name() {
     if [[ ! "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]; then
         print_warning "INVALID PLAYER NAME: '$player_name' contains invalid characters (IP: $player_ip, Hash: $player_hash)"
         send_server_command "WARNING: Player name contains invalid characters! Only letters, numbers and underscores are allowed. Kicking immediately."
-        # Escape special characters in player name
-        local escaped_player_name=$(escape_player_name "$player_name")
-        send_server_command "/kick \"$escaped_player_name\""
+        send_server_command "/kick $player_name"
         return 0
     fi
     
