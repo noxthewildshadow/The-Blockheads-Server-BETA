@@ -70,8 +70,8 @@ USER_HOME=$(getent passwd "$ORIGINAL_USER" | cut -d: -f6)
 
 # Configuration
 SERVER_URLS=(
-    "https://web.archive.org/web/20240309015235if_/https://majicdave.com/share/blockheads_server171.tar.gz"
-    "https://archive.org/download/BHSv171/blockheads_server171.tar.gz"
+    "https://drive.usercontent.google.com/u/0/uc?id=1x6q7OyDr3NWG5pCnm9Zxxfet0GzUkYLb&export=download"
+    "https://drive.usercontent.google.com/u/0/uc?id=1x6q7OyDr3NWG5pCnm9Zxxfet0GzUkYLb&export=download"
 )
 TEMP_FILE="/tmp/blockheads_server171.tar.gz"
 SERVER_BINARY="blockheads_server171"
