@@ -44,11 +44,8 @@ is_valid_player_name_strict() {
 handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="$3"
     
-    # Trim spaces for validation
-    local player_name_trimmed=$(echo "$player_name" | xargs)
-    
-    # Check if name is empty after trimming or contains invalid characters
-    if [[ -z "$player_name_trimmed" ]]; then
+    # Check if name is empty or contains invalid characters
+    if [[ -z "$player_name" ]]; then
         print_warning "INVALID PLAYER NAME: Empty name (IP: $player_ip, Hash: $player_hash)"
         send_server_command "WARNING: Empty player names are not allowed! Kicking..."
         sleep 0.01  # 10 milisegundos
@@ -508,9 +505,12 @@ monitor_log() {
 
     # Monitor the log file for unauthorized commands and invalid player names
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
-        # Detect player connections with invalid names
-        if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
+        # Detect player connections with invalid names - improved regex to capture all characters
+        if [[ "$line" =~ Player\ Connected\ ([^|]+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
+            
+            # Trim any leading/trailing spaces from the captured name
+            player_name=$(echo "$player_name" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
             
             # Handle invalid player names (spaces, special characters)
             if handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"; then
