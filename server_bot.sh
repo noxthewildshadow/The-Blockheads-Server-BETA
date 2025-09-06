@@ -28,34 +28,6 @@ is_valid_player_name_strict() {
     [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]
 }
 
-# Function to safely read JSON files with locking
-read_json_file() {
-    local file_path="$1"
-    if [ ! -f "$file_path" ]; then
-        print_error "JSON file not found: $file_path"
-        echo "{}"
-        return 1
-    fi
-    
-    # Use flock with proper file descriptor handling
-    flock -s 200 cat "$file_path" 200>"${file_path}.lock"
-}
-
-# Function to safely write JSON files with locking
-write_json_file() {
-    local file_path="$1"
-    local content="$2"
-    
-    if [ ! -f "$file_path" ]; then
-        print_error "JSON file not found: $file_path"
-        return 1
-    fi
-    
-    # Use flock with proper file descriptor handling
-    flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
-    return $?
-}
-
 # Bot configuration - now supports multiple servers
 if [ $# -ge 2 ]; then
     PORT="$2"
@@ -152,7 +124,7 @@ grant_login_ticket() {
             --argjson tickets "$new_tickets" --argjson time "$current_time" --arg time_str "$time_str" \
             '.players[$player].tickets = $tickets | 
              .players[$player].last_login = $time |
-             .transactions += [{"player": $player, "type": "login_bonus", "tickets": 1, "time": $time_str}]')
+             .transactions += [{"player": $player, "type": "login-bonus", "tickets": 1, "time": $time_str}]')
         
         write_json_file "$ECONOMY_FILE" "$current_data"
         print_success "Granted 1 ticket to $player_name for logging in (Total: $new_tickets)"
@@ -520,12 +492,16 @@ monitor_log() {
     # Monitor the log file
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
         # Detect player connections
-        if [[ "$line" =~ Player\ Connected\ ([^|]+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
-            local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
-            [ "$player_name" == "SERVER" ] && continue
+        if echo "$line" | grep -q "Player Connected"; then
+            local player_name=$(echo "$line" | awk -F' \\| ' '{print $1}' | sed 's/.*Player Connected //')
+            local player_ip=$(echo "$line" | awk -F' \\| ' '{print $2}')
+            local player_hash=$(echo "$line" | awk -F' \\| ' '{print $3}')
 
-            # Trim any leading/trailing spaces from the captured name
-            player_name=$(echo "$player_name" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            # Validate that we extracted IP and hash correctly
+            if [[ -z "$player_ip" || -z "$player_hash" ]]; then
+                print_warning "Failed to parse player connection line: $line"
+                continue
+            fi
 
             # Skip invalid player names
             if ! is_valid_player_name_strict "$player_name"; then
@@ -555,12 +531,9 @@ monitor_log() {
             continue
         fi
 
-        if [[ "$line" =~ Player\ Disconnected\ ([^|]+)$ ]]; then
+        if [[ "$line" =~ Player\ Disconnected\ ([a-zA-Z0-9_]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             [ "$player_name" == "SERVER" ] && continue
-            
-            # Trim any leading/trailing spaces from the captured name
-            player_name=$(echo "$player_name" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
             
             # Skip invalid player names
             if ! is_valid_player_name_strict "$player_name"; then
