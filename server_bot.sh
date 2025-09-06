@@ -22,9 +22,11 @@ print_header() {
 }
 print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
-# Function to validate player names (strict: only letters, numbers, underscores)
-is_valid_player_name_strict() {
+# Function to validate player names
+is_valid_player_name() {
     local player_name="$1"
+    # Remove leading/trailing spaces first
+    player_name=$(echo "$player_name" | xargs)
     [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]
 }
 
@@ -78,7 +80,7 @@ add_player_if_new() {
     local player_name="$1"
     
     # Skip invalid player names
-    if ! is_valid_player_name_strict "$player_name"; then
+    if ! is_valid_player_name "$player_name"; then
         print_warning "Skipping economy setup for invalid player name: '$player_name'"
         return 1
     fi
@@ -124,7 +126,7 @@ grant_login_ticket() {
             --argjson tickets "$new_tickets" --argjson time "$current_time" --arg time_str "$time_str" \
             '.players[$player].tickets = $tickets | 
              .players[$player].last_login = $time |
-             .transactions += [{"player": $player, "type": "login-bonus", "tickets": 1, "time": $time_str}]')
+             .transactions += [{"player": $player, "type": "login_bonus", "tickets": 1, "time": $time_str}]')
         
         write_json_file "$ECONOMY_FILE" "$current_data"
         print_success "Granted 1 ticket to $player_name for logging in (Total: $new_tickets)"
@@ -139,7 +141,7 @@ show_welcome_message() {
     local player_name="$1" is_new_player="$2" force_send="${3:-0}"
     
     # Skip invalid player names
-    if ! is_valid_player_name_strict "$player_name"; then
+    if ! is_valid_player_name "$player_name"; then
         print_warning "Skipping welcome message for invalid player name: '$player_name'"
         return
     fi
@@ -207,7 +209,7 @@ process_give_rank() {
     fi
     
     # Validate target player name
-    if ! is_valid_player_name_strict "$target_player"; then
+    if ! is_valid_player_name "$target_player"; then
         send_server_command "$giver_name, invalid player name: $target_player"
         return 1
     fi
@@ -237,7 +239,7 @@ process_message() {
     local player_name="$1" message="$2"
     
     # Skip invalid player names
-    if ! is_valid_player_name_strict "$player_name"; then
+    if ! is_valid_player_name "$player_name"; then
         print_warning "Skipping message processing for invalid player name: '$player_name'"
         return
     fi
@@ -341,7 +343,7 @@ process_admin_command() {
         local player_name="${BASH_REMATCH[1]}" tickets_to_add="${BASH_REMATCH[2]}"
         
         # Validate player name
-        if ! is_valid_player_name_strict "$player_name"; then
+        if ! is_valid_player_name "$player_name"; then
             print_error "Invalid player name: $player_name"
             return 1
         fi
@@ -373,7 +375,7 @@ process_admin_command() {
         local player_name="${BASH_REMATCH[1]}"
         
         # Validate player name
-        if ! is_valid_player_name_strict "$player_name"; then
+        if ! is_valid_player_name "$player_name"; then
             print_error "Invalid player name: $player_name"
             return 1
         fi
@@ -387,7 +389,7 @@ process_admin_command() {
         local player_name="${BASH_REMATCH[1]}"
         
         # Validate player name
-        if ! is_valid_player_name_strict "$player_name"; then
+        if ! is_valid_player_name "$player_name"; then
             print_error "Invalid player name: $player_name"
             return 1
         fi
@@ -492,19 +494,12 @@ monitor_log() {
     # Monitor the log file
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
         # Detect player connections
-        if echo "$line" | grep -q "Player Connected"; then
-            local player_name=$(echo "$line" | awk -F' \\| ' '{print $1}' | sed 's/.*Player Connected //')
-            local player_ip=$(echo "$line" | awk -F' \\| ' '{print $2}')
-            local player_hash=$(echo "$line" | awk -F' \\| ' '{print $3}')
-
-            # Validate that we extracted IP and hash correctly
-            if [[ -z "$player_ip" || -z "$player_hash" ]]; then
-                print_warning "Failed to parse player connection line: $line"
-                continue
-            fi
+        if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
+            local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
+            [ "$player_name" == "SERVER" ] && continue
 
             # Skip invalid player names
-            if ! is_valid_player_name_strict "$player_name"; then
+            if ! is_valid_player_name "$player_name"; then
                 print_warning "Skipping invalid player name: '$player_name' (IP: $player_ip)"
                 continue
             fi
@@ -536,7 +531,7 @@ monitor_log() {
             [ "$player_name" == "SERVER" ] && continue
             
             # Skip invalid player names
-            if ! is_valid_player_name_strict "$player_name"; then
+            if ! is_valid_player_name "$player_name"; then
                 print_warning "Skipping invalid player name: '$player_name'"
                 continue
             fi
@@ -551,7 +546,7 @@ monitor_log() {
             [ "$player_name" == "SERVER" ] && continue
             
             # Skip invalid player names
-            if ! is_valid_player_name_strict "$player_name"; then
+            if ! is_valid_player_name "$player_name"; then
                 print_warning "Skipping message from invalid player name: '$player_name'"
                 continue
             fi
