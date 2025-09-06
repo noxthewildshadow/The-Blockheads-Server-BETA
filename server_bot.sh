@@ -22,6 +22,34 @@ print_header() {
 }
 print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
+# Function to safely read JSON files with locking
+read_json_file() {
+    local file_path="$1"
+    if [ ! -f "$file_path" ]; then
+        print_error "JSON file not found: $file_path"
+        echo "{}"
+        return 1
+    fi
+    
+    # Use flock with proper file descriptor handling
+    flock -s 200 cat "$file_path" 200>"${file_path}.lock"
+}
+
+# Function to safely write JSON files with locking
+write_json_file() {
+    local file_path="$1"
+    local content="$2"
+    
+    if [ ! -f "$file_path" ]; then
+        print_error "JSON file not found: $file_path"
+        return 1
+    fi
+    
+    # Use flock with proper file descriptor handling
+    flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
+    return $?
+}
+
 # Function to validate player names
 is_valid_player_name() {
     local player_name="$1"
@@ -249,21 +277,7 @@ process_message() {
     player_tickets=${player_tickets:-0}
     
     case "$message" in
-        "hi"|"hello"|"Hi"|"Hello"|"hola"|"Hola")
-            local current_time=$(date +%s)
-            local last_greeting_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_greeting_time // 0')
-            
-            # 10-minute cooldown for greetings
-            if [ "$last_greeting_time" -eq 0 ] || [ $((current_time - last_greeting_time)) -ge 600 ]; then
-                send_server_command "Hello $player_name! Welcome to the server. Type !help to check available commands."
-                # Update last_greeting_time
-                current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_greeting_time = $time')
-                write_json_file "$ECONOMY_FILE" "$current_data"
-            else
-                print_warning "Skipping greeting for $player_name due to cooldown"
-            fi
-            ;;
-        "!tickets")
+        "!tickets"|"ltickets")
             send_server_command "$player_name, you have $player_tickets tickets."
             ;;
         "!buy_mod")
