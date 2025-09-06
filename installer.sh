@@ -242,7 +242,7 @@ print_step "[4/8] Extracting files..."
 EXTRACT_DIR="/tmp/blockheads_extract_$$"
 mkdir -p "$EXTRACT_DIR"
 
-if ! tar xzf "$TEMP_FILE" -C "$EXTRACT_DIR"; then
+if ! tar zf "$TEMP_FILE" -C "$EXTRACT_DIR"; then
     print_error "Failed to extract server files."
     rm -rf "$EXTRACT_DIR"
     exit 1
