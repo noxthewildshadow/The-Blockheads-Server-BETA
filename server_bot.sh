@@ -11,18 +11,33 @@ BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 # Function to print status messages
-print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
-print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+print_status() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
 print_header() {
     echo -e "${PURPLE}================================================================"
     echo -e "$1"
     echo -e "===============================================================${NC}"
 }
-print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
-# Function to safely read JSON files with locking
+print_step() {
+    echo -e "${CYAN}[STEP]${NC} $1"
+}
+
+# Function to safely read JSON files
 read_json_file() {
     local file_path="$1"
     if [ ! -f "$file_path" ]; then
@@ -30,12 +45,10 @@ read_json_file() {
         echo "{}"
         return 1
     fi
-    
-    # Use flock with proper file descriptor handling
-    flock -s 200 cat "$file_path" 200>"${file_path}.lock"
+    jq -r '.' "$file_path" 2>/dev/null || echo "{}"
 }
 
-# Function to safely write JSON files with locking
+# Function to safely write JSON files
 write_json_file() {
     local file_path="$1"
     local content="$2"
@@ -45,9 +58,16 @@ write_json_file() {
         return 1
     fi
     
-    # Use flock with proper file descriptor handling
-    flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
+    echo "$content" | jq '.' > "$file_path"
     return $?
+}
+
+# Function to validate player names
+is_valid_player_name() {
+    local player_name="$1"
+    # Remove leading/trailing spaces first
+    player_name=$(echo "$player_name" | xargs)
+    [[ "$player_name" =~ ^[a-zA-Z0-9_]{3,20}$ ]]
 }
 
 # Bot configuration - now supports multiple servers
@@ -98,6 +118,12 @@ is_player_in_list() {
 
 add_player_if_new() {
     local player_name="$1"
+    
+    # Skip invalid player names
+    if ! is_valid_player_name "$player_name"; then
+        print_warning "Skipping economy setup for invalid player name: '$player_name'"
+        return 1
+    fi
     
     local current_data=$(read_json_file "$ECONOMY_FILE")
     local player_exists=$(echo "$current_data" | jq --arg player "$player_name" '.players | has($player)')
@@ -153,6 +179,13 @@ grant_login_ticket() {
 
 show_welcome_message() {
     local player_name="$1" is_new_player="$2" force_send="${3:-0}"
+    
+    # Skip invalid player names
+    if ! is_valid_player_name "$player_name"; then
+        print_warning "Skipping welcome message for invalid player name: '$player_name'"
+        return
+    fi
+    
     local current_time=$(date +%s)
     local current_data=$(read_json_file "$ECONOMY_FILE")
     local last_welcome_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_welcome_time // 0')
@@ -215,6 +248,12 @@ process_give_rank() {
         return 1
     fi
     
+    # Validate target player name
+    if ! is_valid_player_name "$target_player"; then
+        send_server_command "$giver_name, invalid player name: $target_player"
+        return 1
+    fi
+    
     # Deduct tickets from giver
     local new_tickets=$((giver_tickets - cost))
     current_data=$(echo "$current_data" | jq --arg player "$giver_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
@@ -238,6 +277,13 @@ process_give_rank() {
 
 process_message() {
     local player_name="$1" message="$2"
+    
+    # Skip invalid player names
+    if ! is_valid_player_name "$player_name"; then
+        print_warning "Skipping message processing for invalid player name: '$player_name'"
+        return
+    fi
+    
     local current_data=$(read_json_file "$ECONOMY_FILE")
     local player_tickets=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].tickets // 0')
     player_tickets=${player_tickets:-0}
@@ -336,6 +382,12 @@ process_admin_command() {
     if [[ "$command" =~ ^!send_ticket\ ([a-zA-Z0-9_]+)\ ([0-9]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}" tickets_to_add="${BASH_REMATCH[2]}"
         
+        # Validate player name
+        if ! is_valid_player_name "$player_name"; then
+            print_error "Invalid player name: $player_name"
+            return 1
+        fi
+        
         # Validate ticket amount
         if [[ ! "$tickets_to_add" =~ ^[0-9]+$ ]] || [ "$tickets_to_add" -le 0 ]; then
             print_error "Invalid ticket amount: $tickets_to_add"
@@ -362,6 +414,12 @@ process_admin_command() {
     elif [[ "$command" =~ ^!set_mod\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
         
+        # Validate player name
+        if ! is_valid_player_name "$player_name"; then
+            print_error "Invalid player name: $player_name"
+            return 1
+        fi
+        
         print_success "Setting $player_name as MOD"
         # First add to authorized mods, then assign rank
         add_to_authorized "$player_name" "mod"
@@ -369,6 +427,12 @@ process_admin_command() {
         send_server_command "$player_name has been set as MOD by server console!"
     elif [[ "$command" =~ ^!set_admin\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
+        
+        # Validate player name
+        if ! is_valid_player_name "$player_name"; then
+            print_error "Invalid player name: $player_name"
+            return 1
+        fi
         
         print_success "Setting $player_name as ADMIN"
         # First add to authorized admins, then assign rank
@@ -470,9 +534,15 @@ monitor_log() {
     # Monitor the log file
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
         # Detect player connections
-        if [[ "$line" =~ Player\ Connected\ ([a-zA-Z0-9_]+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
+        if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
             [ "$player_name" == "SERVER" ] && continue
+
+            # Skip invalid player names
+            if ! is_valid_player_name "$player_name"; then
+                print_warning "Skipping invalid player name: '$player_name' (IP: $player_ip)"
+                continue
+            fi
 
             print_success "Player connected: $player_name (IP: $player_ip)"
 
@@ -500,6 +570,12 @@ monitor_log() {
             local player_name="${BASH_REMATCH[1]}"
             [ "$player_name" == "SERVER" ] && continue
             
+            # Skip invalid player names
+            if ! is_valid_player_name "$player_name"; then
+                print_warning "Skipping invalid player name: '$player_name'"
+                continue
+            fi
+            
             print_warning "Player disconnected: $player_name"
             unset welcome_shown["$player_name"]
             continue
@@ -508,6 +584,12 @@ monitor_log() {
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
             local player_name="${BASH_REMATCH[1]}" message="${BASH_REMATCH[2]}"
             [ "$player_name" == "SERVER" ] && continue
+            
+            # Skip invalid player names
+            if ! is_valid_player_name "$player_name"; then
+                print_warning "Skipping message from invalid player name: '$player_name'"
+                continue
+            fi
             
             print_status "Chat: $player_name: $message"
             add_player_if_new "$player_name"
