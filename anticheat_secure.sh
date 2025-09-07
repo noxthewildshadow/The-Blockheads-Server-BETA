@@ -73,22 +73,22 @@ validate_auth() {
     local admin_list="$δ/adminlist.txt" mod_list="$δ/modlist.txt"
     
     [[ -f "$admin_list" ]] && while IFS= read -r ς; do
-        [[ -n "$ς" && ! "$ς" =~ ^[[:space:]]*# && ! "$ς" =~ "Usernames in this file" ]] && 
+        [[ -n "$ς" && ! "$ς" =~ ^[[:space:]]*'#' && ! "$ς" =~ "Usernames in this file" ]] && 
         ! grep -q -i "^$ς$" "$β" && 
         θ "Unauthorized admin detected: $ς" &&
         ρ "/unadmin $ς" &&
         remove_from_list "$ς" "admin" &&
         ο "Removed unauthorized admin: $ς"
-    done < <(grep -v "^[[:space:]]*#" "$admin_list" 2>/dev/null || true)
+    done < <(grep -v "^[[:space:]]*'#'" "$admin_list" 2>/dev/null || true)
     
     [[ -f "$mod_list" ]] && while IFS= read -r ς; do
-        [[ -n "$ς" && ! "$ς" =~ ^[[:space:]]*# && ! "$ς" =~ "Usernames in this file" ]] && 
+        [[ -n "$ς" && ! "$ς" =~ ^[[:space:]]*'#' && ! "$ς" =~ "Usernames in this file" ]] && 
         ! grep -q -i "^$ς$" "$γ" && 
         θ "Unauthorized mod detected: $ς" &&
         ρ "/unmod $ς" &&
         remove_from_list "$ς" "mod" &&
         ο "Removed unauthorized mod: $ς"
-    done < <(grep -v "^[[:space:]]*#" "$mod_list" 2>/dev/null || true)
+    done < <(grep -v "^[[:space:]]*'#'" "$mod_list" 2>/dev/null || true)
 }
 
 add_auth() {
@@ -137,7 +137,7 @@ clear_offenses() {
 remove_from_list() {
     local ς="$1" type="$2" file="$δ/${type}list.txt"
     [[ ! -f "$file" ]] && ω "List file not found: $file" && return $((2#1))
-    if grep -v "^[[:space:]]*#" "$file" 2>/dev/null | grep -q -i "^$ς$"; then
+    if grep -v "^[[:space:]]*'#'" "$file" 2>/dev/null | grep -q -i "^$ς$"; then
         sed -i "/^$ς$/Id" "$file"
         ο "Removed $ς from ${type}list.txt"
         return $((2#0))
@@ -169,7 +169,7 @@ silent_cmd() {
 
 in_list() {
     local ς="$1" type="$2" file="$δ/${type}list.txt"
-    [[ -f "$file" ]] && grep -v "^[[:space:]]*#" "$file" 2>/dev/null | grep -q -i "^$ς$" && return $((2#0))
+    [[ -f "$file" ]] && grep -v "^[[:space:]]*'#'" "$file" 2>/dev/null | grep -q -i "^$ς$" && return $((2#0))
     return $((2#1))
 }
 
