@@ -26,7 +26,7 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCREEN_SERVER="blockheads_server_$PORT"
 
-# Función mejorada para validar nombres de jugador con múltiples métodos de detección
+# Función mejorada para validar nombres de jugador
 is_valid_player_name() {
     local player_name="$1"
     
@@ -39,24 +39,18 @@ is_valid_player_name() {
     # Verificar longitud mínima y máxima
     [[ ${#player_name} -lt 2 || ${#player_name} -gt 16 ]] && return 1
     
-    # Método 1: Verificar con expresión regular estándar
+    # Verificar caracteres válidos (solo letras, números, guiones bajos y guiones)
     [[ ! "$player_name" =~ ^[a-zA-Z0-9_-]+$ ]] && return 1
     
-    # Método 2: Verificar con grep para detectar caracteres especiales
-    echo "$player_name" | grep -q '[^a-zA-Z0-9_-]' && return 1
-    
-    # Método 3: Verificar con printf para detectar caracteres de escape
-    local cleaned_name=$(printf "%s" "$player_name")
-    [[ "$cleaned_name" != "$player_name" ]] && return 1
-    
-    # Método 4: Verificar con tr y wc para contar caracteres no permitidos
-    local invalid_chars=$(echo "$player_name" | tr -d 'a-zA-Z0-9_-' | wc -c)
-    [[ $invalid_chars -gt 1 ]] && return 1
-    
-    # Método 5: Verificar que no comience ni termine con guión o guión bajo
+    # Verificar que no comience ni termine con guión o guión bajo
     [[ "$player_name" =~ ^[-_] || "$player_name" =~ [-_]$ ]] && return 1
     
-    # Método 6: Verificar que no tenga espacios internos múltiples
+    # Verificar que no tenga caracteres de control o barras invertidas
+    if echo "$player_name" | grep -q '\\'; then
+        return 1
+    fi
+    
+    # Verificar que no tenga espacios internos múltiples
     [[ "$player_name" =~ [[:space:]]{2,} ]] && return 1
     
     return 0
@@ -68,15 +62,11 @@ handle_invalid_player_name() {
     
     # Mostrar información detallada del nombre inválido
     local clean_name=$(echo "$player_name" | sed 's/\\/\\\\/g')
-    local hex_name=$(echo "$player_name" | xxd -p -c 256 2>/dev/null || echo "cannot_hexdump")
     
-    print_warning "INVALID PLAYER NAME: '$clean_name'"
-    print_warning "Hex dump: $hex_name"
-    print_warning "IP: $player_ip, Hash: $player_hash"
-    
+    print_warning "INVALID PLAYER NAME: '$clean_name' (IP: $player_ip, Hash: $player_hash)"
     send_server_command "WARNING: Invalid player name '$clean_name'! You will be banned for 5 seconds."
     
-    # Ban inmediato en lugar de esperar
+    # Ban inmediato
     print_warning "Banning player with invalid name: '$clean_name' (IP: $player_ip)"
     send_server_command "/ban $player_ip"
     
