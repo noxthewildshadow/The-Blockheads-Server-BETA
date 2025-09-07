@@ -62,10 +62,19 @@ write_json_file() {
     exec 201>&-
 }
 
+clean_player_name() {
+    local raw="$1"
+    raw="$(printf '%s' "$raw" | sed $'s/\x1B\\[[0-9;]*[A-Za-z]//g')"
+    raw="${raw//$'\r'/}"
+    raw="$(printf '%s' "$raw" | tr -d '\000-\037')"
+    raw="$(printf '%s' "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    printf '%s' "$raw"
+}
+
 is_valid_player_name() {
     local player_name="$1"
 
-    player_name="$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    player_name="$(clean_player_name "$player_name")"
 
     [[ -z "$player_name" ]] && return 1
 
@@ -90,19 +99,15 @@ is_valid_player_name() {
 
 handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="$3"
-    local clean_name="${player_name//\\/\\\\}"
+    local clean_name
+    clean_name="$(clean_player_name "$player_name")"
+    clean_name="${clean_name//\\/\\\\}"
 
     print_warning "INVALID PLAYER NAME: '$clean_name' (IP: $player_ip, Hash: $player_hash)"
-    send_server_command "WARNING: Invalid player name '$clean_name'! You will be banned for 5 seconds."
+    send_server_command "WARNING: Invalid player name '$clean_name'! You will be kicked."
 
-    print_warning "Banning player with invalid name: '$clean_name' (IP: $player_ip)"
-    send_server_command "/ban $player_ip"
-
-    (
-        sleep 5
-        send_server_command "/unban $player_ip"
-        print_success "Unbanned IP: $player_ip"
-    ) &
+    print_warning "Kicking player with invalid name: '$clean_name'"
+    send_server_command "/kick $clean_name"
 
     return 0
 }
@@ -293,11 +298,11 @@ monitor_log() {
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while IFS= read -r line; do
 
         if [[ "$line" == *"Player Connected"* ]] && [[ "$line" == *"|"* ]]; then
-            player_name="$(awk -F'|' '{ gsub(/^[[:space:]]*/,"",$1); sub(/^Player Connected[[:space:]]*/,"",$1); print $1 }' <<< "$line")"
+            player_name_raw="$(awk -F'|' '{ sub(/^Player Connected[[:space:]]*/, "", $1); gsub(/^[[:space:]]*/,"",$1); gsub(/[[:space:]]*$/,"",$1); print $1 }' <<< "$line")"
             player_ip="$(awk -F'|' '{ gsub(/^[[:space:]]*/,"",$2); gsub(/[[:space:]]*$/,"",$2); print $2 }' <<< "$line")"
             player_hash="$(awk -F'|' '{ gsub(/^[[:space:]]*/,"",$3); gsub(/[[:space:]]*$/,"",$3); print $3 }' <<< "$line")"
 
-            player_name="$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            player_name="$(clean_player_name "$player_name_raw")"
 
             if [[ "$player_name" == *\\* ]]; then
                 handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
@@ -305,6 +310,7 @@ monitor_log() {
             fi
 
             if ! is_valid_player_name "$player_name"; then
+                print_warning "Rejected name (raw): '$player_name_raw' -> cleaned: '$player_name'"
                 handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
                 continue
             fi
@@ -317,8 +323,8 @@ monitor_log() {
             command_type="${BASH_REMATCH[2]}"
             target_player="${BASH_REMATCH[3]}"
 
-            command_user="$(echo "$command_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-            target_player="$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            command_user="$(clean_player_name "$command_user")"
+            target_player="$(clean_player_name "$target_player")"
 
             if [[ "$command_user" == *\\* ]] || [[ "$target_player" == *\\* ]]; then
                 print_warning "Invalid player name with backslash in command: $command_user or $target_player"
@@ -334,9 +340,9 @@ monitor_log() {
         fi
 
         if [[ "$line" == *"Player Disconnected"* ]]; then
-            player_name="${line#*Player Disconnected }"
-            player_name="${player_name%% *}"
-            player_name="$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            player_name_raw="${line#*Player Disconnected }"
+            player_name_raw="${player_name_raw%% *}"
+            player_name="$(clean_player_name "$player_name_raw")"
 
             if [[ "$player_name" == *\\* ]]; then
                 print_warning "Player with invalid name disconnected: $player_name"
