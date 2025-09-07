@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -u
-# Anticheat mejorado: detección fiable de barras invertidas en nombres y ban por IP
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -15,10 +14,25 @@ print_status()  { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 print_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
+
 print_header() {
     echo -e "${PURPLE}================================================================"
     echo -e "$1"
     echo -e "===============================================================${NC}"
+}
+
+print_banner() {
+    echo -e "${PURPLE}"
+    echo "  █████╗ ███╗   ██╗████████╗██╗ ██████╗██╗  ██╗███████╗ █████╗ ████████╗"
+    echo " ██╔══██╗████╗  ██║╚══██╔══╝██║██╔════╝██║  ██║██╔════╝██╔══██╗╚══██╔══╝"
+    echo " ███████║██╔██╗ ██║   ██║   ██║██║     ███████║█████╗  ███████║   ██║   "
+    echo " ██╔══██║██║╚██╗██║   ██║   ██║██║     ██╔══██║██╔══╝  ██╔══██║   ██║   "
+    echo " ██║  ██║██║ ╚████║   ██║   ██║╚██████╗██║  ██║███████╗██║  ██║   ██║   "
+    echo " ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝   ╚═╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝   ╚═╝   "
+    echo -e "${NC}"
+    echo -e "${CYAN}                    ENHANCED SECURITY SYSTEM${NC}"
+    echo -e "${CYAN}                 ILLEGAL NAME DETECTION${NC}"
+    echo -e "${PURPLE}===============================================================${NC}"
 }
 
 LOG_FILE="$1"
@@ -29,13 +43,9 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCREEN_SERVER="blockheads_server_$PORT"
 
-# ------------------------
-# Util: bloqueo lectura/escritura JSON (flock)
-# ------------------------
 read_json_file() {
     local file_path="$1"
     [ ! -f "$file_path" ] && echo "{}" && return 1
-    # Abrimos descriptor para bloqueo
     exec 200<"$file_path"
     flock -s 200
     cat "$file_path"
@@ -45,7 +55,6 @@ read_json_file() {
 
 write_json_file() {
     local file_path="$1" content="$2"
-    # Usamos un fichero .lock separado para evitar truncar el original antes de lockear
     exec 201>"${file_path}.lock"
     flock -x 201
     echo "$content" > "$file_path"
@@ -53,54 +62,42 @@ write_json_file() {
     exec 201>&-
 }
 
-# ------------------------
-# Validación de nombres
-# ------------------------
 is_valid_player_name() {
     local player_name="$1"
 
-    # Trim (inicio y fin)
     player_name="$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
 
-    # Vacío
     [[ -z "$player_name" ]] && return 1
 
-    # Longitud
-    [[ ${#player_name} -lt 2 || ${#player_name} -gt 16 ]] && return 1
+    if [[ ${#player_name} -lt 1 || ${#player_name} -gt 16 ]]; then
+        return 1
+    fi
 
-    # Solo letras/números/guión/underscore (si quieres permitir más, ajusta acá)
-    [[ ! "$player_name" =~ ^[a-zA-Z0-9_-]+$ ]] && return 1
+    if [[ "$player_name" =~ [[:space:]] ]]; then
+        return 1
+    fi
 
-    # No comenzar/terminar con - o _
-    [[ "$player_name" =~ ^[-_] || "$player_name" =~ [-_]$ ]] && return 1
+    if [[ ! "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]; then
+        return 1
+    fi
 
-    # Detectar barras invertidas usando patrón de bash (robusto)
     if [[ "$player_name" == *\\* ]]; then
         return 1
     fi
 
-    # No espacios múltiples
-    [[ "$player_name" =~ [[:space:]]{2,} ]] && return 1
-
     return 0
 }
 
-# ------------------------
-# Manejo de nombres inválidos
-# ------------------------
 handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="$3"
-    # Escapamos backslashes para imprimir (para que se muestren como \\)
     local clean_name="${player_name//\\/\\\\}"
 
     print_warning "INVALID PLAYER NAME: '$clean_name' (IP: $player_ip, Hash: $player_hash)"
     send_server_command "WARNING: Invalid player name '$clean_name'! You will be banned for 5 seconds."
 
-    # Ban inmediato por IP
     print_warning "Banning player with invalid name: '$clean_name' (IP: $player_ip)"
     send_server_command "/ban $player_ip"
 
-    # Unban programado
     (
         sleep 5
         send_server_command "/unban $player_ip"
@@ -110,9 +107,6 @@ handle_invalid_player_name() {
     return 0
 }
 
-# ------------------------
-# Archivos de autorización y ofensas
-# ------------------------
 initialize_authorization_files() {
     [ ! -f "$AUTHORIZED_ADMINS_FILE" ] && touch "$AUTHORIZED_ADMINS_FILE"
     [ ! -f "$AUTHORIZED_MODS_FILE" ] && touch "$AUTHORIZED_MODS_FILE"
@@ -154,13 +148,9 @@ remove_from_list_file() {
     local player_name="$1" list_type="$2"
     local list_file="$LOG_DIR/${list_type}list.txt"
     [ ! -f "$list_file" ] && return 1
-    # Eliminamos la línea exacta (case-insensitive)
     sed -i "/^$player_name$/Id" "$list_file" 2>/dev/null || true
 }
 
-# ------------------------
-# Comandos a la pantalla del servidor
-# ------------------------
 send_server_command_silent() {
     screen -S "$SCREEN_SERVER" -X stuff "$1$(printf \\r)" 2>/dev/null || true
 }
@@ -239,9 +229,6 @@ handle_unauthorized_command() {
     fi
 }
 
-# ------------------------
-# Filtro de líneas irrelevantes
-# ------------------------
 filter_server_log() {
     while read -r line; do
         [[ "$line" == *"Server closed"* || "$line" == *"Starting server"* || \
@@ -256,108 +243,6 @@ cleanup() {
     kill $(jobs -p) 2>/dev/null || true
     rm -f "${ADMIN_OFFENSES_FILE}.lock" 2>/dev/null || true
     exit 0
-}
-
-# ------------------------
-# Monitor principal
-# ------------------------
-monitor_log() {
-    local log_file="$1"
-    LOG_FILE="$log_file"
-
-    initialize_authorization_files
-    initialize_admin_offenses
-
-    (
-        while true; do
-            sleep 3
-            validate_authorization
-        done
-    ) &
-    local validation_pid=$!
-
-    trap cleanup EXIT INT TERM
-
-    print_header "STARTING ANTICHEAT SECURITY SYSTEM"
-    print_status "Monitoring: $log_file"
-    print_status "Port: $PORT"
-    print_status "Log directory: $LOG_DIR"
-    print_header "SECURITY SYSTEM ACTIVE"
-
-    # Leemos la cola del log en tiempo real
-    tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while IFS= read -r line; do
-
-        # --- Detectar "Player Connected" de forma robusta usando awk para dividir por '|' ---
-        if [[ "$line" == *"Player Connected"* ]] && [[ "$line" == *"|"* ]]; then
-            # awk divide por '|' y limpiamos espacios
-            player_name="$(awk -F'|' '{ gsub(/^[[:space:]]*/,"",$1); sub(/^Player Connected[[:space:]]*/,"",$1); print $1 }' <<< "$line")"
-            player_ip="$(awk -F'|' '{ gsub(/^[[:space:]]*/,"",$2); gsub(/[[:space:]]*$/,"",$2); print $2 }' <<< "$line")"
-            player_hash="$(awk -F'|' '{ gsub(/^[[:space:]]*/,"",$3); gsub(/[[:space:]]*$/,"",$3); print $3 }' <<< "$line")"
-
-            # Limpiar espacios extra
-            player_name="$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-
-            # Comprobación robusta de backslash usando patrón de bash
-            if [[ "$player_name" == *\\* ]]; then
-                handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
-                continue
-            fi
-
-            if ! is_valid_player_name "$player_name"; then
-                handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
-                continue
-            fi
-
-            print_success "Player connected: $player_name (IP: $player_ip)"
-        fi
-
-        # --- Detectar comandos /admin o /mod (ej: "Alice: /admin Bob") ---
-        if [[ "$line" =~ ^([^:]+):[[:space:]]*/(admin|mod)[[:space:]]+([^[:space:]]+) ]]; then
-            command_user="${BASH_REMATCH[1]}"
-            command_type="${BASH_REMATCH[2]}"
-            target_player="${BASH_REMATCH[3]}"
-
-            command_user="$(echo "$command_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-            target_player="$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-
-            # verificación de backslash robusta
-            if [[ "$command_user" == *\\* ]] || [[ "$target_player" == *\\* ]]; then
-                print_warning "Invalid player name with backslash in command: $command_user or $target_player"
-                continue
-            fi
-
-            # validar nombres
-            if ! is_valid_player_name "$command_user" || ! is_valid_player_name "$target_player"; then
-                print_warning "Invalid player name in command: $command_user or $target_player"
-                continue
-            fi
-
-            [ "$command_user" != "SERVER" ] && handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
-        fi
-
-        # --- Detectar desconexiones ---
-        if [[ "$line" == *"Player Disconnected"* ]]; then
-            # Extraer lo que venga después de "Player Disconnected "
-            player_name="${line#*Player Disconnected }"
-            player_name="${player_name%% *}"  # si el log pone el nombre seguido de más texto
-            player_name="$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-
-            if [[ "$player_name" == *\\* ]]; then
-                print_warning "Player with invalid name disconnected: $player_name"
-                continue
-            fi
-
-            if is_valid_player_name "$player_name"; then
-                print_warning "Player disconnected: $player_name"
-            else
-                print_warning "Player with invalid name disconnected: $player_name"
-            fi
-        fi
-
-    done
-
-    wait
-    kill "$validation_pid" 2>/dev/null || true
 }
 
 validate_authorization() {
@@ -381,10 +266,98 @@ validate_authorization() {
     done < <(grep -v "^[[:space:]]*#" "$mod_list" 2>/dev/null || true)
 }
 
-# ------------------------
-# Uso y validación de args
-# ------------------------
+monitor_log() {
+    local log_file="$1"
+    LOG_FILE="$log_file"
+
+    initialize_authorization_files
+    initialize_admin_offenses
+
+    (
+        while true; do
+            sleep 3
+            validate_authorization
+        done
+    ) &
+    local validation_pid=$!
+
+    trap cleanup EXIT INT TERM
+
+    print_banner
+    print_header "STARTING ANTICHEAT SECURITY SYSTEM"
+    print_status "Monitoring: $log_file"
+    print_status "Port: $PORT"
+    print_status "Log directory: $LOG_DIR"
+    print_header "SECURITY SYSTEM ACTIVE"
+
+    tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while IFS= read -r line; do
+
+        if [[ "$line" == *"Player Connected"* ]] && [[ "$line" == *"|"* ]]; then
+            player_name="$(awk -F'|' '{ gsub(/^[[:space:]]*/,"",$1); sub(/^Player Connected[[:space:]]*/,"",$1); print $1 }' <<< "$line")"
+            player_ip="$(awk -F'|' '{ gsub(/^[[:space:]]*/,"",$2); gsub(/[[:space:]]*$/,"",$2); print $2 }' <<< "$line")"
+            player_hash="$(awk -F'|' '{ gsub(/^[[:space:]]*/,"",$3); gsub(/[[:space:]]*$/,"",$3); print $3 }' <<< "$line")"
+
+            player_name="$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+            if [[ "$player_name" == *\\* ]]; then
+                handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
+                continue
+            fi
+
+            if ! is_valid_player_name "$player_name"; then
+                handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
+                continue
+            fi
+
+            print_success "Player connected: $player_name (IP: $player_ip)"
+        fi
+
+        if [[ "$line" =~ ^([^:]+):[[:space:]]*/(admin|mod)[[:space:]]+([^[:space:]]+) ]]; then
+            command_user="${BASH_REMATCH[1]}"
+            command_type="${BASH_REMATCH[2]}"
+            target_player="${BASH_REMATCH[3]}"
+
+            command_user="$(echo "$command_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            target_player="$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+            if [[ "$command_user" == *\\* ]] || [[ "$target_player" == *\\* ]]; then
+                print_warning "Invalid player name with backslash in command: $command_user or $target_player"
+                continue
+            fi
+
+            if ! is_valid_player_name "$command_user" || ! is_valid_player_name "$target_player"; then
+                print_warning "Invalid player name in command: $command_user or $target_player"
+                continue
+            fi
+
+            [ "$command_user" != "SERVER" ] && handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
+        fi
+
+        if [[ "$line" == *"Player Disconnected"* ]]; then
+            player_name="${line#*Player Disconnected }"
+            player_name="${player_name%% *}"
+            player_name="$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+            if [[ "$player_name" == *\\* ]]; then
+                print_warning "Player with invalid name disconnected: $player_name"
+                continue
+            fi
+
+            if is_valid_player_name "$player_name"; then
+                print_warning "Player disconnected: $player_name"
+            else
+                print_warning "Player with invalid name disconnected: $player_name"
+            fi
+        fi
+
+    done
+
+    wait
+    kill "$validation_pid" 2>/dev/null || true
+}
+
 show_usage() {
+    print_banner
     print_header "ANTICHEAT SECURITY SYSTEM - USAGE"
     print_status "Usage: $0 <server_log_file> [port]"
     print_status "Example: $0 /path/to/console.log 12153"
