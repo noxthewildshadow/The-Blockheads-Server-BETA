@@ -222,11 +222,13 @@ chown "$ORIGINAL_USER:$ORIGINAL_USER" economy_data.json 2>/dev/null || true
 
 rm -f "$TEMP_FILE"
 
-./blockheads_server171 -h
-
 print_step "[8/8] Installation completed successfully"
 echo ""
-print_header "USAGE INSTRUCTIONS"
+print_header "BINARY INSTRUCTIONS"
+
+./blockheads_server171 -h
+
+print_header "SERVER MANAGER INSTRUCTIONS"
 print_status "1. Create a world: ./blockheads_server171 -n"
 print_status "2. Start server: ./server_manager.sh start WORLD_NAME PORT"
 print_status "3. Stop server: ./server_manager.sh stop"
