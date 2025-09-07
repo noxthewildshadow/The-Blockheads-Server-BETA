@@ -49,19 +49,14 @@ is_valid_player_name() {
     local cleaned_name=$(printf "%s" "$player_name")
     [[ "$cleaned_name" != "$player_name" ]] && return 1
     
-    # Método 4: Verificar con od (octal dump) para detectar barras invertidas y caracteres especiales
-    if echo "$player_name" | od -c | grep -q '\\'; then
-        return 1
-    fi
-    
-    # Método 5: Verificar con tr y wc para contar caracteres no permitidos
+    # Método 4: Verificar con tr y wc para contar caracteres no permitidos
     local invalid_chars=$(echo "$player_name" | tr -d 'a-zA-Z0-9_-' | wc -c)
     [[ $invalid_chars -gt 1 ]] && return 1
     
-    # Método 6: Verificar que no comience ni termine con guión o guión bajo
+    # Método 5: Verificar que no comience ni termine con guión o guión bajo
     [[ "$player_name" =~ ^[-_] || "$player_name" =~ [-_]$ ]] && return 1
     
-    # Método 7: Verificar que no tenga espacios internos múltiples
+    # Método 6: Verificar que no tenga espacios internos múltiples
     [[ "$player_name" =~ [[:space:]]{2,} ]] && return 1
     
     return 0
@@ -73,7 +68,7 @@ handle_invalid_player_name() {
     
     # Mostrar información detallada del nombre inválido
     local clean_name=$(echo "$player_name" | sed 's/\\/\\\\/g')
-    local hex_name=$(echo "$player_name" | xxd -p -c 256)
+    local hex_name=$(echo "$player_name" | xxd -p -c 256 2>/dev/null || echo "cannot_hexdump")
     
     print_warning "INVALID PLAYER NAME: '$clean_name'"
     print_warning "Hex dump: $hex_name"
@@ -81,16 +76,17 @@ handle_invalid_player_name() {
     
     send_server_command "WARNING: Invalid player name '$clean_name'! You will be banned for 5 seconds."
     
+    # Ban inmediato en lugar de esperar
+    print_warning "Banning player with invalid name: '$clean_name' (IP: $player_ip)"
+    send_server_command "/ban $player_ip"
+    
+    # Programar el unban después de 5 segundos
     (
         sleep 5
-        print_warning "Banning player with invalid name: '$clean_name' (IP: $player_ip)"
-        send_server_command "/ban $player_ip"
-        (
-            sleep 5
-            send_server_command "/unban $player_ip"
-            print_success "Unbanned IP: $player_ip"
-        ) &
+        send_server_command "/unban $player_ip"
+        print_success "Unbanned IP: $player_ip"
     ) &
+    
     return 0
 }
 
@@ -292,7 +288,7 @@ monitor_log() {
             # Limpiar el nombre de espacios en blanco
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
-            # Verificación adicional para nombres con barras invertidas
+            # Verificación EXPLÍCITA para barras invertidas
             if echo "$player_name" | grep -q '\\'; then
                 handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
                 continue
