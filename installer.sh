@@ -230,7 +230,7 @@ print_header "BINARY INSTRUCTIONS"
 
 print_header "SERVER MANAGER INSTRUCTIONS"
 print_status "1. Create a world: ./blockheads_server171 -n"
-print_status "2. Start server: ./server_manager.sh start WORLD_NAME PORT"
+print_status "2. Start server: ./server_manager.sh start WORLD_ID PORT"
 print_status "3. Stop server: ./server_manager.sh stop"
 print_status "4. Check status: ./server_manager.sh status"
 print_status "5. Default port: 12153"
