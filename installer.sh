@@ -222,6 +222,8 @@ chown "$ORIGINAL_USER:$ORIGINAL_USER" economy_data.json 2>/dev/null || true
 
 rm -f "$TEMP_FILE"
 
+./blockheads_server171 -h
+
 print_step "[8/8] Installation completed successfully"
 echo ""
 print_header "USAGE INSTRUCTIONS"
@@ -230,6 +232,6 @@ print_status "2. Start server: ./server_manager.sh start WORLD_NAME PORT"
 print_status "3. Stop server: ./server_manager.sh stop"
 print_status "4. Check status: ./server_manager.sh status"
 print_status "5. Default port: 12153"
-print_status "6. HELP: ./blockheads_server171 -n AND ./server_manager.sh help"
-print_warning "After creating the world, press CTRL+C to exit and then continue to start server"
+print_status "6. HELP: ./server_manager.sh help"
+print_warning "After creating the world, press CTRL+C to exit"
 print_header "INSTALLATION COMPLETE"
