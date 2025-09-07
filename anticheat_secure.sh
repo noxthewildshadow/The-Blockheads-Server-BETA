@@ -26,9 +26,10 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCREEN_SERVER="blockheads_server_$PORT"
 
-# Función mejorada para validar nombres de jugador
+# Función mejorada para validar nombres de jugador con múltiples métodos de detección
 is_valid_player_name() {
     local player_name="$1"
+    
     # Eliminar espacios en blanco al principio y final
     player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     
@@ -38,17 +39,29 @@ is_valid_player_name() {
     # Verificar longitud mínima y máxima
     [[ ${#player_name} -lt 2 || ${#player_name} -gt 16 ]] && return 1
     
-    # Verificar caracteres válidos (solo letras, números, guiones bajos y guiones)
+    # Método 1: Verificar con expresión regular estándar
     [[ ! "$player_name" =~ ^[a-zA-Z0-9_-]+$ ]] && return 1
     
-    # Verificar que no comience ni termine con guión o guión bajo
+    # Método 2: Verificar con grep para detectar caracteres especiales
+    echo "$player_name" | grep -q '[^a-zA-Z0-9_-]' && return 1
+    
+    # Método 3: Verificar con printf para detectar caracteres de escape
+    local cleaned_name=$(printf "%s" "$player_name")
+    [[ "$cleaned_name" != "$player_name" ]] && return 1
+    
+    # Método 4: Verificar con od (octal dump) para detectar barras invertidas y caracteres especiales
+    if echo "$player_name" | od -c | grep -q '\\'; then
+        return 1
+    fi
+    
+    # Método 5: Verificar con tr y wc para contar caracteres no permitidos
+    local invalid_chars=$(echo "$player_name" | tr -d 'a-zA-Z0-9_-' | wc -c)
+    [[ $invalid_chars -gt 1 ]] && return 1
+    
+    # Método 6: Verificar que no comience ni termine con guión o guión bajo
     [[ "$player_name" =~ ^[-_] || "$player_name" =~ [-_]$ ]] && return 1
     
-    # Verificar que no tenga caracteres de control o barras invertidas
-    [[ "$player_name" =~ [[:cntrl:]] ]] && return 1
-    [[ "$player_name" == *"\\"* ]] && return 1
-    
-    # Verificar que no tenga espacios internos múltiples
+    # Método 7: Verificar que no tenga espacios internos múltiples
     [[ "$player_name" =~ [[:space:]]{2,} ]] && return 1
     
     return 0
@@ -58,10 +71,14 @@ is_valid_player_name() {
 handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="$3"
     
-    # Limpiar el nombre para mostrar en mensajes
+    # Mostrar información detallada del nombre inválido
     local clean_name=$(echo "$player_name" | sed 's/\\/\\\\/g')
+    local hex_name=$(echo "$player_name" | xxd -p -c 256)
     
-    print_warning "INVALID PLAYER NAME: '$clean_name' (IP: $player_ip, Hash: $player_hash)"
+    print_warning "INVALID PLAYER NAME: '$clean_name'"
+    print_warning "Hex dump: $hex_name"
+    print_warning "IP: $player_ip, Hash: $player_hash"
+    
     send_server_command "WARNING: Invalid player name '$clean_name'! You will be banned for 5 seconds."
     
     (
@@ -275,6 +292,12 @@ monitor_log() {
             # Limpiar el nombre de espacios en blanco
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
+            # Verificación adicional para nombres con barras invertidas
+            if echo "$player_name" | grep -q '\\'; then
+                handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
+                continue
+            fi
+            
             if ! is_valid_player_name "$player_name"; then
                 handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
                 continue
@@ -290,6 +313,12 @@ monitor_log() {
             # Limpiar los nombres
             command_user=$(echo "$command_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
+            # Verificación adicional para nombres con barras invertidas
+            if echo "$command_user" | grep -q '\\' || echo "$target_player" | grep -q '\\'; then
+                print_warning "Invalid player name with backslash in command: $command_user or $target_player"
+                continue
+            fi
             
             # Validar ambos nombres
             if ! is_valid_player_name "$command_user" || ! is_valid_player_name "$target_player"; then
@@ -307,9 +336,17 @@ monitor_log() {
             # Limpiar el nombre de espacios en blanco
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
+            # Verificación adicional para nombres con barras invertidas
+            if echo "$player_name" | grep -q '\\'; then
+                print_warning "Player with invalid name disconnected: $player_name"
+                continue
+            fi
+            
             # Solo mostrar mensaje si el nombre es válido
             if is_valid_player_name "$player_name"; then
                 print_warning "Player disconnected: $player_name"
+            else
+                print_warning "Player with invalid name disconnected: $player_name"
             fi
         fi
     done
