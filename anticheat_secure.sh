@@ -1,10 +1,4 @@
 #!/bin/bash
-# anticheat_secure.sh - Enhanced security system for The Blockheads server
-# Improved for new users: Better error messages, fixed file locking issues
-# Enhanced to detect and ban players with invalid names (spaces, special characters) by IP
-# Enhanced with DDoS protection, packet analysis, reputation system, and more
-
-# Enhanced Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -12,9 +6,8 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 PURPLE='\033[0;35m'
 BOLD='\033[1m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Function to print status messages
 print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
@@ -25,7 +18,6 @@ print_header() {
     echo -e "===============================================================${NC}"
 }
 
-# Configuration
 LOG_FILE="$1"
 PORT="$2"
 LOG_DIR=$(dirname "$LOG_FILE")
@@ -34,57 +26,23 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCREEN_SERVER="blockheads_server_$PORT"
 
-# Enhanced anticheat variables
-declare -A connection_attempts
-declare -A packet_rates
-declare -A last_command_time
-declare -A quarantine_players
-ANTICHEAT_CONFIG="$LOG_DIR/anticheat_config.cfg"
-REPUTATION_FILE="$LOG_DIR/player_reputation.json"
-KNOWN_HASHES_FILE="$LOG_DIR/known_hashes.txt"
-
-# Load anticheat configuration
-load_anticheat_config() {
-    if [ ! -f "$ANTICHEAT_CONFIG" ]; then
-        # Default configuration
-        cat > "$ANTICHEAT_CONFIG" << EOF
-MAX_CONNECTIONS_PER_MIN=5
-MAX_PACKETS_PER_SEC=20
-COMMAND_COOLDOWN=2
-QUARANTINE_DURATION=300
-EOF
-    fi
-    
-    source "$ANTICHEAT_CONFIG"
-    print_success "Anticheat configuration loaded"
-}
-
-# Function to validate player names
 is_valid_player_name() {
-    local player_name="$1"
-    # Remove leading/trailing spaces first
-    player_name=$(echo "$player_name" | xargs)
+    local player_name=$(echo "$1" | xargs)
     [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]
 }
 
-# Function to detect and handle invalid player names using IP ban/unban
 handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="$3"
-    
-    # Trim spaces for validation
     local player_name_trimmed=$(echo "$player_name" | xargs)
     
-    # Check if name is empty after trimming or contains invalid characters
     if [[ -z "$player_name_trimmed" ]] || ! is_valid_player_name "$player_name"; then
         print_warning "INVALID PLAYER NAME: '$player_name' (IP: $player_ip, Hash: $player_hash)"
         send_server_command "WARNING: Invalid player name '$player_name'! You will be banned for 5 seconds."
         
-        # Wait 5 seconds and then ban by IP
         (
             sleep 5
             print_warning "Banning player with invalid name: '$player_name' (IP: $player_ip)"
             send_server_command "/ban $player_ip"
-            # Now schedule unban after 5 seconds
             (
                 sleep 5
                 send_server_command "/unban $player_ip"
@@ -96,325 +54,46 @@ handle_invalid_player_name() {
     return 1
 }
 
-# Function to monitor connection rate for DDoS protection
-monitor_connection_rate() {
-    local ip="$1"
-    local current_time=$(date +%s)
-    
-    # Clean up old connections
-    for connected_ip in "${!connection_attempts[@]}"; do
-        if (( current_time - connection_attempts[$connected_ip] > 60 )); then
-            unset connection_attempts[$connected_ip]
-        fi
-    done
-    
-    # Count connections
-    if [[ -z "${connection_attempts[$ip]}" ]]; then
-        connection_attempts[$ip]=1
-    else
-        connection_attempts[$ip]=$((connection_attempts[$ip] + 1))
-    fi
-    
-    # Check limit
-    if (( connection_attempts[$ip] > MAX_CONNECTIONS_PER_MIN )); then
-        print_warning "Possible DDoS attack from IP: $ip"
-        log_security_event "DDoS" "$ip" "Excessive connections: ${connection_attempts[$ip]}" "HIGH"
-        send_server_command "/ban $ip"
-        return 1
-    fi
-    return 0
-}
-
-# Detect malformed or unusual packets
-analyze_packet_patterns() {
-    local player_name="$1"
-    local message="$2"
-    
-    # Suspicious patterns (customize based on observed patterns)
-    local suspicious_patterns=(
-        "^\?|\.\.\/"
-        "\[.*\].*\{.*\}"
-        "\\x[0-9a-fA-F]{2}"
-        ".{100,}"  # Extremely long messages
-    )
-    
-    for pattern in "${suspicious_patterns[@]}"; do
-        if [[ "$message" =~ $pattern ]]; then
-            print_warning "Suspicious pattern detected from $player_name: $message"
-            log_security_event "SuspiciousPacket" "$player_name" "Pattern: $pattern in message: $message" "MEDIUM"
-            send_server_command "/kick $player_name Suspicious packet pattern detected"
-            update_reputation "$player_name" -1
-            return 1
-        fi
-    done
-    return 0
-}
-
-# Reputation system
-initialize_reputation_system() {
-    if [ ! -f "$REPUTATION_FILE" ]; then
-        echo '{}' > "$REPUTATION_FILE"
-        print_success "Reputation system initialized"
-    fi
-}
-
-update_reputation() {
-    local player_name="$1"
-    local change="$2"  # -1 for bad reputation, +1 for good
-    
-    local current_data=$(read_json_file "$REPUTATION_FILE")
-    local current_rep=$(echo "$current_data" | jq -r --arg player "$player_name" '.[$player] // 0')
-    
-    current_rep=$((current_rep + change))
-    
-    # Limit between -10 and 10
-    if (( current_rep > 10 )); then
-        current_rep=10
-    elif (( current_rep < -10 )); then
-        current_rep=-10
-    fi
-    
-    current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson rep "$current_rep" '.[$player] = $rep')
-    write_json_file "$REPUTATION_FILE" "$current_data"
-    
-    # If reputation is very low, temporary ban
-    if (( current_rep <= -5 )); then
-        send_server_command "/tempban $player_name 3600 Repeated suspicious behavior"
-        print_warning "Player $player_name temporarily banned for low reputation"
-        log_security_event "TempBan" "$player_name" "Low reputation: $current_rep" "HIGH"
-    fi
-}
-
-# Prevent command spam
-check_command_cooldown() {
-    local player_name="$1"
-    local current_time=$(date +%s)
-    
-    if [[ -n "${last_command_time[$player_name]}" ]]; then
-        local time_diff=$((current_time - last_command_time[$player_name]))
-        if (( time_diff < COMMAND_COOLDOWN )); then
-            send_server_command "Wait $((COMMAND_COOLDOWN - time_diff)) seconds before using another command, $player_name"
-            return 1
-        fi
-    fi
-    
-    last_command_time[$player_name]=$current_time
-    return 0
-}
-
-# Check for connection anomalies
-check_connection_anomalies() {
-    local player_name="$1"
-    local player_ip="$2"
-    local player_hash="$3"
-    
-    # IPs that change frequently with the same hash (possible spoofing)
-    if [ ! -f "$KNOWN_HASHES_FILE" ]; then
-        touch "$KNOWN_HASHES_FILE"
-    fi
-    
-    local expected_ip=$(grep "$player_hash" "$KNOWN_HASHES_FILE" 2>/dev/null | cut -d'|' -f1)
-    
-    if [[ -n "$expected_ip" && "$expected_ip" != "$player_ip" ]]; then
-        print_warning "Possible spoofing: $player_name from $player_ip (expected: $expected_ip)"
-        log_security_event "Spoofing" "$player_name" "Hash $player_hash from $player_ip (expected from $expected_ip)" "HIGH"
-        send_server_command "/kick $player_name Suspicious connection activity"
-        return 1
-    fi
-    
-    # Save current hash
-    echo "$player_ip|$player_hash" >> "$KNOWN_HASHES_FILE"
-    return 0
-}
-
-# Quarantine system for suspicious behavior
-quarantine_player() {
-    local player_name="$1"
-    local reason="$2"
-    
-    quarantine_players["$player_name"]=$(date +%s)
-    send_server_command "/mute $player_name"
-    send_server_command "$player_name has been quarantined: $reason"
-    
-    print_warning "Player $player_name quarantined: $reason"
-    log_security_event "Quarantine" "$player_name" "Reason: $reason" "MEDIUM"
-}
-
-check_quarantine() {
-    local player_name="$1"
-    local current_time=$(date +%s)
-    
-    if [[ -n "${quarantine_players[$player_name]}" ]]; then
-        local quarantine_time=${quarantine_players[$player_name]}
-        local time_in_quarantine=$((current_time - quarantine_time))
-        
-        if (( time_in_quarantine < QUARANTINE_DURATION )); then
-            send_server_command "/kick $player_name Still in quarantine ($((QUARANTINE_DURATION - time_in_quarantine))s remaining)"
-            return 1
-        else
-            unset quarantine_players["$player_name"]
-            send_server_command "/unmute $player_name"
-            send_server_command "$player_name has been released from quarantine"
-        fi
-    fi
-    return 0
-}
-
-# Enhanced reporting and logs
-log_security_event() {
-    local event_type="$1"
-    local player_name="$2"
-    local details="$3"
-    local severity="$4"
-    
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    local log_entry="$timestamp | $event_type | $player_name | $severity | $details"
-    
-    echo "$log_entry" >> "$LOG_DIR/security_events.log"
-    
-    # Notify admins if severe
-    if [[ "$severity" == "HIGH" || "$severity" == "CRITICAL" ]]; then
-        send_server_command "SECURITY ALERT: $event_type - $player_name - $details"
-    fi
-}
-
-# Server file integrity verification
-validate_server_files() {
-    local important_files=(
-        "./blockheads_server171"
-        "./server_manager.sh"
-        "./server_bot.sh"
-        "./anticheat_secure.sh"
-    )
-    
-    for file in "${important_files[@]}"; do
-        if [[ ! -f "$file" ]]; then
-            print_error "Critical file missing: $file"
-            log_security_event "FileCheck" "System" "Critical file missing: $file" "CRITICAL"
-            return 1
-        fi
-        
-        # Basic checksum verification (can be improved with precalculated checksums)
-        local filesize=$(stat -c%s "$file")
-        if (( filesize == 0 )); then
-            print_error "Corrupted file: $file"
-            log_security_event "FileCheck" "System" "Corrupted file: $file" "CRITICAL"
-            return 1
-        fi
-    done
-    return 0
-}
-
-# Function to safely read JSON files with locking
 read_json_file() {
     local file_path="$1"
-    if [ ! -f "$file_path" ]; then
-        print_error "JSON file not found: $file_path"
-        echo "{}"
-        return 1
-    fi
-    
-    # Use flock with proper file descriptor handling
+    [ ! -f "$file_path" ] && echo "{}" && return 1
     flock -s 200 cat "$file_path" 200>"${file_path}.lock"
 }
 
-# Function to safely write JSON files with locking
 write_json_file() {
-    local file_path="$1"
-    local content="$2"
-    
-    if [ ! -f "$file_path" ]; then
-        print_error "JSON file not found: $file_path"
-        return 1
-    fi
-    
-    # Use flock with proper file descriptor handling
+    local file_path="$1" content="$2"
+    [ ! -f "$file_path" ] && return 1
     flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
-    return $?
 }
 
-# Function to initialize authorization files
 initialize_authorization_files() {
-    [ ! -f "$AUTHORIZED_ADMINS_FILE" ] && touch "$AUTHORIZED_ADMINS_FILE" && print_success "Created authorized admins file: $AUTHORIZED_ADMINS_FILE"
-    [ ! -f "$AUTHORIZED_MODS_FILE" ] && touch "$AUTHORIZED_MODS_FILE" && print_success "Created authorized mods file: $AUTHORIZED_MODS_FILE"
+    [ ! -f "$AUTHORIZED_ADMINS_FILE" ] && touch "$AUTHORIZED_ADMINS_FILE"
+    [ ! -f "$AUTHORIZED_MODS_FILE" ] && touch "$AUTHORIZED_MODS_FILE"
 }
 
-# Function to check and correct admin/mod lists
 validate_authorization() {
     local admin_list="$LOG_DIR/adminlist.txt"
     local mod_list="$LOG_DIR/modlist.txt"
     
-    # Check adminlist.txt against authorized_admins.txt
-    if [ -f "$admin_list" ]; then
-        while IFS= read -r admin; do
-            if [[ -n "$admin" && ! "$admin" =~ ^[[:space:]]*# && ! "$admin" =~ "Usernames in this file" ]]; then
-                if ! grep -q -i "^$admin$" "$AUTHORIZED_ADMINS_FILE"; then
-                    print_warning "Unauthorized admin detected: $admin"
-                    send_server_command "/unadmin $admin"
-                    remove_from_list_file "$admin" "admin"
-                    print_success "Removed unauthorized admin: $admin"
-                fi
-            fi
-        done < <(grep -v "^[[:space:]]*#" "$admin_list" 2>/dev/null || true)
-    fi
+    [ -f "$admin_list" ] && while IFS= read -r admin; do
+        [[ -n "$admin" && ! "$admin" =~ ^[[:space:]]*# && ! "$admin" =~ "Usernames in this file" ]] && \
+        ! grep -q -i "^$admin$" "$AUTHORIZED_ADMINS_FILE" && \
+        send_server_command "/unadmin $admin" && \
+        remove_from_list_file "$admin" "admin"
+    done < <(grep -v "^[[:space:]]*#" "$admin_list" 2>/dev/null || true)
     
-    # Check modlist.txt against authorized_mods.txt
-    if [ -f "$mod_list" ]; then
-        while IFS= read -r mod; do
-            if [[ -n "$mod" && ! "$mod" =~ ^[[:space:]]*# && ! "$mod" =~ "Usernames in this file" ]]; then
-                if ! grep -q -i "^$mod$" "$AUTHORIZED_MODS_FILE"; then
-                    print_warning "Unauthorized mod detected: $mod"
-                    send_server_command "/unmod $mod"
-                    remove_from_list_file "$mod" "mod"
-                    print_success "Removed unauthorized mod: $mod"
-                fi
-            fi
-        done < <(grep -v "^[[:space:]]*#" "$mod_list" 2>/dev/null || true)
-    fi
+    [ -f "$mod_list" ] && while IFS= read -r mod; do
+        [[ -n "$mod" && ! "$mod" =~ ^[[:space:]]*# && ! "$mod" =~ "Usernames in this file" ]] && \
+        ! grep -q -i "^$mod$" "$AUTHORIZED_MODS_FILE" && \
+        send_server_command "/unmod $mod" && \
+        remove_from_list_file "$mod" "mod"
+    done < <(grep -v "^[[:space:]]*#" "$mod_list" 2>/dev/null || true)
 }
 
-# Function to add player to authorized list
-add_to_authorized() {
-    local player_name="$1" list_type="$2"
-    local auth_file="$LOG_DIR/authorized_${list_type}s.txt"
-    
-    [ ! -f "$auth_file" ] && print_error "Authorization file not found: $auth_file" && return 1
-    
-    if ! grep -q -i "^$player_name$" "$auth_file"; then
-        echo "$player_name" >> "$auth_file"
-        print_success "Added $player_name to authorized ${list_type}s"
-        return 0
-    else
-        print_warning "$player_name is already in authorized ${list_type}s"
-        return 1
-    fi
-}
-
-# Function to remove player from authorized list
-remove_from_authorized() {
-    local player_name="$1" list_type="$2"
-    local auth_file="$LOG_DIR/authorized_${list_type}s.txt"
-    
-    [ ! -f "$auth_file" ] && print_error "Authorization file not found: $auth_file" && return 1
-    
-    # Use case-insensitive deletion with sed
-    if grep -q -i "^$player_name$" "$auth_file"; then
-        sed -i "/^$player_name$/Id" "$auth_file"
-        print_success "Removed $player_name from authorized ${list_type}s"
-        return 0
-    else
-        print_warning "Player $player_name not found in authorized ${list_type}s"
-        return 1
-    fi
-}
-
-# Initialize admin offenses tracking
 initialize_admin_offenses() {
-    [ ! -f "$ADMIN_OFFENSES_FILE" ] && echo '{}' > "$ADMIN_OFFENSES_FILE" && 
-    print_success "Admin offenses tracking file created: $ADMIN_OFFENSES_FILE"
+    [ ! -f "$ADMIN_OFFENSES_FILE" ] && echo '{}' > "$ADMIN_OFFENSES_FILE"
 }
 
-# Function to record admin offense
 record_admin_offense() {
     local admin_name="$1" current_time=$(date +%s)
     local offenses_data=$(read_json_file "$ADMIN_OFFENSES_FILE" 2>/dev/null || echo '{}')
@@ -433,34 +112,21 @@ record_admin_offense() {
     return $current_offenses
 }
 
-# Function to clear admin offenses
 clear_admin_offenses() {
     local admin_name="$1"
     local offenses_data=$(read_json_file "$ADMIN_OFFENSES_FILE" 2>/dev/null || echo '{}')
     offenses_data=$(echo "$offenses_data" | jq --arg admin "$admin_name" 'del(.[$admin])')
     write_json_file "$ADMIN_OFFENSES_FILE" "$offenses_data"
-    print_success "Cleared offenses for admin $admin_name"
 }
 
-# Function to remove player from list file
 remove_from_list_file() {
     local player_name="$1" list_type="$2"
     local list_file="$LOG_DIR/${list_type}list.txt"
-    
-    [ ! -f "$list_file" ] && print_error "List file not found: $list_file" && return 1
-    
-    # Use case-insensitive deletion with sed
-    if grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"; then
-        sed -i "/^$player_name$/Id" "$list_file"
-        print_success "Removed $player_name from ${list_type}list.txt"
-        return 0
-    else
-        print_warning "Player $player_name not found in ${list_type}list.txt"
-        return 1
-    fi
+    [ ! -f "$list_file" ] && return 1
+    grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$" && \
+    sed -i "/^$player_name$/Id" "$list_file"
 }
 
-# Function to send delayed unadmin/unmod commands (SILENT VERSION)
 send_delayed_uncommands() {
     local target_player="$1" command_type="$2"
     (
@@ -471,30 +137,22 @@ send_delayed_uncommands() {
     ) &
 }
 
-# Silent version of send_server_command
 send_server_command_silent() {
     screen -S "$SCREEN_SERVER" -X stuff "$1$(printf \\r)" 2>/dev/null
 }
 
-# Function to send server command
 send_server_command() {
-    if screen -S "$SCREEN_SERVER" -X stuff "$1$(printf \\r)" 2>/dev/null; then
-        print_success "Sent message to server: $1"
-    else
-        print_error "Could not send message to server. Is the server running?"
-    fi
+    screen -S "$SCREEN_SERVER" -X stuff "$1$(printf \\r)" 2>/dev/null && \
+    print_success "Sent message to server: $1" || \
+    print_error "Could not send message to server"
 }
 
-# Function to check if player is in list
 is_player_in_list() {
     local player_name="$1" list_type="$2"
     local list_file="$LOG_DIR/${list_type}list.txt"
-    
-    [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$" && return 0
-    return 1
+    [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"
 }
 
-# Function to handle unauthorized admin/mod commands
 handle_unauthorized_command() {
     local player_name="$1" command="$2" target_player="$3"
     
@@ -509,7 +167,6 @@ handle_unauthorized_command() {
         if [ -n "$command_type" ]; then
             send_server_command_silent "/un${command_type} $target_player"
             remove_from_list_file "$target_player" "$command_type"
-            print_success "Revoked ${command_type} rank from $target_player"
             send_delayed_uncommands "$target_player" "$command_type"
         fi
         
@@ -517,27 +174,19 @@ handle_unauthorized_command() {
         local offense_count=$?
         
         if [ "$offense_count" -eq 1 ]; then
-            send_server_command "$player_name, this is your first warning! Only the server console can assign ranks using !set_admin or !set_mod."
-            print_warning "First offense recorded for admin $player_name"
+            send_server_command "$player_name, this is your first warning! Only the server console can assign ranks."
         elif [ "$offense_count" -eq 2 ]; then
-            print_warning "SECOND OFFENSE: Admin $player_name is being demoted to mod for unauthorized command usage"
+            print_warning "SECOND OFFENSE: Admin $player_name is being demoted to mod"
             
-            # First add to authorized mods before removing admin privileges
-            add_to_authorized "$player_name" "mod"
+            echo "$player_name" >> "$AUTHORIZED_MODS_FILE"
+            sed -i "/^$player_name$/Id" "$AUTHORIZED_ADMINS_FILE"
             
-            # Remove from authorized admins
-            remove_from_authorized "$player_name" "admin"
-            
-            # Remove admin privileges
             send_server_command_silent "/unadmin $player_name"
             remove_from_list_file "$player_name" "admin"
             
-            # Assign mod rank - ensure the player is added to modlist before sending the command
             send_server_command "/mod $player_name"
-            send_server_command "ALERT: Admin $player_name has been demoted to moderator for repeatedly attempting unauthorized admin commands!"
-            send_server_command "Only the server console can assign ranks using !set_admin or !set_mod."
+            send_server_command "ALERT: Admin $player_name has been demoted to moderator for unauthorized commands!"
             
-            # Clear offenses after punishment
             clear_admin_offenses "$player_name"
         fi
     else
@@ -556,7 +205,6 @@ handle_unauthorized_command() {
     fi
 }
 
-# Filter server log to exclude certain messages
 filter_server_log() {
     while read line; do
         [[ "$line" == *"Server closed"* || "$line" == *"Starting server"* || \
@@ -566,42 +214,20 @@ filter_server_log() {
     done
 }
 
-# Cleanup function for signal handling
 cleanup() {
     print_status "Cleaning up anticheat..."
     kill $(jobs -p) 2>/dev/null
-    # Clean up lock files
     rm -f "${ADMIN_OFFENSES_FILE}.lock" 2>/dev/null
-    print_status "Anticheat cleanup done."
     exit 0
 }
 
-# Main anticheat monitoring function
 monitor_log() {
     local log_file="$1"
     LOG_FILE="$log_file"
 
     initialize_authorization_files
     initialize_admin_offenses
-    load_anticheat_config
-    initialize_reputation_system
 
-    # Start file validation in background
-    (
-        while true; do
-            sleep 300
-            if ! validate_server_files; then
-                print_error "File integrity error, restarting..."
-                log_security_event "FileCheck" "System" "Integrity error, restarting server" "CRITICAL"
-                # Try to restart the server
-                ./server_manager.sh stop
-                sleep 5
-                ./server_manager.sh start
-            fi
-        done
-    ) &
-
-    # Start authorization validation in background
     (
         while true; do 
             sleep 3
@@ -610,7 +236,6 @@ monitor_log() {
     ) &
     local validation_pid=$!
 
-    # Set up signal handling
     trap cleanup EXIT INT TERM
 
     print_header "STARTING ANTICHEAT SECURITY SYSTEM"
@@ -619,36 +244,25 @@ monitor_log() {
     print_status "Log directory: $LOG_DIR"
     print_header "SECURITY SYSTEM ACTIVE"
 
-    # Monitor the log file for unauthorized commands and invalid player names
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
-        # Detect player connections with invalid names
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
             
-            # Handle invalid player names (spaces, special characters) using IP ban
             if handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"; then
-                continue  # Skip further processing for invalid names
+                continue
             fi
             
-            # Validate player names for legitimate connections
             if ! is_valid_player_name "$player_name"; then
                 print_warning "Invalid player name in connection: $player_name"
                 continue
             fi
             
-            # New security checks
-            monitor_connection_rate "$player_ip"
-            check_connection_anomalies "$player_name" "$player_ip" "$player_hash"
-            check_quarantine "$player_name"
-            
             print_success "Player connected: $player_name (IP: $player_ip)"
         fi
 
-        # Detect unauthorized admin/mod commands
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ \/(admin|mod)\ ([a-zA-Z0-9_]+) ]]; then
             local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
             
-            # Validate player names
             if ! is_valid_player_name "$command_user" || ! is_valid_player_name "$target_player"; then
                 print_warning "Invalid player name in command: $command_user or $target_player"
                 continue
@@ -656,36 +270,18 @@ monitor_log() {
             
             [ "$command_user" != "SERVER" ] && handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
         fi
-
-        # Detect chat messages for packet analysis and command cooldown
-        if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
-            local player_name="${BASH_REMATCH[1]}" message="${BASH_REMATCH[2]}"
-            
-            # Skip invalid player names
-            if ! is_valid_player_name "$player_name"; then
-                print_warning "Skipping message from invalid player name: '$player_name'"
-                continue
-            fi
-            
-            # Security checks for messages
-            check_command_cooldown "$player_name"
-            analyze_packet_patterns "$player_name" "$message"
-        fi
     done
 
     wait
     kill $validation_pid 2>/dev/null
 }
 
-# Show usage information for new users
 show_usage() {
     print_header "ANTICHEAT SECURITY SYSTEM - USAGE"
-    print_status "This script monitors for unauthorized admin/mod commands"
     print_status "Usage: $0 <server_log_file> [port]"
     print_status "Example: $0 /path/to/console.log 12153"
     echo ""
     print_warning "Note: This script should be run alongside the server"
-    print_warning "It will automatically detect and prevent unauthorized rank assignments"
 }
 
 if [ $# -eq 1 ] || [ $# -eq 2 ]; then
@@ -693,7 +289,6 @@ if [ $# -eq 1 ] || [ $# -eq 2 ]; then
         print_error "Log file not found: $LOG_FILE"
         print_status "Waiting for log file to be created..."
         
-        # Wait for log file to be created
         local wait_time=0
         while [ ! -f "$LOG_FILE" ] && [ $wait_time -lt 30 ]; do
             sleep 1
