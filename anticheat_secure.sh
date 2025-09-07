@@ -26,32 +26,55 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCREEN_SERVER="blockheads_server_$PORT"
 
+# Función mejorada para validar nombres de jugador
 is_valid_player_name() {
-    local player_name=$(echo "$1" | xargs)
-    [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]
+    local player_name="$1"
+    # Eliminar espacios en blanco al principio y final
+    player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    
+    # Verificar si está vacío después de recortar
+    [[ -z "$player_name" ]] && return 1
+    
+    # Verificar longitud mínima y máxima
+    [[ ${#player_name} -lt 2 || ${#player_name} -gt 16 ]] && return 1
+    
+    # Verificar caracteres válidos (solo letras, números, guiones bajos y guiones)
+    [[ ! "$player_name" =~ ^[a-zA-Z0-9_-]+$ ]] && return 1
+    
+    # Verificar que no comience ni termine con guión o guión bajo
+    [[ "$player_name" =~ ^[-_] || "$player_name" =~ [-_]$ ]] && return 1
+    
+    # Verificar que no tenga caracteres de control o barras invertidas
+    [[ "$player_name" =~ [[:cntrl:]] ]] && return 1
+    [[ "$player_name" == *"\\"* ]] && return 1
+    
+    # Verificar que no tenga espacios internos múltiples
+    [[ "$player_name" =~ [[:space:]]{2,} ]] && return 1
+    
+    return 0
 }
 
+# Función mejorada para manejar nombres inválidos
 handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="$3"
-    local player_name_trimmed=$(echo "$player_name" | xargs)
     
-    if [[ -z "$player_name_trimmed" ]] || ! is_valid_player_name "$player_name"; then
-        print_warning "INVALID PLAYER NAME: '$player_name' (IP: $player_ip, Hash: $player_hash)"
-        send_server_command "WARNING: Invalid player name '$player_name'! You will be banned for 5 seconds."
-        
+    # Limpiar el nombre para mostrar en mensajes
+    local clean_name=$(echo "$player_name" | sed 's/\\/\\\\/g')
+    
+    print_warning "INVALID PLAYER NAME: '$clean_name' (IP: $player_ip, Hash: $player_hash)"
+    send_server_command "WARNING: Invalid player name '$clean_name'! You will be banned for 5 seconds."
+    
+    (
+        sleep 5
+        print_warning "Banning player with invalid name: '$clean_name' (IP: $player_ip)"
+        send_server_command "/ban $player_ip"
         (
             sleep 5
-            print_warning "Banning player with invalid name: '$player_name' (IP: $player_ip)"
-            send_server_command "/ban $player_ip"
-            (
-                sleep 5
-                send_server_command "/unban $player_ip"
-                print_success "Unbanned IP: $player_ip"
-            ) &
+            send_server_command "/unban $player_ip"
+            print_success "Unbanned IP: $player_ip"
         ) &
-        return 0
-    fi
-    return 1
+    ) &
+    return 0
 }
 
 read_json_file() {
@@ -245,30 +268,49 @@ monitor_log() {
     print_header "SECURITY SYSTEM ACTIVE"
 
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
-        if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
+        # Patrón mejorado para detectar conexiones de jugadores
+        if [[ "$line" =~ Player\ Connected\ ([^|]+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
             
-            if handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"; then
-                continue
-            fi
+            # Limpiar el nombre de espacios en blanco
+            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             if ! is_valid_player_name "$player_name"; then
-                print_warning "Invalid player name in connection: $player_name"
+                handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
                 continue
             fi
             
             print_success "Player connected: $player_name (IP: $player_ip)"
         fi
 
-        if [[ "$line" =~ ([a-zA-Z0-9_]+):\ \/(admin|mod)\ ([a-zA-Z0-9_]+) ]]; then
+        # Patrón mejorado para detectar comandos de administrador/moderador
+        if [[ "$line" =~ ([^:]+):\ \/(admin|mod)\ ([^[:space:]]+) ]]; then
             local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
             
+            # Limpiar los nombres
+            command_user=$(echo "$command_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
+            # Validar ambos nombres
             if ! is_valid_player_name "$command_user" || ! is_valid_player_name "$target_player"; then
                 print_warning "Invalid player name in command: $command_user or $target_player"
                 continue
             fi
             
             [ "$command_user" != "SERVER" ] && handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
+        fi
+        
+        # Detectar desconexiones de jugadores
+        if [[ "$line" =~ Player\ Disconnected\ ([^[:space:]]+) ]]; then
+            local player_name="${BASH_REMATCH[1]}"
+            
+            # Limpiar el nombre de espacios en blanco
+            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
+            # Solo mostrar mensaje si el nombre es válido
+            if is_valid_player_name "$player_name"; then
+                print_warning "Player disconnected: $player_name"
+            fi
         fi
     done
 
