@@ -245,36 +245,56 @@ monitor_log() {
     print_status "Log directory: $LOG_DIR"
     print_header "SECURITY SYSTEM ACTIVE"
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
-        if [[ "$line" =~ Player\ Connected\ ([^|]+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
-            local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
-            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [[ "$line" == *"Player Connected"* && "$line" == *"|"* ]]; then
+            local player_name player_ip player_hash
+            player_name=$(echo "$line" | awk -F'|' '{print $1}' | sed -E 's/.*Player Connected[[:space:]]*//; s/^[[:space:]]*//; s/[[:space:]]*$//')
+            player_ip=$(echo "$line" | awk -F'|' '{print $2}' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            player_hash=$(echo "$line" | awk -F'|' '{print $3}' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            if [[ "$player_name" == *\\* || "$player_name" == */* ]]; then
+                handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
+                continue
+            fi
             if ! is_valid_player_name "$player_name"; then
                 handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
                 continue
             fi
             print_success "Player connected: $player_name (IP: $player_ip)"
         fi
+
         if [[ "$line" =~ ([^:]+):\ \/(admin|mod)\ ([^[:space:]]+) ]]; then
             local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
             command_user=$(echo "$command_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            if [[ "$command_user" == *\\* || "$command_user" == */* ]]; then
+                local ipu=$(get_ip_by_name "$command_user")
+                handle_invalid_player_name "$command_user" "$ipu" ""
+                continue
+            fi
+            if [[ "$target_player" == *\\* || "$target_player" == */* ]]; then
+                local ipt=$(get_ip_by_name "$target_player")
+                handle_invalid_player_name "$target_player" "$ipt" ""
+                continue
+            fi
             if ! is_valid_player_name "$command_user"; then
-                print_warning "Invalid player name in command issuer: $command_user"
-                local ip=$(get_ip_by_name "$command_user")
-                handle_invalid_player_name "$command_user" "$ip" ""
+                local ipu2=$(get_ip_by_name "$command_user")
+                handle_invalid_player_name "$command_user" "$ipu2" ""
                 continue
             fi
             if ! is_valid_player_name "$target_player"; then
-                print_warning "Invalid target player name in command: $target_player"
-                local ip2=$(get_ip_by_name "$target_player")
-                handle_invalid_player_name "$target_player" "$ip2" ""
+                local ipt2=$(get_ip_by_name "$target_player")
+                handle_invalid_player_name "$target_player" "$ipt2" ""
                 continue
             fi
             [ "$command_user" != "SERVER" ] && handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
         fi
-        if [[ "$line" =~ Player\ Disconnected\ ([^[:space:]]+) ]]; then
-            local player_name="${BASH_REMATCH[1]}"
-            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+        if [[ "$line" == *"Player Disconnected"* ]]; then
+            local player_name
+            player_name=$(echo "$line" | sed -E 's/.*Player Disconnected[[:space:]]*//; s/^[[:space:]]*//; s/[[:space:]]*$//')
+            if [[ "$player_name" == *\\* || "$player_name" == */* ]]; then
+                print_warning "Player with invalid name disconnected: $player_name"
+                continue
+            fi
             if is_valid_player_name "$player_name"; then
                 print_warning "Player disconnected: $player_name"
             else
