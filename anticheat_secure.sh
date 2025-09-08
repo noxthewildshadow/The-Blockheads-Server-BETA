@@ -1,4 +1,10 @@
 #!/bin/bash
+
+# =============================================================================
+# THE BLOCKHEADS ANTICHEAT SECURITY SYSTEM
+# =============================================================================
+
+# Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -8,6 +14,7 @@ PURPLE='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+# Function definitions
 print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
@@ -18,6 +25,13 @@ print_header() {
     echo -e "===============================================================${NC}"
 }
 
+# Validate jq is installed
+if ! command -v jq &> /dev/null; then
+    echo -e "${RED}ERROR: jq is required but not installed. Please install jq first.${NC}"
+    exit 1
+fi
+
+# Initialize variables
 LOG_FILE="$1"
 PORT="$2"
 LOG_DIR=$(dirname "$LOG_FILE")
@@ -26,6 +40,7 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 SCREEN_SERVER="blockheads_server_$PORT"
 
+# Function to validate player names
 is_valid_player_name() {
     local player_name="$1"
     player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -37,13 +52,14 @@ is_valid_player_name() {
     fi
 }
 
+# Function to handle invalid player names
 handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="$3"
-    local clean_name=$(echo "$player_name" | sed 's/\\/\\\\/g')
+    local clean_name=$(echo "$player_name" | sed 's/\\/\\\\/g; s/"/\\"/g')
     print_warning "INVALID PLAYER NAME: '$clean_name' (IP: $player_ip, Hash: $player_hash)"
     send_server_command "WARNING: Invalid player name '$clean_name'! You will be banned for 5 seconds."
     print_warning "Banning player with invalid name: '$clean_name' (IP: $player_ip)"
-    if [ -n "$player_ip" ]; then
+    if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
         send_server_command "/ban $player_ip"
         (
             sleep 5
@@ -56,44 +72,56 @@ handle_invalid_player_name() {
     return 0
 }
 
+# Function to read JSON file with locking
 read_json_file() {
     local file_path="$1"
-    [ ! -f "$file_path" ] && echo "{}" && return 1
+    [ ! -f "$file_path" ] && echo "{}" > "$file_path" && echo "{}" && return 0
     flock -s 200 cat "$file_path" 200>"${file_path}.lock"
 }
 
+# Function to write JSON file with locking
 write_json_file() {
     local file_path="$1" content="$2"
-    [ ! -f "$file_path" ] && return 1
+    [ ! -f "$file_path" ] && touch "$file_path"
     flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
 }
 
+# Function to initialize authorization files
 initialize_authorization_files() {
     [ ! -f "$AUTHORIZED_ADMINS_FILE" ] && touch "$AUTHORIZED_ADMINS_FILE"
     [ ! -f "$AUTHORIZED_MODS_FILE" ] && touch "$AUTHORIZED_MODS_FILE"
 }
 
+# Function to validate authorization
 validate_authorization() {
     local admin_list="$LOG_DIR/adminlist.txt"
     local mod_list="$LOG_DIR/modlist.txt"
-    [ -f "$admin_list" ] && while IFS= read -r admin; do
-        [[ -n "$admin" && ! "$admin" =~ ^[[:space:]]*# && ! "$admin" =~ "Usernames in this file" ]] && \
-        ! grep -q -i "^$admin$" "$AUTHORIZED_ADMINS_FILE" && \
-        send_server_command "/unadmin $admin" && \
-        remove_from_list_file "$admin" "admin"
+    
+    [ -f "$admin_list" ] && while IFS= read -r admin || [ -n "$admin" ]; do
+        admin=$(echo "$admin" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [[ -z "$admin" || "$admin" =~ ^# || "$admin" =~ "Usernames in this file" ]] && continue
+        if ! grep -q -i "^$admin$" "$AUTHORIZED_ADMINS_FILE"; then
+            send_server_command "/unadmin $admin"
+            remove_from_list_file "$admin" "admin"
+        fi
     done < <(grep -v "^[[:space:]]*#" "$admin_list" 2>/dev/null || true)
-    [ -f "$mod_list" ] && while IFS= read -r mod; do
-        [[ -n "$mod" && ! "$mod" =~ ^[[:space:]]*# && ! "$mod" =~ "Usernames in this file" ]] && \
-        ! grep -q -i "^$mod$" "$AUTHORIZED_MODS_FILE" && \
-        send_server_command "/unmod $mod" && \
-        remove_from_list_file "$mod" "mod"
+    
+    [ -f "$mod_list" ] && while IFS= read -r mod || [ -n "$mod" ]; do
+        mod=$(echo "$mod" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [[ -z "$mod" || "$mod" =~ ^# || "$mod" =~ "Usernames in this file" ]] && continue
+        if ! grep -q -i "^$mod$" "$AUTHORIZED_MODS_FILE"; then
+            send_server_command "/unmod $mod"
+            remove_from_list_file "$mod" "mod"
+        fi
     done < <(grep -v "^[[:space:]]*#" "$mod_list" 2>/dev/null || true)
 }
 
+# Function to initialize admin offenses
 initialize_admin_offenses() {
     [ ! -f "$ADMIN_OFFENSES_FILE" ] && echo '{}' > "$ADMIN_OFFENSES_FILE"
 }
 
+# Function to record admin offense
 record_admin_offense() {
     local admin_name="$1" current_time=$(date +%s)
     local offenses_data=$(read_json_file "$ADMIN_OFFENSES_FILE" 2>/dev/null || echo '{}')
@@ -109,6 +137,7 @@ record_admin_offense() {
     return $current_offenses
 }
 
+# Function to clear admin offenses
 clear_admin_offenses() {
     local admin_name="$1"
     local offenses_data=$(read_json_file "$ADMIN_OFFENSES_FILE" 2>/dev/null || echo '{}')
@@ -116,14 +145,19 @@ clear_admin_offenses() {
     write_json_file "$ADMIN_OFFENSES_FILE" "$offenses_data"
 }
 
+# Function to remove from list file
 remove_from_list_file() {
     local player_name="$1" list_type="$2"
     local list_file="$LOG_DIR/${list_type}list.txt"
     [ ! -f "$list_file" ] && return 1
-    grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$" && \
-    sed -i "/^$player_name$/Id" "$list_file"
+    if grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"; then
+        sed -i "/^$player_name$/Id" "$list_file"
+        return 0
+    fi
+    return 1
 }
 
+# Function to send delayed uncommands
 send_delayed_uncommands() {
     local target_player="$1" command_type="$2"
     (
@@ -134,22 +168,30 @@ send_delayed_uncommands() {
     ) &
 }
 
+# Function to send server command silently
 send_server_command_silent() {
-    screen -S "$SCREEN_SERVER" -X stuff "$1$(printf \\r)" 2>/dev/null
+    screen -S "$SCREEN_SERVER" -p 0 -X stuff "$1$(printf \\r)" 2>/dev/null
 }
 
+# Function to send server command
 send_server_command() {
-    screen -S "$SCREEN_SERVER" -X stuff "$1$(printf \\r)" 2>/dev/null && \
-    print_success "Sent message to server: $1" || \
-    print_error "Could not send message to server"
+    if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$1$(printf \\r)" 2>/dev/null; then
+        print_success "Sent message to server: $1"
+        return 0
+    else
+        print_error "Could not send message to server"
+        return 1
+    fi
 }
 
+# Function to check if player is in list
 is_player_in_list() {
     local player_name="$1" list_type="$2"
     local list_file="$LOG_DIR/${list_type}list.txt"
     [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"
 }
 
+# Function to handle unauthorized command
 handle_unauthorized_command() {
     local player_name="$1" command="$2" target_player="$3"
     if is_player_in_list "$player_name" "admin"; then
@@ -192,8 +234,9 @@ handle_unauthorized_command() {
     fi
 }
 
+# Function to filter server log
 filter_server_log() {
-    while read line; do
+    while read -r line; do
         [[ "$line" == *"Server closed"* || "$line" == *"Starting server"* || \
           ("$line" == *"SERVER: say"* && "$line" == *"Welcome"*) || \
           "$line" == *"adminlist.txt"* || "$line" == *"modlist.txt"* ]] && continue
@@ -201,6 +244,7 @@ filter_server_log() {
     done
 }
 
+# Function to cleanup
 cleanup() {
     print_status "Cleaning up anticheat..."
     kill $(jobs -p) 2>/dev/null
@@ -208,9 +252,11 @@ cleanup() {
     exit 0
 }
 
+# Function to get IP by name
 get_ip_by_name() {
     local name="$1"
     if [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then
+        echo "unknown"
         return 1
     fi
     awk -F'|' -v pname="$name" '
@@ -219,45 +265,67 @@ get_ip_by_name() {
         sub(/.*Player Connected[[:space:]]*/, "", part)
         gsub(/^[ \t]+|[ \t]+$/, "", part)
         ip=$2
-        gsub(/^[ \t]+|[ \t]+$/, "", ip)
+        gsub(/^[ \t]+|[ \pt]+$/, "", ip)
         if (part == pname) { last_ip=ip }
     }
-    END { if (last_ip) print last_ip }
+    END { if (last_ip) print last_ip; else print "unknown" }
     ' "$LOG_FILE"
 }
 
+# Function to monitor log
 monitor_log() {
     local log_file="$1"
     LOG_FILE="$log_file"
     initialize_authorization_files
     initialize_admin_offenses
+    
+    # Start validation process in background
     (
         while true; do 
-            sleep 3
+            sleep 30
             validate_authorization
         done
     ) &
     local validation_pid=$!
+    
     trap cleanup EXIT INT TERM
+    
     print_header "STARTING ANTICHEAT SECURITY SYSTEM"
     print_status "Monitoring: $log_file"
     print_status "Port: $PORT"
     print_status "Log directory: $LOG_DIR"
     print_header "SECURITY SYSTEM ACTIVE"
-    tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
-        if [[ "$line" == *"Player Connected"* && "$line" == *"|"* ]]; then
-            local player_name player_ip player_hash
-            player_name=$(echo "$line" | awk -F'|' '{print $1}' | sed -E 's/.*Player Connected[[:space:]]*//; s/^[[:space:]]*//; s/[[:space:]]*$//')
-            player_ip=$(echo "$line" | awk -F'|' '{print $2}' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-            player_hash=$(echo "$line" | awk -F'|' '{print $3}' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    
+    # Wait for log file to exist
+    local wait_time=0
+    while [ ! -f "$log_file" ] && [ $wait_time -lt 30 ]; do
+        sleep 1
+        ((wait_time++))
+        [ $((wait_time % 5)) -eq 0 ] && print_status "Waiting for log file to be created..."
+    done
+    
+    if [ ! -f "$log_file" ]; then
+        print_error "Log file never appeared: $log_file"
+        kill $validation_pid 2>/dev/null
+        exit 1
+    fi
+    
+    # Start monitoring the log
+    tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read -r line; do
+        if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
+            local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
+            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
             if [[ "$player_name" == *\\* || "$player_name" == */* ]]; then
                 handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
                 continue
             fi
+            
             if ! is_valid_player_name "$player_name"; then
                 handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
                 continue
             fi
+            
             print_success "Player connected: $player_name (IP: $player_ip)"
         fi
 
@@ -265,36 +333,43 @@ monitor_log() {
             local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
             command_user=$(echo "$command_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
             if [[ "$command_user" == *\\* || "$command_user" == */* ]]; then
                 local ipu=$(get_ip_by_name "$command_user")
                 handle_invalid_player_name "$command_user" "$ipu" ""
                 continue
             fi
+            
             if [[ "$target_player" == *\\* || "$target_player" == */* ]]; then
                 local ipt=$(get_ip_by_name "$target_player")
                 handle_invalid_player_name "$target_player" "$ipt" ""
                 continue
             fi
+            
             if ! is_valid_player_name "$command_user"; then
                 local ipu2=$(get_ip_by_name "$command_user")
                 handle_invalid_player_name "$command_user" "$ipu2" ""
                 continue
             fi
+            
             if ! is_valid_player_name "$target_player"; then
                 local ipt2=$(get_ip_by_name "$target_player")
                 handle_invalid_player_name "$target_player" "$ipt2" ""
                 continue
             fi
+            
             [ "$command_user" != "SERVER" ] && handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
         fi
 
-        if [[ "$line" == *"Player Disconnected"* ]]; then
-            local player_name
-            player_name=$(echo "$line" | sed -E 's/.*Player Disconnected[[:space:]]*//; s/^[[:space:]]*//; s/[[:space:]]*$//')
+        if [[ "$line" =~ Player\ Disconnected\ (.+) ]]; then
+            local player_name="${BASH_REMATCH[1]}"
+            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
             if [[ "$player_name" == *\\* || "$player_name" == */* ]]; then
                 print_warning "Player with invalid name disconnected: $player_name"
                 continue
             fi
+            
             if is_valid_player_name "$player_name"; then
                 print_warning "Player disconnected: $player_name"
             else
@@ -302,10 +377,11 @@ monitor_log() {
             fi
         fi
     done
-    wait
+    
     kill $validation_pid 2>/dev/null
 }
 
+# Function to show usage
 show_usage() {
     print_header "ANTICHEAT SECURITY SYSTEM - USAGE"
     print_status "Usage: $0 <server_log_file> [port]"
@@ -313,6 +389,12 @@ show_usage() {
     echo ""
     print_warning "Note: This script should be run alongside the server"
 }
+
+# Main execution
+if [ $# -lt 1 ]; then
+    show_usage
+    exit 1
+fi
 
 if [ $# -eq 1 ] || [ $# -eq 2 ]; then
     if [ ! -f "$LOG_FILE" ]; then
@@ -331,4 +413,5 @@ if [ $# -eq 1 ] || [ $# -eq 2 ]; then
     monitor_log "$1"
 else
     show_usage
+    exit 1
 fi
