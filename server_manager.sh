@@ -1,4 +1,10 @@
 #!/bin/bash
+
+# =============================================================================
+# THE BLOCKHEADS SERVER MANAGER
+# =============================================================================
+
+# Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -10,6 +16,7 @@ PURPLE='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+# Function definitions
 print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
@@ -21,13 +28,16 @@ print_header() {
 }
 print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
+# Server binary and default port
 SERVER_BINARY="./blockheads_server171"
 DEFAULT_PORT=12153
 
+# Function to check if screen session exists
 screen_session_exists() {
     screen -list 2>/dev/null | grep -q "$1"
 }
 
+# Function to show usage
 show_usage() {
     print_header "THE BLOCKHEADS SERVER MANAGER"
     print_status "Usage: $0 [command]"
@@ -52,10 +62,12 @@ show_usage() {
     print_warning "After creating the world, press CTRL+C to exit"
 }
 
+# Function to check if port is in use
 is_port_in_use() {
     lsof -Pi ":$1" -sTCP:LISTEN -t >/dev/null
 }
 
+# Function to free port
 free_port() {
     local port="$1"
     print_warning "Freeing port $port..."
@@ -74,6 +86,7 @@ free_port() {
     ! is_port_in_use "$port"
 }
 
+# Function to check if world exists
 check_world_exists() {
     local world_id="$1"
     local saves_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
@@ -87,6 +100,7 @@ check_world_exists() {
     return 0
 }
 
+# Function to start server
 start_server() {
     local world_id="$1"
     local port="${2:-$DEFAULT_PORT}"
@@ -105,10 +119,10 @@ start_server() {
 
     is_port_in_use "$port" && {
         print_warning "Port $port is in use."
-        free_port "$port" || {
+        if ! free_port "$port"; then
             print_error "Could not free port $port"
             return 1
-        }
+        fi
     }
 
     screen_session_exists "$SCREEN_SERVER" && screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
@@ -162,19 +176,19 @@ EOF
 
     local server_ready=false
     for i in {1..30}; do
-        grep -q "World load complete\|Server started\|Ready for connections\|using seed:\|save delay:" "$log_file" && {
+        if grep -q "World load complete\|Server started\|Ready for connections\|using seed:\|save delay:" "$log_file"; then
             server_ready=true
             break
-        }
+        fi
         sleep 1
     done
 
     [ "$server_ready" = false ] && {
         print_warning "Server did not show complete startup messages"
-        screen_session_exists "$SCREEN_SERVER" || {
+        if ! screen_session_exists "$SCREEN_SERVER"; then
             print_error "Server screen session not found"
             return 1
-        }
+        fi
     } || print_success "Server started successfully!"
 
     print_step "Starting server bot..."
@@ -197,7 +211,7 @@ EOF
     screen_session_exists "$SCREEN_BOT" && bot_started=1
     screen_session_exists "$SCREEN_ANTICHEAT" && anticheat_started=1
     
-    [ "$server_started" -eq 1 ] && [ "$bot_started" -eq 1 ] && [ "$anticheat_started" -eq 1 ] && {
+    if [ "$server_started" -eq 1 ] && [ "$bot_started" -eq 1 ] && [ "$anticheat_started" -eq 1 ]; then
         print_header "SERVER, BOT AND ANTICHEAT STARTED SUCCESSFULLY!"
         print_success "World: $world_id"
         print_success "Port: $port"
@@ -207,28 +221,31 @@ EOF
         print_status "To view anticheat: ${CYAN}screen -r $SCREEN_ANTICHEAT${NC}"
         echo ""
         print_warning "To exit console without stopping server: ${YELLOW}CTRL+A, D${NC}"
-    } || print_warning "Could not verify all screen sessions"
+    else
+        print_warning "Could not verify all screen sessions"
+    fi
 }
 
+# Function to stop server
 stop_server() {
     local port="$1"
     
     if [ -z "$port" ]; then
         print_step "Stopping all servers, bots and anticheat..."
         
-        for server_session in $(screen -list | grep "blockheads_server_" | awk '{print $1}'); do
-            screen -S "${server_session}" -X quit 2>/dev/null
-            print_success "Stopped server: ${server_session}"
+        for server_session in $(screen -list | grep "blockheads_server_" | awk -F. '{print $1}'); do
+            screen -S "$server_session" -X quit 2>/dev/null
+            print_success "Stopped server: $server_session"
         done
         
-        for bot_session in $(screen -list | grep "blockheads_bot_" | awk '{print $1}'); do
-            screen -S "${bot_session}" -X quit 2>/dev/null
-            print_success "Stopped bot: ${bot_session}"
+        for bot_session in $(screen -list | grep "blockheads_bot_" | awk -F. '{print $1}'); do
+            screen -S "$bot_session" -X quit 2>/dev/null
+            print_success "Stopped bot: $bot_session"
         done
         
-        for anticheat_session in $(screen -list | grep "blockheads_anticheat_" | awk '{print $1}'); do
-            screen -S "${anticheat_session}" -X quit 2>/dev/null
-            print_success "Stopped anticheat: ${anticheat_session}"
+        for anticheat_session in $(screen -list | grep "blockheads_anticheat_" | awk -F. '{print $1}'); do
+            screen -S "$anticheat_session" -X quit 2>/dev/null
+            print_success "Stopped anticheat: $anticheat_session"
         done
         
         pkill -f "$SERVER_BINARY" 2>/dev/null || true
@@ -240,101 +257,128 @@ stop_server() {
         local screen_bot="blockheads_bot_$port"
         local screen_anticheat="blockheads_anticheat_$port"
         
-        screen_session_exists "$screen_server" && {
+        if screen_session_exists "$screen_server"; then
             screen -S "$screen_server" -X quit 2>/dev/null
             print_success "Server stopped on port $port."
-        } || print_warning "Server was not running on port $port."
+        else
+            print_warning "Server was not running on port $port."
+        fi
         
-        screen_session_exists "$screen_bot" && {
+        if screen_session_exists "$screen_bot"; then
             screen -S "$screen_bot" -X quit 2>/dev/null
             print_success "Bot stopped on port $port."
-        } || print_warning "Bot was not running on port $port."
+        else
+            print_warning "Bot was not running on port $port."
+        fi
         
-        screen_session_exists "$screen_anticheat" && {
+        if screen_session_exists "$screen_anticheat"; then
             screen -S "$screen_anticheat" -X quit 2>/dev/null
             print_success "Anticheat stopped on port $port."
-        } || print_warning "Anticheat was not running on port $port."
+        else
+            print_warning "Anticheat was not running on port $port."
+        fi
         
         pkill -f "$SERVER_BINARY.*$port" 2>/dev/null || true
         print_success "Cleanup completed for port $port."
     fi
 }
 
+# Function to list servers
 list_servers() {
     print_header "LIST OF RUNNING SERVERS"
     
-    local servers=$(screen -list | grep "blockheads_server_" | awk '{print $1}' | sed 's/\.blockheads_server_/ - Port: /')
+    local servers=$(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | sed 's/blockheads_server_/ - Port: /')
     
-    [ -z "$servers" ] && print_warning "No servers are currently running." || {
+    if [ -z "$servers" ]; then
+        print_warning "No servers are currently running."
+    else
         print_status "Running servers:"
         while IFS= read -r server; do
             print_status "  $server"
         done <<< "$servers"
-    }
+    fi
     
     print_header "END OF LIST"
 }
 
+# Function to show status
 show_status() {
     local port="$1"
     
     if [ -z "$port" ]; then
         print_header "THE BLOCKHEADS SERVER STATUS - ALL SERVERS"
         
-        local servers=$(screen -list | grep "blockheads_server_" | awk '{print $1}' | sed 's/\.blockheads_server_//')
+        local servers=$(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | sed 's/blockheads_server_//')
         
-        [ -z "$servers" ] && print_error "No servers are currently running." || {
+        if [ -z "$servers" ]; then
+            print_error "No servers are currently running."
+        else
             while IFS= read -r server_port; do
-                screen_session_exists "blockheads_server_$server_port" && \
-                print_success "Server on port $server_port: RUNNING" || \
-                print_error "Server on port $server_port: STOPPED"
+                if screen_session_exists "blockheads_server_$server_port"; then
+                    print_success "Server on port $server_port: RUNNING"
+                else
+                    print_error "Server on port $server_port: STOPPED"
+                fi
                 
-                screen_session_exists "blockheads_bot_$server_port" && \
-                print_success "Bot on port $server_port: RUNNING" || \
-                print_error "Bot on port $server_port: STOPPED"
+                if screen_session_exists "blockheads_bot_$server_port"; then
+                    print_success "Bot on port $server_port: RUNNING"
+                else
+                    print_error "Bot on port $server_port: STOPPED"
+                fi
                 
-                screen_session_exists "blockheads_anticheat_$server_port" && \
-                print_success "Anticheat on port $server_port: RUNNING" || \
-                print_error "Anticheat on port $server_port: STOPPED"
+                if screen_session_exists "blockheads_anticheat_$server_port"; then
+                    print_success "Anticheat on port $server_port: RUNNING"
+                else
+                    print_error "Anticheat on port $server_port: STOPPED"
+                fi
                 
-                [ -f "world_id_$server_port.txt" ] && {
+                if [ -f "world_id_$server_port.txt" ]; then
                     local WORLD_ID=$(cat "world_id_$server_port.txt" 2>/dev/null)
                     print_status "World for port $server_port: ${CYAN}$WORLD_ID${NC}"
-                }
+                fi
                 
                 echo ""
             done <<< "$servers"
-        }
+        fi
     else
         print_header "THE BLOCKHEADS SERVER STATUS - PORT $port"
         
-        screen_session_exists "blockheads_server_$port" && \
-        print_success "Server: RUNNING" || \
-        print_error "Server: STOPPED"
+        if screen_session_exists "blockheads_server_$port"; then
+            print_success "Server: RUNNING"
+        else
+            print_error "Server: STOPPED"
+        fi
         
-        screen_session_exists "blockheads_bot_$port" && \
-        print_success "Bot: RUNNING" || \
-        print_error "Bot: STOPPED"
+        if screen_session_exists "blockheads_bot_$port"; then
+            print_success "Bot: RUNNING"
+        else
+            print_error "Bot: STOPPED"
+        fi
         
-        screen_session_exists "blockheads_anticheat_$port" && \
-        print_success "Anticheat: RUNNING" || \
-        print_error "Anticheat: STOPPED"
+        if screen_session_exists "blockheads_anticheat_$port"; then
+            print_success "Anticheat: RUNNING"
+        else
+            print_error "Anticheat: STOPPED"
+        fi
         
-        [ -f "world_id_$port.txt" ] && {
+        if [ -f "world_id_$port.txt" ]; then
             local WORLD_ID=$(cat "world_id_$port.txt" 2>/dev/null)
             print_status "Current world: ${CYAN}$WORLD_ID${NC}"
             
-            screen_session_exists "blockheads_server_$port" && {
+            if screen_session_exists "blockheads_server_$port"; then
                 print_status "To view console: ${CYAN}screen -r blockheads_server_$port${NC}"
                 print_status "To view bot: ${CYAN}screen -r blockheads_bot_$port${NC}"
                 print_status "To view anticheat: ${CYAN}screen -r blockheads_anticheat_$port${NC}"
-            }
-        } || print_warning "World: Not configured for port $port"
+            fi
+        else
+            print_warning "World: Not configured for port $port"
+        fi
     fi
     
     print_header "END OF STATUS"
 }
 
+# Main execution
 case "$1" in
     start)
         [ -z "$2" ] && print_error "You must specify a WORLD_NAME" && show_usage && exit 1
