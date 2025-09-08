@@ -1,11 +1,5 @@
 #!/bin/bash
 
-# =============================================================================
-# THE BLOCKHEADS SERVER ECONOMY BOT - PARCHE PARA COMPATIBILIDAD CON ANTICHEAT
-# Uso: ./economy_bot.sh /ruta/a/console.log [port]
-# Requisitos: bash >= 4, jq
-# =============================================================================
-
 # Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
