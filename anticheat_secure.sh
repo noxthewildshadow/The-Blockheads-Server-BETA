@@ -1,12 +1,5 @@
 #!/bin/bash
 
-# =============================================================================
-# THE BLOCKHEADS ANTICHEAT SECURITY SYSTEM - PARCHE FINAL
-# Formato players.log: NOMBRE_USUARIO | PRIMERA_IP_DEL_NOMBRE | RANGO
-# Uso: ./anticheat.sh /ruta/a/console.log [port]
-# Requisitos: bash >= 4, jq
-# =============================================================================
-
 # Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -142,7 +135,7 @@ get_player_rank() {
 check_username_theft() {
     local player_name="$1" player_ip="$2"
     local stored_entry
-    stored_entry=$(awk -F'|' -v name="$player_name" '
+    stored_entry=$(awk -F'|' -v name "$player_name" '
     BEGIN { IGNORECASE = 1 }
     {
         n=$1; gsub(/^[ \t]+|[ \t]+$/, "", n)
@@ -354,8 +347,18 @@ ban_player() {
     else
         send_server_command "/ban $player_name"
         print_success "Banned player $player_name for: $reason"
-        log_anticheat_action "BANNED NAME: $player_name for: $reason"
+        log_anticheat action "BANNED NAME: $player_name for: $reason"
     fi
+}
+
+# Handle unauthorized command
+handle_unauthorized_command() {
+    local player_name="$1" command="$2" target="$3"
+    local player_ip
+    player_ip=$(get_ip_by_name "$player_name")
+    print_error "UNAUTHORIZED COMMAND: $player_name attempted $command $target"
+    log_anticheat_action "UNAUTHORIZED COMMAND: $player_name ($player_ip) attempted $command $target"
+    ban_player "$player_name" "attempting unauthorized command: $command $target"
 }
 
 # Detect spam & dangerous commands (returns 0 OK, non-zero if action taken)
