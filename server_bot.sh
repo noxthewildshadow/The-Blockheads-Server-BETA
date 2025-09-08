@@ -1,4 +1,10 @@
 #!/bin/bash
+
+# =============================================================================
+# THE BLOCKHEADS SERVER ECONOMY BOT
+# =============================================================================
+
+# Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -8,6 +14,7 @@ PURPLE='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+# Function definitions
 print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
@@ -19,23 +26,33 @@ print_header() {
 }
 print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
+# Validate jq is installed
+if ! command -v jq &> /dev/null; then
+    echo -e "${RED}ERROR: jq is required but not installed. Please install jq first.${NC}"
+    exit 1
+fi
+
+# Function to read JSON file with locking
 read_json_file() {
     local file_path="$1"
-    [ ! -f "$file_path" ] && echo "{}" && return 1
+    [ ! -f "$file_path" ] && echo "{}" > "$file_path" && echo "{}" && return 0
     flock -s 200 cat "$file_path" 200>"${file_path}.lock"
 }
 
+# Function to write JSON file with locking
 write_json_file() {
     local file_path="$1" content="$2"
-    [ ! -f "$file_path" ] && return 1
+    [ ! -f "$file_path" ] && touch "$file_path"
     flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
 }
 
+# Function to validate player names
 is_valid_player_name() {
     local player_name=$(echo "$1" | xargs)
     [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]
 }
 
+# Initialize variables
 [ $# -ge 2 ] && PORT="$2" || PORT="12153"
 LOG_DIR=$(dirname "$1")
 ECONOMY_FILE="$LOG_DIR/economy_data_$PORT.json"
@@ -43,16 +60,19 @@ SCREEN_SERVER="blockheads_server_$PORT"
 AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 
+# Function to initialize economy
 initialize_economy() {
     [ ! -f "$ECONOMY_FILE" ] && echo '{"players": {}, "transactions": []}' > "$ECONOMY_FILE"
 }
 
+# Function to check if player is in list
 is_player_in_list() {
     local player_name="$1" list_type="$2"
     local list_file="$LOG_DIR/${list_type}list.txt"
     [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"
 }
 
+# Function to add player if new
 add_player_if_new() {
     local player_name="$1"
     ! is_valid_player_name "$player_name" && return 1
@@ -70,6 +90,7 @@ add_player_if_new() {
     return 1
 }
 
+# Function to give first time bonus
 give_first_time_bonus() {
     local player_name="$1" current_time=$(date +%s) time_str="$(date '+%Y-%m-%d %H:%M:%S')"
     local current_data=$(read_json_file "$ECONOMY_FILE")
@@ -80,6 +101,7 @@ give_first_time_bonus() {
     write_json_file "$ECONOMY_FILE" "$current_data"
 }
 
+# Function to grant login ticket
 grant_login_ticket() {
     local player_name="$1" current_time=$(date +%s) time_str="$(date '+%Y-%m-%d %H:%M:%S')"
     local current_data=$(read_json_file "$ECONOMY_FILE")
@@ -106,6 +128,7 @@ grant_login_ticket() {
     }
 }
 
+# Function to show welcome message
 show_welcome_message() {
     local player_name="$1" is_new_player="$2" force_send="${3:-0}"
     ! is_valid_player_name "$player_name" && return
@@ -131,12 +154,18 @@ show_welcome_message() {
     } || print_warning "Skipping welcome for $player_name due to cooldown"
 }
 
+# Function to send server command
 send_server_command() {
-    screen -S "$SCREEN_SERVER" -X stuff "$1$(printf \\r)" 2>/dev/null && \
-    print_success "Sent message to server: $1" || \
-    print_error "Could not send message to server"
+    if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$1$(printf \\r)" 2>/dev/null; then
+        print_success "Sent message to server: $1"
+        return 0
+    else
+        print_error "Could not send message to server"
+        return 1
+    fi
 }
 
+# Function to check if player has purchased an item
 has_purchased() {
     local player_name="$1" item="$2"
     local current_data=$(read_json_file "$ECONOMY_FILE")
@@ -144,6 +173,7 @@ has_purchased() {
     [ "$has_item" = "true" ]
 }
 
+# Function to add purchase
 add_purchase() {
     local player_name="$1" item="$2"
     local current_data=$(read_json_file "$ECONOMY_FILE")
@@ -151,6 +181,7 @@ add_purchase() {
     write_json_file "$ECONOMY_FILE" "$current_data"
 }
 
+# Function to process give rank command
 process_give_rank() {
     local giver_name="$1" target_player="$2" rank_type="$3"
     local current_data=$(read_json_file "$ECONOMY_FILE")
@@ -182,13 +213,14 @@ process_give_rank() {
     write_json_file "$ECONOMY_FILE" "$current_data"
     
     echo "$target_player" >> "$LOG_DIR/authorized_${rank_type}s.txt"
-    screen -S "$SCREEN_SERVER" -X stuff "/$rank_type $target_player$(printf \\r)"
+    screen -S "$SCREEN_SERVER" -p 0 -X stuff "/$rank_type $target_player$(printf \\r)"
     
     send_server_command "Congratulations! $giver_name has gifted $rank_type rank to $target_player for $cost tickets."
     send_server_command "$giver_name, your new ticket balance: $new_tickets"
     return 0
 }
 
+# Function to process message
 process_message() {
     local player_name="$1" message="$2"
     ! is_valid_player_name "$player_name" && return
@@ -214,7 +246,7 @@ process_message() {
                 write_json_file "$ECONOMY_FILE" "$current_data"
                 
                 echo "$player_name" >> "$AUTHORIZED_MODS_FILE"
-                screen -S "$SCREEN_SERVER" -X stuff "/mod $player_name$(printf \\r)"
+                screen -S "$SCREEN_SERVER" -p 0 -X stuff "/mod $player_name$(printf \\r)"
                 send_server_command "Congratulations $player_name! You have been promoted to MOD for 50 tickets. Remaining tickets: $new_tickets"
             } || send_server_command "$player_name, you need $((50 - player_tickets)) more tickets to buy MOD rank."
             ;;
@@ -231,7 +263,7 @@ process_message() {
                 write_json_file "$ECONOMY_FILE" "$current_data"
                 
                 echo "$player_name" >> "$AUTHORIZED_ADMINS_FILE"
-                screen -S "$SCREEN_SERVER" -X stuff "/admin $player_name$(printf \\r)"
+                screen -S "$SCREEN_SERVER" -p 0 -X stuff "/admin $player_name$(printf \\r)"
                 send_server_command "Congratulations $player_name! You have been promoted to ADMIN for 100 tickets. Remaining tickets: $new_tickets"
             } || send_server_command "$player_name, you need $((100 - player_tickets)) more tickets to buy ADMIN rank."
             ;;
@@ -259,6 +291,7 @@ process_message() {
     esac
 }
 
+# Function to process admin command
 process_admin_command() {
     local command="$1" current_data=$(read_json_file "$ECONOMY_FILE")
     
@@ -297,7 +330,7 @@ process_admin_command() {
         
         print_success "Setting $player_name as MOD"
         echo "$player_name" >> "$AUTHORIZED_MODS_FILE"
-        screen -S "$SCREEN_SERVER" -X stuff "/mod $player_name$(printf \\r)"
+        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/mod $player_name$(printf \\r)"
         send_server_command "$player_name has been set as MOD by server console!"
     elif [[ "$command" =~ ^!set_admin\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
@@ -305,13 +338,14 @@ process_admin_command() {
         
         print_success "Setting $player_name as ADMIN"
         echo "$player_name" >> "$AUTHORIZED_ADMINS_FILE"
-        screen -S "$SCREEN_SERVER" -X stuff "/admin $player_name$(printf \\r)"
+        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/admin $player_name$(printf \\r)"
         send_server_command "$player_name has been set as ADMIN by server console!"
     else
         print_error "Unknown admin command: $command"
     fi
 }
 
+# Function to check if server sent welcome recently
 server_sent_welcome_recently() {
     local player_name="$1"
     [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ] && return 1
@@ -328,8 +362,9 @@ server_sent_welcome_recently() {
     return 1
 }
 
+# Function to filter server log
 filter_server_log() {
-    while read line; do
+    while read -r line; do
         [[ "$line" == *"Server closed"* || "$line" == *"Starting server"* || \
           ("$line" == *"SERVER: say"* && "$line" == *"Welcome"*) || \
           "$line" == *"adminlist.txt"* || "$line" == *"modlist.txt"* ]] && continue
@@ -337,6 +372,7 @@ filter_server_log() {
     done
 }
 
+# Function to cleanup
 cleanup() {
     print_status "Cleaning up..."
     rm -f "$admin_pipe" 2>/dev/null
@@ -345,6 +381,7 @@ cleanup() {
     exit 0
 }
 
+# Function to monitor log
 monitor_log() {
     local log_file="$1"
     LOG_FILE="$log_file"
@@ -363,21 +400,43 @@ monitor_log() {
     rm -f "$admin_pipe"
     mkfifo "$admin_pipe"
 
-    while read -r admin_command < "$admin_pipe"; do
-        print_status "Processing admin command: $admin_command"
-        [[ "$admin_command" == "!send_ticket "* || "$admin_command" == "!set_mod "* || "$admin_command" == "!set_admin "* ]] && \
-        process_admin_command "$admin_command" || \
-        print_error "Unknown admin command"
-        print_header "READY FOR NEXT COMMAND"
-    done &
+    # Admin command processor
+    (
+        while read -r admin_command < "$admin_pipe"; do
+            print_status "Processing admin command: $admin_command"
+            [[ "$admin_command" == "!send_ticket "* || "$admin_command" == "!set_mod "* || "$admin_command" == "!set_admin "* ]] && \
+            process_admin_command "$admin_command" || \
+            print_error "Unknown admin command"
+            print_header "READY FOR NEXT COMMAND"
+        done
+    ) &
 
-    while read -r admin_command; do
-        echo "$admin_command" > "$admin_pipe"
-    done &
+    # Admin command reader
+    (
+        while read -r admin_command; do
+            echo "$admin_command" > "$admin_pipe"
+        done
+    ) &
 
-    tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read line; do
+    # Wait for log file to exist
+    local wait_time=0
+    while [ ! -f "$log_file" ] && [ $wait_time -lt 30 ]; do
+        sleep 1
+        ((wait_time++))
+        [ $((wait_time % 5)) -eq 0 ] && print_status "Waiting for log file to be created..."
+    done
+    
+    if [ ! -f "$log_file" ]; then
+        print_error "Log file never appeared: $log_file"
+        kill $(jobs -p) 2>/dev/null
+        exit 1
+    fi
+
+    # Start monitoring the log
+    tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read -r line; do
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
+            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             [ "$player_name" == "SERVER" ] && continue
 
             ! is_valid_player_name "$player_name" && {
@@ -402,6 +461,7 @@ monitor_log() {
 
         if [[ "$line" =~ Player\ Disconnected\ ([a-zA-Z0-9_]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
+            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             [ "$player_name" == "SERVER" ] && continue
             
             ! is_valid_player_name "$player_name" && {
@@ -415,6 +475,7 @@ monitor_log() {
 
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
             local player_name="${BASH_REMATCH[1]}" message="${BASH_REMATCH[2]}"
+            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             [ "$player_name" == "SERVER" ] && continue
             
             ! is_valid_player_name "$player_name" && {
@@ -431,10 +492,10 @@ monitor_log() {
         print_status "Other log line: $line"
     done
 
-    wait
     rm -f "$admin_pipe"
 }
 
+# Function to show usage
 show_usage() {
     print_header "ECONOMY BOT - USAGE"
     print_status "Usage: $0 <server_log_file> [port]"
@@ -442,6 +503,12 @@ show_usage() {
     echo ""
     print_warning "Note: This script should be run alongside the server"
 }
+
+# Main execution
+if [ $# -lt 1 ]; then
+    show_usage
+    exit 1
+fi
 
 if [ $# -eq 1 ] || [ $# -eq 2 ]; then
     initialize_economy
