@@ -50,7 +50,7 @@ declare -A player_message_times
 declare -A player_message_counts
 
 # Config
-SPAM_THRESHOLD=2   # "más de dos mensajes en un segundo" => >2
+SPAM_THRESHOLD=1   # "más de dos mensajes en un segundo" => >2
 
 # Validate player names: only A-Z a-z 0-9 and underscore, 1-16 chars
 is_valid_player_name() {
