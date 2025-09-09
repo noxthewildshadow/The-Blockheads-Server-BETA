@@ -60,12 +60,14 @@ is_valid_player_name() {
 # Function to handle invalid player names
 handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="$3"
-    local clean_name=$(echo "$player_name" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    local clean_name=$(echo "$player_name" | sed 's/\\/\\\\/g; s/"/\\"/g; s/'\''/\\'\''/g')
     print_warning "INVALID PLAYER NAME: '$clean_name' (IP: $player_ip, Hash: $player_hash)"
     send_server_command "WARNING: Invalid player name '$clean_name'! You will be banned for 5 seconds."
     print_warning "Banning player with invalid name: '$clean_name' (IP: $player_ip)"
     if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
         send_server_command "/ban $player_ip"
+        # Kick the player after banning
+        send_server_command "/kick $clean_name"
         (
             sleep 5
             send_server_command "/unban $player_ip"
@@ -74,9 +76,8 @@ handle_invalid_player_name() {
     else
         # Fallback: ban by name if IP is not available
         send_server_command "/ban $clean_name"
+        send_server_command "/kick $clean_name"
     fi
-    # Añadir el comando de kick después del ban
-    send_server_command "/kick $clean_name"
     return 0
 }
 
@@ -447,7 +448,7 @@ monitor_log() {
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
-            if [[ "$player_name" == *\\* || "$player_name" == */* ]]; then
+            if [[ "$player_name" == *\\* || "$player_name" == */* || "$player_name" == *\$* || "$player_name" == *\(* || "$player_name" == *\)* || "$player_name" == *\;* || "$player_name" == *\`* ]]; then
                 handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
                 continue
             fi
@@ -470,13 +471,13 @@ monitor_log() {
             command_user=$(echo "$command_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
-            if [[ "$command_user" == *\\* || "$command_user" == */* ]]; then
+            if [[ "$command_user" == *\\* || "$command_user" == */* || "$command_user" == *\$* || "$command_user" == *\(* || "$command_user" == *\)* || "$command_user" == *\;* || "$command_user" == *\`* ]]; then
                 local ipu=$(get_ip_by_name "$command_user")
                 handle_invalid_player_name "$command_user" "$ipu" ""
                 continue
             fi
             
-            if [[ "$target_player" == *\\* || "$target_player" == */* ]]; then
+            if [[ "$target_player" == *\\* || "$target_player" == */* || "$target_player" == *\$* || "$target_player" == *\(* || "$target_player" == *\)* || "$target_player" == *\;* || "$target_player" == *\`* ]]; then
                 local ipt=$(get_ip_by_name "$target_player")
                 handle_invalid_player_name "$target_player" "$ipt" ""
                 continue
@@ -501,7 +502,7 @@ monitor_log() {
             local player_name="${BASH_REMATCH[1]}"
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
-            if [[ "$player_name" == *\\* || "$player_name" == */* ]]; then
+            if [[ "$player_name" == *\\* || "$player_name" == */* || "$player_name" == *\$* || "$player_name" == *\(* || "$player_name" == *\)* || "$player_name" == *\;* || "$player_name" == *\`* ]]; then
                 print_warning "Player with invalid name disconnected: $player_name"
                 continue
             fi
