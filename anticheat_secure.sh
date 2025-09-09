@@ -41,9 +41,9 @@ AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 PLAYERS_LOG="$LOG_DIR/players.log"
 SCREEN_SERVER="blockheads_server_$PORT"
 
-# Track message rates for spam detection
-declare -A message_timestamps
-declare -A message_counts
+# Track player messages for spam detection
+declare -A player_message_times
+declare -A player_message_counts
 
 # Function to validate player names
 is_valid_player_name() {
@@ -209,49 +209,6 @@ get_player_rank() {
     fi
 }
 
-# Function to register or verify player in players.log
-register_player() {
-    local player_name="$1" player_ip="$2"
-    local rank=$(get_player_rank "$player_name")
-    
-    # Check if player already exists
-    if grep -q "^$player_name|" "$PLAYERS_LOG"; then
-        # Player exists, check if IP matches
-        local registered_ip=$(grep "^$player_name|" "$PLAYERS_LOG" | head -1 | cut -d'|' -f2 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        local registered_rank=$(grep "^$player_name|" "$PLAYERS_LOG" | head -1 | cut -d'|' -f3 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        
-        if [ "$player_ip" != "$registered_ip" ]; then
-            # IP doesn't match - potential name theft
-            print_error "POSSIBLE NAME THEFT: $player_name from IP $player_ip (registered IP: $registered_ip)"
-            
-            if [ "$registered_rank" != "NONE" ]; then
-                # Registered player has rank - critical security issue
-                print_error "CRITICAL: Attempt to steal ranked account ($registered_rank)! Shutting down server."
-                send_server_command "/stop"
-                send_server_command "/ban $player_ip"
-                exit 1
-            else
-                # Regular player name theft
-                print_warning "Regular player name theft detected. Banning IP: $player_ip"
-                send_server_command "/ban $player_ip"
-                return 1
-            fi
-        fi
-        
-        # Update rank if it has changed
-        if [ "$rank" != "$registered_rank" ]; then
-            sed -i "/^$player_name|/d" "$PLAYERS_LOG"
-            echo "$player_name | $player_ip | $rank" >> "$PLAYERS_LOG"
-        fi
-    else
-        # New player, register them
-        echo "$player_name | $player_ip | $rank" >> "$PLAYERS_LOG"
-        print_success "Registered new player: $player_name ($player_ip) with rank: $rank"
-    fi
-    
-    return 0
-}
-
 # Function to handle unauthorized command
 handle_unauthorized_command() {
     local player_name="$1" command="$2" target_player="$3"
@@ -295,43 +252,100 @@ handle_unauthorized_command() {
     fi
 }
 
-# Function to check for spam and dangerous commands
-check_security_issues() {
-    local player_name="$1" message="$2" player_ip="$3"
-    local current_time=$(date +%s)
+# Function to check for username theft
+check_username_theft() {
+    local player_name="$1" player_ip="$2"
     
-    # Check for spam (more than 2 messages per second)
-    if [ -n "${message_timestamps[$player_name]}" ]; then
-        local last_time=${message_timestamps[$player_name]}
-        local count=${message_counts[$player_name]}
+    # Skip if player name is invalid
+    ! is_valid_player_name "$player_name" && return 0
+    
+    # Check if player exists in players.log
+    if grep -q -i "^$player_name|" "$PLAYERS_LOG"; then
+        # Player exists, check if IP matches
+        local registered_ip=$(grep -i "^$player_name|" "$PLAYERS_LOG" | head -1 | cut -d'|' -f2 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        local registered_rank=$(grep -i "^$player_name|" "$PLAYERS_LOG" | head -1 | cut -d'|' -f3 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        
+        if [ "$registered_ip" != "$player_ip" ]; then
+            # IP doesn't match - possible username theft
+            print_error "USERNAME THEFT DETECTED: $player_name from IP $player_ip (registered IP: $registered_ip)"
+            
+            if [ "$registered_rank" != "NONE" ]; then
+                # Player has rank - critical security issue
+                print_error "CRITICAL: Player with rank ($registered_rank) username theft detected!"
+                send_server_command "/stop"
+                send_server_command "/ban $player_ip"
+                print_error "Server stopped and IP $player_ip banned due to username theft of ranked player"
+                exit 1
+            else
+                # Regular player - just ban the IP
+                send_server_command "/ban $player_ip"
+                print_error "IP $player_ip banned for username theft"
+                return 1
+            fi
+        fi
+    else
+        # New player - add to players.log
+        local rank=$(get_player_rank "$player_name")
+        echo "$player_name|$player_ip|$rank" >> "$PLAYERS_LOG"
+        print_success "Added new player to registry: $player_name ($player_ip) with rank: $rank"
+    fi
+    
+    return 0
+}
+
+# Function to detect spam and dangerous commands
+check_dangerous_activity() {
+    local player_name="$1" message="$2" current_time=$(date +%s)
+    
+    # Skip if player name is invalid or is server
+    ! is_valid_player_name "$player_name" || [ "$player_name" = "SERVER" ] && return 0
+    
+    # Check for spam (more than 2 messages in 1 second)
+    if [ -n "${player_message_times[$player_name]}" ]; then
+        local last_time=${player_message_times[$player_name]}
+        local count=${player_message_counts[$player_name]}
         
         if [ $((current_time - last_time)) -le 1 ]; then
             count=$((count + 1))
-            message_counts[$player_name]=$count
+            player_message_counts[$player_name]=$count
             
             if [ $count -gt 2 ]; then
                 print_error "SPAM DETECTED: $player_name sent $count messages in 1 second"
-                send_server_command "/ban $player_ip"
+                send_server_command "/ban $player_name"
+                send_server_command "WARNING: $player_name was banned for spamming"
                 return 1
             fi
         else
-            message_counts[$player_name]=1
+            # Reset counter if more than 1 second has passed
+            player_message_counts[$player_name]=1
+            player_message_times[$player_name]=$current_time
         fi
     else
-        message_timestamps[$player_name]=$current_time
-        message_counts[$player_name]=1
+        # First message from this player
+        player_message_times[$player_name]=$current_time
+        player_message_counts[$player_name]=1
     fi
-    message_timestamps[$player_name]=$current_time
     
     # Check for dangerous commands from ranked players
-    if is_player_in_list "$player_name" "admin" || is_player_in_list "$player_name" "mod"; then
-        local dangerous_commands=("/stop" "/ban" "/unban" "/admin" "/mod" "/unadmin" "/unmod")
-        for cmd in "${dangerous_commands[@]}"; do
-            if [[ "$message" == "$cmd "* || "$message" == "$cmd" ]]; then
-                print_error "DANGEROUS COMMAND: $player_name (ranked) used $cmd"
-                send_server_command "WARNING: Ranked player $player_name used dangerous command: $cmd"
+    local rank=$(get_player_rank "$player_name")
+    if [ "$rank" != "NONE" ]; then
+        # List of dangerous commands
+        local dangerous_commands="/stop /shutdown /restart /banall /kickall /op /deop /save-off"
+        
+        for cmd in $dangerous_commands; do
+            if [[ "$message" == "$cmd"* ]]; then
+                print_error "DANGEROUS COMMAND: $player_name ($rank) attempted to use: $message"
                 record_admin_offense "$player_name"
-                return 1
+                local offense_count=$?
+                
+                if [ $offense_count -ge 2 ]; then
+                    send_server_command "/ban $player_name"
+                    send_server_command "WARNING: $player_name was banned for attempting dangerous commands"
+                    return 1
+                else
+                    send_server_command "WARNING: $player_name, dangerous commands are restricted!"
+                    return 0
+                fi
             fi
         done
     fi
@@ -431,8 +445,8 @@ monitor_log() {
                 continue
             fi
             
-            # Register/verify player and check for name theft
-            if ! register_player "$player_name" "$player_ip"; then
+            # Check for username theft
+            if ! check_username_theft "$player_name" "$player_ip"; then
                 continue
             fi
             
@@ -471,29 +485,6 @@ monitor_log() {
             [ "$command_user" != "SERVER" ] && handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
         fi
 
-        if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
-            local player_name="${BASH_REMATCH[1]}" message="${BASH_REMATCH[2]}"
-            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            
-            if [[ "$player_name" == *\\* || "$player_name" == */* ]]; then
-                print_warning "Skipping message from invalid player name: '$player_name'"
-                continue
-            fi
-            
-            if ! is_valid_player_name "$player_name"; then
-                print_warning "Skipping message from invalid player name: '$player_name'"
-                continue
-            fi
-            
-            # Get player IP for security checks
-            local player_ip=$(get_ip_by_name "$player_name")
-            
-            # Check for spam and dangerous commands
-            if ! check_security_issues "$player_name" "$message" "$player_ip"; then
-                continue
-            fi
-        fi
-
         if [[ "$line" =~ Player\ Disconnected\ (.+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -508,6 +499,19 @@ monitor_log() {
             else
                 print_warning "Player with invalid name disconnected: $player_name"
             fi
+        fi
+
+        # Check for chat messages and dangerous commands
+        if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
+            local player_name="${BASH_REMATCH[1]}" message="${BASH_REMATCH[2]}"
+            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
+            if ! is_valid_player_name "$player_name"; then
+                continue
+            fi
+            
+            # Check for dangerous activity
+            check_dangerous_activity "$player_name" "$message"
         fi
     done
     
