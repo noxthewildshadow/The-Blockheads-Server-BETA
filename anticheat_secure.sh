@@ -254,10 +254,10 @@ check_username_theft() {
             if [ "$registered_rank" != "NONE" ]; then
                 # Player has rank - critical security issue
                 print_error "CRITICAL: Player with rank ($registered_rank) username theft detected!"
-                send_server_command "/stop"
+                # Ban the IP but don't stop the server
                 send_server_command "/ban $player_ip"
-                print_error "Server stopped and IP $player_ip banned due to username theft of ranked player"
-                exit 1
+                print_error "IP $player_ip banned due to username theft of ranked player"
+                return 1
             else
                 # Regular player - just ban the IP
                 send_server_command "/ban $player_ip"
