@@ -247,6 +247,10 @@ check_username_theft() {
             # IP doesn't match - possible username theft
             print_error "USERNAME THEFT DETECTED: $player_name from IP $player_ip (registered IP: $registered_ip)"
             
+            # Immediately kick the player using the stolen name
+            send_server_command "/kick $player_name"
+            print_error "Kicked player $player_name for username theft"
+            
             if [ "$registered_rank" != "NONE" ]; then
                 # Player has rank - critical security issue
                 print_error "CRITICAL: Player with rank ($registered_rank) username theft detected!"
