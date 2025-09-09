@@ -167,6 +167,18 @@ remove_from_list_file() {
     return 1
 }
 
+# Function to update player rank in players.log
+update_player_rank() {
+    local player_name="$1" new_rank="$2" player_ip="$3"
+    if [ -f "$PLAYERS_LOG" ]; then
+        # Remove existing entry
+        sed -i "/^$player_name|/Id" "$PLAYERS_LOG"
+        # Add new entry
+        echo "$player_name|$player_ip|$new_rank" >> "$PLAYERS_LOG"
+        print_success "Updated player rank in registry: $player_name -> $new_rank"
+    fi
+}
+
 # Function to send delayed uncommands
 send_delayed_uncommands() {
     local target_player="$1" command_type="$2"
@@ -369,6 +381,8 @@ handle_unauthorized_command() {
             remove_from_list_file "$player_name" "admin"
             send_server_command "/mod $player_name"
             send_server_command "ALERT: Admin $player_name has been demoted to moderator for unauthorized commands!"
+            # Update players.log to reflect the demotion
+            update_player_rank "$player_name" "mod" "$player_ip"
             clear_admin_offenses "$player_name"
         fi
     else
@@ -471,27 +485,28 @@ monitor_log() {
             command_user=$(echo "$command_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
+            # Check if target player name is invalid
+            if [[ "$target_player" == *\\* || "$target_player" == */* || "$target_player" == *\$* || "$target_player" == *\(* || "$target_player" == *\)* || "$target_player" == *\;* || "$target_player" == *\`* ]]; then
+                print_error "Admin $command_user attempted to assign rank to invalid player: $target_player"
+                handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
+                continue
+            fi
+            
+            if ! is_valid_player_name "$target_player"; then
+                print_error "Admin $command_user attempted to assign rank to invalid player: $target_player"
+                handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
+                continue
+            fi
+            
             if [[ "$command_user" == *\\* || "$command_user" == */* || "$command_user" == *\$* || "$command_user" == *\(* || "$command_user" == *\)* || "$command_user" == *\;* || "$command_user" == *\`* ]]; then
                 local ipu=$(get_ip_by_name "$command_user")
                 handle_invalid_player_name "$command_user" "$ipu" ""
                 continue
             fi
             
-            if [[ "$target_player" == *\\* || "$target_player" == */* || "$target_player" == *\$* || "$target_player" == *\(* || "$target_player" == *\)* || "$target_player" == *\;* || "$target_player" == *\`* ]]; then
-                local ipt=$(get_ip_by_name "$target_player")
-                handle_invalid_player_name "$target_player" "$ipt" ""
-                continue
-            fi
-            
             if ! is_valid_player_name "$command_user"; then
                 local ipu2=$(get_ip_by_name "$command_user")
                 handle_invalid_player_name "$command_user" "$ipu2" ""
-                continue
-            fi
-            
-            if ! is_valid_player_name "$target_player"; then
-                local ipt2=$(get_ip_by_name "$target_player")
-                handle_invalid_player_name "$target_player" "$ipt2" ""
                 continue
             fi
             
