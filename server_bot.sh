@@ -128,7 +128,7 @@ grant_login_ticket() {
     }
 }
 
-# Function to show welcome message
+# Function to show welcome message with 30-second cooldown
 show_welcome_message() {
     local player_name="$1" is_new_player="$2" force_send="${3:-0}"
     ! is_valid_player_name "$player_name" && return
@@ -138,7 +138,8 @@ show_welcome_message() {
     local last_welcome_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_welcome_time // 0')
     last_welcome_time=${last_welcome_time:-0}
     
-    [ "$force_send" -eq 1 ] || [ "$last_welcome_time" -eq 0 ] || [ $((current_time - last_welcome_time)) -ge 180 ] && {
+    # 30-second cooldown for welcome messages
+    [ "$force_send" -eq 1 ] || [ "$last_welcome_time" -eq 0 ] || [ $((current_time - last_welcome_time)) -ge 30 ] && {
         [ "$is_new_player" = "true" ] && {
             send_server_command "Hello $player_name! Welcome to the server. Type !help to check available commands."
         } || {
@@ -362,13 +363,21 @@ server_sent_welcome_recently() {
     return 1
 }
 
-# Function to filter server log
+# Function to filter server log - only show economy-related messages
 filter_server_log() {
     while read -r line; do
+        # Skip irrelevant server messages
         [[ "$line" == *"Server closed"* || "$line" == *"Starting server"* || \
-          ("$line" == *"SERVER: say"* && "$line" == *"Welcome"*) || \
-          "$line" == *"adminlist.txt"* || "$line" == *"modlist.txt"* ]] && continue
-        echo "$line"
+          "$line" == *"adminlist.txt"* || "$line" == *"modlist.txt"* || \
+          "$line" == *"World load complete"* || "$line" == *"using seed:"* || \
+          "$line" == *"save delay:"* || "$line" == *"Exiting World"* || \
+          "$line" == *"Loading world named"* ]] && continue
+        
+        # Show only player connections, disconnections, and chat messages with economy commands
+        if [[ "$line" =~ Player\ Connected || "$line" =~ Player\ Disconnected || \
+              ("$line" =~ :\ .*&& ("$line" =~ !tickets || "$line" =~ !buy || "$line" =~ !give || "$line" =~ !help)) ]]; then
+            echo "$line"
+        fi
     done
 }
 
