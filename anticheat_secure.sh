@@ -4,565 +4,669 @@
 # THE BLOCKHEADS ANTICHEAT SECURITY SYSTEM
 # =============================================================================
 
-# ASCII-only color codes
+# Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
+PURPLE='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+# Function definitions
 print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 print_header() {
-    echo -e "================================================================"
+    echo -e "${PURPLE}================================================================"
     echo -e "$1"
-    echo -e "================================================================"
+    echo -e "===============================================================${NC}"
 }
 
-# Check for jq
+# Validate jq is installed
 if ! command -v jq &> /dev/null; then
-    echo -e "${RED}ERROR: jq is required but not installed. Install jq and retry.${NC}"
+    echo -e "${RED}ERROR: jq is required but not installed. Please install jq first.${NC}"
     exit 1
 fi
 
-# Arguments
+# Initialize variables
 LOG_FILE="$1"
 PORT="$2"
 LOG_DIR=$(dirname "$LOG_FILE")
-SCREEN_SERVER="blockheads_server_${PORT:-12153}"
-
-# Files for persistence
-ADMIN_OFFENSES_FILE="$LOG_DIR/admin_offenses_${PORT:-12153}.json"
+ADMIN_OFFENSES_FILE="$LOG_DIR/admin_offenses_$PORT.json"
 AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 PLAYERS_LOG="$LOG_DIR/players.log"
-TEMP_IP_BANS_FILE="$LOG_DIR/temp_ip_bans_${PORT:-12153}.json"
+SCREEN_SERVER="blockheads_server_$PORT"
 
-# In-memory maps for command spam detection
-declare -A last_command_time
-declare -A command_count
+# Track player messages for spam detection
+declare -A player_message_times
+declare -A player_message_counts
+declare -A player_command_times
+declare -A player_command_counts
+declare -A ip_ban_timestamps
 
-# -------------------------
-# Helper: JSON file read/write with flock
-# -------------------------
-read_json_file() {
-    local path="$1"
-    if [ ! -f "$path" ]; then
-        echo "{}"
-        return 0
-    fi
-    # Use flock for safe concurrent reads
-    exec 200<"$path"
-    flock -s 200
-    cat "$path"
-    flock -u 200
-    exec 200>&-
-}
-
-write_json_file() {
-    local path="$1"
-    local content="$2"
-    touch "$path"
-    exec 200>"${path}.lock"
-    flock -x 200
-    printf "%s" "$content" > "$path"
-    flock -u 200
-    exec 200>&-
-}
-
-# -------------------------
-# Initialize files
-# -------------------------
-initialize_files() {
-    [ -f "$AUTHORIZED_ADMINS_FILE" ] || touch "$AUTHORIZED_ADMINS_FILE"
-    [ -f "$AUTHORIZED_MODS_FILE" ] || touch "$AUTHORIZED_MODS_FILE"
-    [ -f "$PLAYERS_LOG" ] || touch "$PLAYERS_LOG"
-    [ -f "$ADMIN_OFFENSES_FILE" ] || echo '{}' > "$ADMIN_OFFENSES_FILE"
-    [ -f "$TEMP_IP_BANS_FILE" ] || echo '{}' > "$TEMP_IP_BANS_FILE"
-}
-
-# -------------------------
-# Player name validation
-# Allows letters numbers underscore, 1-16 chars
-# -------------------------
+# Function to validate player names
 is_valid_player_name() {
-    local name="$1"
-    name="$(echo "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    if [[ "$name" =~ ^[A-Za-z0-9_]{1,16}$ ]]; then
-        return 0
-    fi
-    return 1
-}
-
-# -------------------------
-# Update players.log rank
-# Format in players.log: player|ip|rank
-# -------------------------
-update_player_rank() {
-    local player="$1" new_rank="$2" player_ip="$3"
-    # Remove any existing line for the player (case-insensitive)
-    if [ -f "$PLAYERS_LOG" ]; then
-        sed -i "/^${player}|/Id" "$PLAYERS_LOG"
-    fi
-    # Append new entry
-    echo "${player}|${player_ip}|${new_rank}" >> "$PLAYERS_LOG"
-    print_success "Updated players.log: ${player} -> ${new_rank}"
-}
-
-# -------------------------
-# Admin offenses tracking
-# Returns offense count via stdout
-# -------------------------
-record_admin_offense() {
-    local admin="$1"
-    local now
-    now=$(date +%s)
-    local content
-    content=$(read_json_file "$ADMIN_OFFENSES_FILE")
-    # get current count and last time
-    local current_count
-    current_count=$(echo "$content" | jq -r --arg a "$admin" '.[$a].count // 0')
-    local last_time
-    last_time=$(echo "$content" | jq -r --arg a "$admin" '.[$a].last_offense // 0')
-    # reset if last offense older than 300s (5 minutes)
-    if [ -z "$last_time" ] || [ "$((now - last_time))" -gt 300 ]; then
-        current_count=0
-    fi
-    current_count=$((current_count + 1))
-    content=$(echo "$content" | jq --arg a "$admin" --argjson c "$current_count" --argjson t "$now" '.[$a] = {"count": $c, "last_offense": $t}')
-    write_json_file "$ADMIN_OFFENSES_FILE" "$content"
-    print_warning "Recorded offense for admin ${admin}: count=${current_count}"
-    printf "%d" "$current_count"
-}
-
-clear_admin_offenses() {
-    local admin="$1"
-    local content
-    content=$(read_json_file "$ADMIN_OFFENSES_FILE")
-    content=$(echo "$content" | jq --arg a "$admin" 'del(.[$a])')
-    write_json_file "$ADMIN_OFFENSES_FILE" "$content"
-}
-
-# -------------------------
-# Temporary IP bans (5 minutes or custom)
-# Stored in TEMP_IP_BANS_FILE as { "ip": expiry_timestamp, ... }
-# -------------------------
-ban_ip_temp() {
-    local ip="$1"
-    local duration="$2" # seconds
-    local reason="$3"
-    [ -z "$duration" ] && duration=300
-    local now expiry
-    now=$(date +%s)
-    expiry=$((now + duration))
-    local content
-    content=$(read_json_file "$TEMP_IP_BANS_FILE")
-    content=$(echo "$content" | jq --arg ip "$ip" --argjson e "$expiry" '.[$ip] = $e')
-    write_json_file "$TEMP_IP_BANS_FILE" "$content"
-    # Issue server ban command (ban by IP)
-    send_server_command "/ban $ip"
-    print_warning "Temp banned IP $ip until $(date -d "@$expiry" '+%Y-%m-%d %H:%M:%S') reason: $reason"
-    # Schedule unban in background
-    (
-        sleep "$duration"
-        send_server_command "/unban $ip"
-        # remove from file
-        local c
-        c=$(read_json_file "$TEMP_IP_BANS_FILE")
-        c=$(echo "$c" | jq --arg ip "$ip" 'del(.[$ip])')
-        write_json_file "$TEMP_IP_BANS_FILE" "$c"
-        print_success "Temp ban expired and removed for IP $ip"
-    ) &
-}
-
-is_ip_currently_banned() {
-    local ip="$1"
-    local now
-    now=$(date +%s)
-    local content expiry
-    content=$(read_json_file "$TEMP_IP_BANS_FILE")
-    expiry=$(echo "$content" | jq -r --arg ip "$ip" '.[$ip] // 0')
-    if [ -n "$expiry" ] && [ "$expiry" -gt "$now" ]; then
-        printf "%s" "$expiry"
-        return 0
-    fi
-    return 1
-}
-
-# -------------------------
-# Send server commands through screen
-# -------------------------
-send_server_command() {
-    if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$1$(printf \\r)" 2>/dev/null; then
-        print_success "Sent to server: $1"
+    local player_name="$1"
+    player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [[ -z "$player_name" ]] && return 1
+    if [[ "$player_name" =~ ^[A-Za-z0-9_]{1,16}$ ]]; then
         return 0
     else
-        print_error "Could not send to server: $1"
         return 1
     fi
 }
 
+# Function to handle invalid player names
+handle_invalid_player_name() {
+    local player_name="$1" player_ip="$2" player_hash="$3"
+    local clean_name=$(echo "$player_name" | sed 's/\\/\\\\/g; s/"/\\"/g; s/'\''/\\'\''/g')
+    print_warning "INVALID PLAYER NAME: '$clean_name' (IP: $player_ip, Hash: $player_hash)"
+    send_server_command "WARNING: Invalid player name '$clean_name'! You will be banned for 5 seconds."
+    print_warning "Banning player with invalid name: '$clean_name' (IP: $player_ip)"
+    if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
+        send_server_command "/ban $player_ip"
+        # Kick the player after banning
+        send_server_command "/kick $clean_name"
+        (
+            sleep 5
+            send_server_command "/unban $player_ip"
+            print_success "Unbanned IP: $player_ip"
+        ) &
+    else
+        # Fallback: ban by name if IP is not available
+        send_server_command "/ban $clean_name"
+        send_server_command "/kick $clean_name"
+    fi
+    return 0
+}
+
+# Function to read JSON file with locking
+read_json_file() {
+    local file_path="$1"
+    [ ! -f "$file_path" ] && echo "{}" > "$file_path" && echo "{}" && return 0
+    flock -s 200 cat "$file_path" 200>"${file_path}.lock"
+}
+
+# Function to write JSON file with locking
+write_json_file() {
+    local file_path="$1" content="$2"
+    [ ! -f "$file_path" ] && touch "$file_path"
+    flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
+}
+
+# Function to initialize authorization files
+initialize_authorization_files() {
+    [ ! -f "$AUTHORIZED_ADMINS_FILE" ] && touch "$AUTHORIZED_ADMINS_FILE"
+    [ ! -f "$AUTHORIZED_MODS_FILE" ] && touch "$AUTHORIZED_MODS_FILE"
+    [ ! -f "$PLAYERS_LOG" ] && touch "$PLAYERS_LOG"
+}
+
+# Function to validate authorization
+validate_authorization() {
+    local admin_list="$LOG_DIR/adminlist.txt"
+    local mod_list="$LOG_DIR/modlist.txt"
+    
+    [ -f "$admin_list" ] && while IFS= read -r admin || [ -n "$admin" ]; do
+        admin=$(echo "$admin" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [[ -z "$admin" || "$admin" =~ ^# || "$admin" =~ "Usernames in this file" ]] && continue
+        if ! grep -q -i "^$admin$" "$AUTHORIZED_ADMINS_FILE"; then
+            send_server_command "/unadmin $admin"
+            remove_from_list_file "$admin" "admin"
+        fi
+    done < <(grep -v "^[[:space:]]*#" "$admin_list" 2>/dev/null || true)
+    
+    [ -f "$mod_list" ] && while IFS= read -r mod || [ -n "$mod" ]; do
+        mod=$(echo "$mod" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [[ -z "$mod" || "$mod" =~ ^# || "$mod" =~ "Usernames in this file" ]] && continue
+        if ! grep -q -i "^$mod$" "$AUTHORIZED_MODS_FILE"; then
+            send_server_command "/unmod $mod"
+            remove_from_list_file "$mod" "mod"
+        fi
+    done < <(grep -v "^[[:space:]]*#" "$mod_list" 2>/dev/null || true)
+}
+
+# Function to initialize admin offenses
+initialize_admin_offenses() {
+    [ ! -f "$ADMIN_OFFENSES_FILE" ] && echo '{}' > "$ADMIN_OFFENSES_FILE"
+}
+
+# Function to record admin offense
+record_admin_offense() {
+    local admin_name="$1" current_time=$(date +%s)
+    local offenses_data=$(read_json_file "$ADMIN_OFFENSES_FILE" 2>/dev/null || echo '{}')
+    local current_offenses=$(echo "$offenses_data" | jq -r --arg admin "$admin_name" '.[$admin]?.count // 0')
+    local last_offense_time=$(echo "$offenses_data" | jq -r --arg admin "$admin_name" '.[$admin]?.last_offense // 0')
+    [ $((current_time - last_offense_time)) -gt 300 ] && current_offenses=0
+    current_offenses=$((current_offenses + 1))
+    offenses_data=$(echo "$offenses_data" | jq --arg admin "$admin_name" \
+        --argjson count "$current_offenses" --argjson time "$current_time" \
+        '.[$admin] = {"count": $count, "last_offense": $time}')
+    write_json_file "$ADMIN_OFFENSES_FILE" "$offenses_data"
+    print_warning "Recorded offense #$current_offenses for admin $admin_name"
+    return $current_offenses
+}
+
+# Function to clear admin offenses
+clear_admin_offenses() {
+    local admin_name="$1"
+    local offenses_data=$(read_json_file "$ADMIN_OFFENSES_FILE" 2>/dev/null || echo '{}')
+    offenses_data=$(echo "$offenses_data" | jq --arg admin "$admin_name" 'del(.[$admin])')
+    write_json_file "$ADMIN_OFFENSES_FILE" "$offenses_data"
+}
+
+# Function to remove from list file
+remove_from_list_file() {
+    local player_name="$1" list_type="$2"
+    local list_file="$LOG_DIR/${list_type}list.txt"
+    [ ! -f "$list_file" ] && return 1
+    if grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"; then
+        sed -i "/^$player_name$/Id" "$list_file"
+        return 0
+    fi
+    return 1
+}
+
+# Function to update player rank in players.log
+update_player_rank() {
+    local player_name="$1" new_rank="$2" player_ip="$3"
+    if [ -f "$PLAYERS_LOG" ]; then
+        # Remove existing entry
+        sed -i "/^$player_name|/Id" "$PLAYERS_LOG"
+        # Add new entry
+        echo "$player_name|$player_ip|$new_rank" >> "$PLAYERS_LOG"
+        print_success "Updated player rank in registry: $player_name -> $new_rank"
+    fi
+}
+
+# Function to send delayed uncommands
+send_delayed_uncommands() {
+    local target_player="$1" command_type="$2"
+    (
+        sleep 2; send_server_command_silent "/un${command_type} $target_player"
+        sleep 2; send_server_command_silent "/un${command_type} $target_player"
+        sleep 1; send_server_command_silent "/un${command_type} $target_player"
+        remove_from_list_file "$target_player" "$command_type"
+    ) &
+}
+
+# Function to send server command silently
 send_server_command_silent() {
     screen -S "$SCREEN_SERVER" -p 0 -X stuff "$1$(printf \\r)" 2>/dev/null
 }
 
-# -------------------------
-# Remove player from admin/mod list file helper
-# -------------------------
-remove_from_list_file() {
-    local player="$1" type="$2" file="$LOG_DIR/${type}list.txt"
-    [ ! -f "$file" ] && return 1
-    # case-insensitive remove
-    sed -i "/^${player}$/Id" "$file"
-    return 0
+# Function to send server command
+send_server_command() {
+    if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$1$(printf \\r)" 2>/dev/null; then
+        print_success "Sent message to server: $1"
+        return 0
+    else
+        print_error "Could not send message to server"
+        return 1
+    fi
 }
 
-# -------------------------
-# Check if a player is in admin/mod list
-# -------------------------
-is_player_in_list_file() {
-    local player="$1" type="$2" file="$LOG_DIR/${type}list.txt"
-    [ -f "$file" ] && grep -v "^[[:space:]]*#" "$file" 2>/dev/null | grep -qi "^$player$"
+# Function to check if player is in list
+is_player_in_list() {
+    local player_name="$1" list_type="$2"
+    local list_file="$LOG_DIR/${list_type}list.txt"
+    [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"
 }
 
-# -------------------------
-# Get player IP from log file (best-effort)
-# -------------------------
+# Function to get player rank
+get_player_rank() {
+    local player_name="$1"
+    if is_player_in_list "$player_name" "admin"; then
+        echo "admin"
+    elif is_player_in_list "$player_name" "mod"; then
+        echo "mod"
+    else
+        echo "NONE"
+    fi
+}
+
+# Function to get IP by name
 get_ip_by_name() {
     local name="$1"
     if [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then
         echo "unknown"
         return 1
     fi
-    # scan log for recent "Player Connected" lines mentioning the name
     awk -F'|' -v pname="$name" '
     /Player Connected/ {
-        line=$0
-        # try to split on | if log has that format
-        if (index(line, "|") > 0) {
-            # crude parse: take last field as ip if possible
-            # fallback: print unknown
-        }
-    } END { print "unknown" }' "$LOG_FILE"
-    # fallback unknown
-    echo "unknown"
+        part=$1
+        sub(/.*Player Connected[[:space:]]*/, "", part)
+        gsub(/^[ \t]+|[ \t]+$/, "", part)
+        ip=$2
+        gsub(/^[ \t]+|[ \pt]+$/, "", ip)
+        if (part == pname) { last_ip=ip }
+    }
+    END { if (last_ip) print last_ip; else print "unknown" }
+    ' "$LOG_FILE"
 }
 
-# -------------------------
-# When an admin attempts an unauthorized /admin or /mod
-# This function enforces warnings and demotion policy.
-# It NEVER bans the target player.
-# -------------------------
-handle_unauthorized_command() {
-    local actor="$1" command="$2" target="$3"
-    local actor_ip
-    actor_ip=$(get_ip_by_name "$actor")
-
-    print_warning "UNAUTHORIZED COMMAND: ${actor} attempted ${command} on ${target}"
-    # Notify server (friendly)
-    send_server_command "WARNING: Admin ${actor} attempted unauthorized rank assignment!"
-
-    # Ensure we do not ban the target. If the target had been added incorrectly, remove rank lines.
-    if [ "$command" = "/admin" ]; then
-        send_server_command_silent "/unadmin $target"
-        remove_from_list_file "$target" "admin"
-    elif [ "$command" = "/mod" ]; then
-        send_server_command_silent "/unmod $target"
-        remove_from_list_file "$target" "mod"
-    fi
-
-    # Record offense and get count (echoed)
-    local offense_count
-    offense_count=$(record_admin_offense "$actor")
-    # offense_count is a number in stdout
-    if [ "$offense_count" -eq 1 ]; then
-        send_server_command "NOTICE: ${actor}, this is your FIRST warning. Only server console can assign ranks."
-    elif [ "$offense_count" -eq 2 ]; then
-        send_server_command "NOTICE: ${actor}, this is your SECOND warning. Stop attempting to assign ranks manually."
-    else
-        # Third or more: demote to mod
-        print_warning "THIRD OFFENSE: Demoting admin ${actor} to mod"
-        # Remove from authorized admins, add to authorized mods
-        # Remove admin from authorized_admins.txt (case-insensitive)
-        if grep -qi "^${actor}$" "$AUTHORIZED_ADMINS_FILE" 2>/dev/null; then
-            sed -i "/^${actor}$/Id" "$AUTHORIZED_ADMINS_FILE"
-        fi
-        # Add to authorized_mods.txt if not present
-        if ! grep -qi "^${actor}$" "$AUTHORIZED_MODS_FILE" 2>/dev/null; then
-            echo "$actor" >> "$AUTHORIZED_MODS_FILE"
-        fi
-        # Send server commands to update live server
-        send_server_command_silent "/unadmin $actor"
-        send_server_command "/mod $actor"
-        # Update players.log to reflect demotion
-        update_player_rank "$actor" "mod" "$actor_ip"
-        clear_admin_offenses "$actor"
-        send_server_command "ALERT: Admin ${actor} has been demoted to moderator for repeated unauthorized rank assignments."
-    fi
-}
-
-# -------------------------
-# Check for spam of commands (messages starting with '/')
-# If more than 1 command in 1 second -> temp ban IP for 5 minutes (300s)
-# -------------------------
-check_command_spam() {
-    local player="$1"
-    local message="$2"
-    local now
-    now=$(date +%s)
-    # Only consider messages that start with '/'
-    if [[ "$message" =~ ^/ ]]; then
-        local last_time="${last_command_time[$player]:-0}"
-        local count="${command_count[$player]:-0}"
-        if [ "$((now - last_time))" -le 1 ]; then
-            count=$((count + 1))
-            command_count[$player]="$count"
-            last_command_time[$player]="$now"
-            if [ "$count" -gt 1 ]; then
-                # Spam detected: ban IP for 5 minutes
-                local player_ip
-                player_ip=$(get_ip_by_name "$player")
-                if [ -z "$player_ip" ] || [ "$player_ip" = "unknown" ]; then
-                    print_warning "SPAM detected from $player but IP unknown. Not banning IP."
-                else
-                    print_error "SPAM DETECTED: $player sent $count commands in 1 second. Temp banning IP $player_ip"
-                    ban_ip_temp "$player_ip" 300 "command spam by $player"
-                    send_server_command "NOTICE: $player has been temporarily banned for command spam (5 minutes)."
-                fi
-            fi
-        else
-            # Reset counter
-            last_command_time[$player]="$now"
-            command_count[$player]=1
-        fi
-    fi
-}
-
-# -------------------------
-# Check dangerous commands from ranked players (stop/shutdown etc.)
-# If attempted, record admin offense; on 3rd offense demote.
-# -------------------------
-check_dangerous_activity() {
-    local player="$1" message="$2"
-    # Skip SERVER
-    [ "$player" = "SERVER" ] && return 0
-    # Only consider valid names
-    ! is_valid_player_name "$player" && return 0
-
-    # Check if IP is currently temp-banned; if so kick immediately
-    local player_ip
-    player_ip=$(get_ip_by_name "$player")
-    if is_ip_currently_banned "$player_ip" >/dev/null 2>&1; then
-        local expiry
-        expiry=$(is_ip_currently_banned "$player_ip" 2>/dev/null || true)
-        send_server_command "/kick $player"
-        print_warning "Player $player (IP $player_ip) attempted action while temp-banned until $expiry. Kicked."
-        return 1
-    fi
-
-    # Command spam detection (commands starting with '/')
-    check_command_spam "$player" "$message"
-
-    # Dangerous commands check (only for ranked players)
-    local rank="NONE"
-    if grep -qi "^${player}$" "$AUTHORIZED_ADMINS_FILE" 2>/dev/null; then
-        rank="admin"
-    elif grep -qi "^${player}$" "$AUTHORIZED_MODS_FILE" 2>/dev/null; then
-        rank="mod"
-    fi
-
-    if [ "$rank" != "NONE" ]; then
-        local dangerous_list="/stop /shutdown /restart /banall /kickall /op /deop /save-off"
-        for cmd in $dangerous_list; do
-            if [[ "$message" == "$cmd"* ]]; then
-                print_error "DANGEROUS COMMAND ATTEMPT: $player ($rank) -> $message"
-                local count
-                count=$(record_admin_offense "$player")
-                if [ "$count" -lt 3 ]; then
-                    send_server_command "WARNING: $player, dangerous commands are restricted. Offense $count."
-                else
-                    # On 3rd offense demote
-                    print_warning "Demoting $player to mod due to repeated dangerous commands"
-                    if grep -qi "^${player}$" "$AUTHORIZED_ADMINS_FILE" 2>/dev/null; then
-                        sed -i "/^${player}$/Id" "$AUTHORIZED_ADMINS_FILE"
-                    fi
-                    if ! grep -qi "^${player}$" "$AUTHORIZED_MODS_FILE" 2>/dev/null; then
-                        echo "$player" >> "$AUTHORIZED_MODS_FILE"
-                    fi
-                    send_server_command_silent "/unadmin $player"
-                    send_server_command "/mod $player"
-                    update_player_rank "$player" "mod" "$player_ip"
-                    clear_admin_offenses "$player"
-                    send_server_command "ALERT: $player has been demoted to moderator for repeated dangerous attempts."
-                fi
+# Function to check for username theft
+check_username_theft() {
+    local player_name="$1" player_ip="$2"
+    
+    # Skip if player name is invalid
+    ! is_valid_player_name "$player_name" && return 0
+    
+    # Check if player exists in players.log
+    if grep -q -i "^$player_name|" "$PLAYERS_LOG"; then
+        # Player exists, check if IP matches
+        local registered_ip=$(grep -i "^$player_name|" "$PLAYERS_LOG" | head -1 | cut -d'|' -f2 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        local registered_rank=$(grep -i "^$player_name|" "$PLAYERS_LOG" | head -1 | cut -d'|' -f3 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        
+        if [ "$registered_ip" != "$player_ip" ]; then
+            # IP doesn't match - possible username theft
+            print_error "USERNAME THEFT DETECTED: $player_name from IP $player_ip (registered IP: $registered_ip)"
+            
+            # Immediately kick the player using the stolen name
+            send_server_command "/kick $player_name"
+            print_error "Kicked player $player_name for username theft"
+            
+            if [ "$registered_rank" != "NONE" ]; then
+                # Player has rank - critical security issue
+                print_error "CRITICAL: Player with rank ($registered_rank) username theft detected!"
+                # Ban the IP but don't stop the server
+                send_server_command "/ban $player_ip"
+                print_error "IP $player_ip banned due to username theft of ranked player"
+                return 1
+            else
+                # Regular player - just ban the IP
+                send_server_command "/ban $player_ip"
+                print_error "IP $player_ip banned for username theft"
                 return 1
             fi
-        done
+        fi
+    else
+        # New player - add to players.log
+        local rank=$(get_player_rank "$player_name")
+        echo "$player_name|$player_ip|$rank" >> "$PLAYERS_LOG"
+        print_success "Added new player to registry: $player_name ($player_ip) with rank: $rank"
     fi
-
+    
     return 0
 }
 
-# -------------------------
-# Sanitize and extract a valid player name from arbitrary text
-# Returns empty string if none found
-# -------------------------
-extract_valid_name() {
-    local text="$1"
-    if [[ "$text" =~ ([A-Za-z0-9_]{1,16}) ]]; then
-        printf "%s" "${BASH_REMATCH[1]}"
+# Function to check command spam
+check_command_spam() {
+    local player_name="$1" current_time=$(date +%s)
+    
+    # Skip if player name is invalid or is server
+    ! is_valid_player_name "$player_name" || [ "$player_name" = "SERVER" ] && return 0
+    
+    # Get player IP for banning
+    local player_ip=$(get_ip_by_name "$player_name")
+    
+    # Check for command spam (more than 1 command in 1 second)
+    if [ -n "${player_command_times[$player_name]}" ]; then
+        local last_time=${player_command_times[$player_name]}
+        local count=${player_command_counts[$player_name]}
+        
+        if [ $((current_time - last_time)) -le 1 ]; then
+            count=$((count + 1))
+            player_command_counts[$player_name]=$count
+            
+            if [ $count -gt 1 ]; then
+                print_error "COMMAND SPAM DETECTED: $player_name sent $count commands in 1 second"
+                
+                # Ban IP for 5 minutes
+                send_server_command "/ban $player_ip"
+                send_server_command "WARNING: $player_name (IP: $player_ip) was banned for command spamming for 5 minutes"
+                
+                # Store ban timestamp
+                ip_ban_timestamps["$player_ip"]=$current_time
+                
+                # Schedule unban after 5 minutes
+                (
+                    sleep 300
+                    send_server_command "/unban $player_ip"
+                    print_success "Unbanned IP: $player_ip after 5 minutes"
+                    unset ip_ban_timestamps["$player_ip"]
+                ) &
+                
+                return 1
+            fi
+        else
+            # Reset counter if more than 1 second has passed
+            player_command_counts[$player_name]=1
+            player_command_times[$player_name]=$current_time
+        fi
     else
-        printf ""
+        # First command from this player
+        player_command_times[$player_name]=$current_time
+        player_command_counts[$player_name]=1
+    fi
+    
+    return 0
+}
+
+# Function to check if IP is currently banned
+is_ip_banned() {
+    local player_ip="$1" current_time=$(date +%s)
+    [ -z "${ip_ban_timestamps[$player_ip]}" ] && return 1
+    
+    local ban_time=${ip_ban_timestamps[$player_ip]}
+    [ $((current_time - ban_time)) -lt 300 ] && return 0
+    
+    # Ban expired
+    unset ip_ban_timestamps["$player_ip"]
+    return 1
+}
+
+# Function to detect spam and dangerous commands
+check_dangerous_activity() {
+    local player_name="$1" message="$2" current_time=$(date +%s)
+    
+    # Skip if player name is invalid or is server
+    ! is_valid_player_name "$player_name" || [ "$player_name" = "SERVER" ] && return 0
+    
+    # Get player IP for banning
+    local player_ip=$(get_ip_by_name "$player_name")
+    
+    # Check for spam (more than 2 messages in 1 second)
+    if [ -n "${player_message_times[$player_name]}" ]; then
+        local last_time=${player_message_times[$player_name]}
+        local count=${player_message_counts[$player_name]}
+        
+        if [ $((current_time - last_time)) -le 1 ]; then
+            count=$((count + 1))
+            player_message_counts[$player_name]=$count
+            
+            if [ $count -gt 2 ]; then
+                print_error "SPAM DETECTED: $player_name sent $count messages in 1 second"
+                send_server_command "/ban $player_ip"
+                send_server_command "WARNING: $player_name (IP: $player_ip) was banned for spamming"
+                return 1
+            fi
+        else
+            # Reset counter if more than 1 second has passed
+            player_message_counts[$player_name]=1
+            player_message_times[$player_name]=$current_time
+        fi
+    else
+        # First message from this player
+        player_message_times[$player_name]=$current_time
+        player_message_counts[$player_name]=1
+    fi
+    
+    # Check for dangerous commands from ranked players
+    local rank=$(get_player_rank "$player_name")
+    if [ "$rank" != "NONE" ]; then
+        # List of dangerous commands
+        local dangerous_commands="/stop /shutdown /restart /banall /kickall /op /deop /save-off"
+        
+        for cmd in $dangerous_commands; do
+            if [[ "$message" == "$cmd"* ]]; then
+                print_error "DANGEROUS COMMAND: $player_name ($rank) attempted to use: $message"
+                record_admin_offense "$player_name"
+                local offense_count=$?
+                
+                if [ $offense_count -ge 2 ]; then
+                    send_server_command "/ban $player_ip"
+                    send_server_command "WARNING: $player_name (IP: $player_ip) was banned for attempting dangerous commands"
+                    return 1
+                else
+                    send_server_command "WARNING: $player_name, dangerous commands are restricted!"
+                    return 0
+                fi
+            fi
+        done
+    fi
+    
+    return 0
+}
+
+# Function to handle unauthorized command
+handle_unauthorized_command() {
+    local player_name="$1" command="$2" target_player="$3"
+    local player_ip=$(get_ip_by_name "$player_name")
+    
+    if is_player_in_list "$player_name" "admin"; then
+        print_error "UNAUTHORIZED COMMAND: Admin $player_name attempted to use $command on $target_player"
+        send_server_command "WARNING: Admin $player_name attempted unauthorized rank assignment!"
+        
+        # NEVER ban the target player - only the admin who issued the command
+        local command_type=""
+        [ "$command" = "/admin" ] && command_type="admin"
+        [ "$command" = "/mod" ] && command_type="mod"
+        
+        if [ -n "$command_type" ]; then
+            send_server_command_silent "/un${command_type} $target_player"
+            remove_from_list_file "$target_player" "$command_type"
+            send_delayed_uncommands "$target_player" "$command_type"
+        fi
+        
+        # Record offense and handle progressive punishment
+        record_admin_offense "$player_name"
+        local offense_count=$?
+        
+        if [ "$offense_count" -eq 1 ]; then
+            send_server_command "$player_name, this is your first warning! Only the server console can assign ranks."
+        elif [ "$offense_count" -eq 2 ]; then
+            send_server_command "$player_name, this is your second warning! Next offense will result in demotion."
+        elif [ "$offense_count" -ge 3 ]; then
+            print_warning "THIRD OFFENSE: Admin $player_name is being demoted to mod"
+            echo "$player_name" >> "$AUTHORIZED_MODS_FILE"
+            sed -i "/^$player_name$/Id" "$AUTHORIZED_ADMINS_FILE"
+            send_server_command_silent "/unadmin $player_name"
+            remove_from_list_file "$player_name" "admin"
+            send_server_command "/mod $player_name"
+            send_server_command "ALERT: Admin $player_name has been demoted to moderator for unauthorized commands!"
+            # Update players.log to reflect the demotion
+            update_player_rank "$player_name" "mod" "$player_ip"
+            clear_admin_offenses "$player_name"
+        fi
+    else
+        print_warning "Non-admin player $player_name attempted to use $command on $target_player"
+        send_server_command "$player_name, you don't have permission to assign ranks."
+        if [ "$command" = "/admin" ]; then
+            send_server_command_silent "/unadmin $target_player"
+            remove_from_list_file "$target_player" "admin"
+            send_delayed_uncommands "$target_player" "admin"
+        elif [ "$command" = "/mod" ]; then
+            send_server_command_silent "/unmod $target_player"
+            remove_from_list_file "$target_player" "mod"
+            send_delayed_uncommands "$target_player" "mod"
+        fi
     fi
 }
 
-# -------------------------
-# Log filter to reduce noise
-# -------------------------
+# Function to filter server log
 filter_server_log() {
     while read -r line; do
-        # Skip some generic lines
-        [[ "$line" == *"Server closed"* || "$line" == *"Starting server"* || "$line" == *"adminlist.txt"* || "$line" == *"modlist.txt"* ]] && continue
+        [[ "$line" == *"Server closed"* || "$line" == *"Starting server"* || \
+          ("$line" == *"SERVER: say"* && "$line" == *"Welcome"*) || \
+          "$line" == *"adminlist.txt"* || "$line" == *"modlist.txt"* ]] && continue
         echo "$line"
     done
 }
 
-# -------------------------
-# Main monitor loop
-# -------------------------
+# Function to cleanup
+cleanup() {
+    print_status "Cleaning up anticheat..."
+    kill $(jobs -p) 2>/dev/null
+    rm -f "${ADMIN_OFFENSES_FILE}.lock" 2>/dev/null
+    exit 0
+}
+
+# Function to monitor log
 monitor_log() {
     local log_file="$1"
     LOG_FILE="$log_file"
-    initialize_files
-
-    print_header "ANTICHEAT SECURITY SYSTEM START"
+    initialize_authorization_files
+    initialize_admin_offenses
+    
+    # Start validation process in background
+    (
+        while true; do 
+            sleep 30
+            validate_authorization
+        done
+    ) &
+    local validation_pid=$!
+    
+    trap cleanup EXIT INT TERM
+    
+    print_header "STARTING ANTICHEAT SECURITY SYSTEM"
     print_status "Monitoring: $log_file"
-    print_status "Screen session: $SCREEN_SERVER"
-
-    # Wait for log file
-    local wait=0
-    while [ ! -f "$log_file" ] && [ $wait -lt 30 ]; do
+    print_status "Port: $PORT"
+    print_status "Log directory: $LOG_DIR"
+    print_header "SECURITY SYSTEM ACTIVE"
+    
+    # Wait for log file to exist
+    local wait_time=0
+    while [ ! -f "$log_file" ] && [ $wait_time -lt 30 ]; do
         sleep 1
-        wait=$((wait + 1))
+        ((wait_time++))
+        [ $((wait_time % 5)) -eq 0 ] && print_status "Waiting for log file to be created..."
     done
+    
     if [ ! -f "$log_file" ]; then
-        print_error "Log file not found: $log_file"
+        print_error "Log file never appeared: $log_file"
+        kill $validation_pid 2>/dev/null
         exit 1
     fi
-
+    
+    # Start monitoring the log
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read -r line; do
-        # Player Connected lines: try to parse "Player Connected NAME | IP | HASH" if available
+        # Check if player is connecting with banned IP
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
-            local pname="${BASH_REMATCH[1]}"
-            local pip="${BASH_REMATCH[2]}"
-            pname="$(echo "$pname" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-            # If IP is temp-banned, kick immediately
-            if is_ip_currently_banned "$pip" >/dev/null 2>&1; then
-                print_warning "Connection attempt from banned IP $pip for player $pname. Kicking."
-                send_server_command "/kick $pname"
+            local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
+            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
+            # Check if IP is currently banned
+            if is_ip_banned "$player_ip"; then
+                print_warning "Banned IP $player_ip attempted to connect as $player_name"
+                send_server_command "/kick $player_name"
                 continue
             fi
-            # Add to players.log if new
-            if ! grep -qi "^${pname}|" "$PLAYERS_LOG" 2>/dev/null; then
-                # default rank NONE
-                echo "${pname}|${pip}|NONE" >> "$PLAYERS_LOG"
-                print_success "New player added to players.log: ${pname} (${pip})"
+            
+            if [[ "$player_name" == *\\* || "$player_name" == */* || "$player_name" == *\$* || "$player_name" == *\(* || "$player_name" == *\)* || "$player_name" == *\;* || "$player_name" == *\`* ]]; then
+                handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
+                continue
             fi
-            print_success "Player connected: $pname (${pip})"
-            continue
+            
+            if ! is_valid_player_name "$player_name"; then
+                handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
+                continue
+            fi
+            
+            # Check for username theft
+            if ! check_username_theft "$player_name" "$player_ip"; then
+                continue
+            fi
+            
+            print_success "Player connected: $player_name (IP: $player_ip)"
         fi
 
-        # Admin rank command lines (handle both /admin and /mod)
-        # Capture full rest of the line as target (to avoid malformed partial tokens)
-        if [[ "$line" =~ ^([^:]+):\s*\/(admin|mod)\s+(.+)$ ]]; then
-            local actor_raw="${BASH_REMATCH[1]}"
-            local cmd="${BASH_REMATCH[2]}"
-            local target_raw="${BASH_REMATCH[3]}"
-            # Trim spaces
-            actor_raw="$(echo "$actor_raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-            target_raw="$(echo "$target_raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-            # Extract valid player name from target_raw
-            local target_name
-            target_name=$(extract_valid_name "$target_raw")
-            # If actor name is malformed, try to extract a valid name
-            local actor_name
-            actor_name=$(extract_valid_name "$actor_raw")
-            if [ -z "$actor_name" ]; then
-                # Actor name invalid - log and continue
-                print_error "Malformed actor name in log: '$actor_raw' - ignoring"
+        if [[ "$line" =~ ([^:]+):\ \/(admin|mod)\ ([^[:space:]]+) ]]; then
+            local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
+            command_user=$(echo "$command_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
+            # Check for command spam first
+            if ! check_command_spam "$command_user"; then
                 continue
             fi
-
-            # If target was not found as a valid name, do NOT ban the target.
-            # Treat as unauthorized attempt by actor.
-            if [ -z "$target_name" ]; then
-                print_warning "Actor $actor_name tried to assign rank to an invalid target: '$target_raw'. Recording offense."
-                handle_unauthorized_command "$actor_name" "/${cmd}" "$target_raw"
+            
+            # Check if target player name is invalid
+            if [[ "$target_player" == *\\* || "$target_player" == */* || "$target_player" == *\$* || "$target_player" == *\(* || "$target_player" == *\)* || "$target_player" == *\;* || "$target_player" == *\`* ]]; then
+                print_error "Admin $command_user attempted to assign rank to invalid player: $target_player"
+                handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
                 continue
             fi
-
-            # If actor is SERVER skip
-            [ "$actor_name" = "SERVER" ] && continue
-
-            # If actor is not a real admin (not in authorized_admins) then treat as unauthorized
-            if ! grep -qi "^${actor_name}$" "$AUTHORIZED_ADMINS_FILE" 2>/dev/null; then
-                print_warning "Non-admin $actor_name attempted /${cmd} on $target_name"
-                handle_unauthorized_command "$actor_name" "/${cmd}" "$target_name"
+            
+            if ! is_valid_player_name "$target_player"; then
+                print_error "Admin $command_user attempted to assign rank to invalid player: $target_player"
+                handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
                 continue
             fi
-
-            # If actor is authorized admin but the assignment is not allowed by server policy (we want only console),
-            # treat as unauthorized attempt by policy.
-            print_warning "Authorized admin $actor_name attempted manual rank assignment /${cmd} on $target_name. Enforcing policy."
-            handle_unauthorized_command "$actor_name" "/${cmd}" "$target_name"
-            continue
+            
+            if [[ "$command_user" == *\\* || "$command_user" == */* || "$command_user" == *\$* || "$command_user" == *\(* || "$command_user" == *\)* || "$command_user" == *\;* || "$command_user" == *\`* ]]; then
+                local ipu=$(get_ip_by_name "$command_user")
+                handle_invalid_player_name "$command_user" "$ipu" ""
+                continue
+            fi
+            
+            if ! is_valid_player_name "$command_user"; then
+                local ipu2=$(get_ip_by_name "$command_user")
+                handle_invalid_player_name "$command_user" "$ipu2" ""
+                continue
+            fi
+            
+            [ "$command_user" != "SERVER" ] && handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
         fi
 
-        # Player disconnected
         if [[ "$line" =~ Player\ Disconnected\ (.+) ]]; then
-            local pname="${BASH_REMATCH[1]}"
-            pname="$(echo "$pname" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-            print_status "Player disconnected: $pname"
-            continue
-        fi
-
-        # Chat or command messages like "NAME: message"
-        if [[ "$line" =~ ^([A-Za-z0-9_]+):\ (.+)$ ]]; then
-            local pname="${BASH_REMATCH[1]}"
-            local msg="${BASH_REMATCH[2]}"
-            # If IP is banned, kick on any activity
-            local pip
-            pip=$(get_ip_by_name "$pname")
-            if is_ip_currently_banned "$pip" >/dev/null 2>&1; then
-                print_warning "Player $pname (IP $pip) is temp-banned. Kicking on activity."
-                send_server_command "/kick $pname"
+            local player_name="${BASH_REMATCH[1]}"
+            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
+            if [[ "$player_name" == *\\* || "$player_name" == */* || "$player_name" == *\$* || "$player_name" == *\(* || "$player_name" == *\)* || "$player_name" == *\;* || "$player_name" == *\`* ]]; then
+                print_warning "Player with invalid name disconnected: $player_name"
                 continue
             fi
-            # Run checks: command spam and dangerous activity
-            check_dangerous_activity "$pname" "$msg"
-            continue
+            
+            if is_valid_player_name "$player_name"; then
+                print_warning "Player disconnected: $player_name"
+            else
+                print_warning "Player with invalid name disconnected: $player_name"
+            fi
         fi
 
+        # Check for chat messages and dangerous commands
+        if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
+            local player_name="${BASH_REMATCH[1]}" message="${BASH_REMATCH[2]}"
+            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
+            if ! is_valid_player_name "$player_name"; then
+                continue
+            fi
+            
+            # Check for dangerous activity
+            check_dangerous_activity "$player_name" "$message"
+        fi
     done
+    
+    kill $validation_pid 2>/dev/null
 }
 
-# -------------------------
-# Usage
-# -------------------------
+# Function to show usage
 show_usage() {
-    print_header "ANTICHEAT - USAGE"
+    print_header "ANTICHEAT SECURITY SYSTEM - USAGE"
     print_status "Usage: $0 <server_log_file> [port]"
     print_status "Example: $0 /path/to/console.log 12153"
+    echo ""
+    print_warning "Note: This script should be run alongside the server"
 }
 
-# Main
+# Main execution
 if [ $# -lt 1 ]; then
     show_usage
     exit 1
 fi
 
-monitor_log "$1"
+if [ $# -eq 1 ] || [ $# -eq 2 ]; then
+    if [ ! -f "$LOG_FILE" ]; then
+        print_error "Log file not found: $LOG_FILE"
+        print_status "Waiting for log file to be created..."
+        local wait_time=0
+        while [ ! -f "$LOG_FILE" ] && [ $wait_time -lt 30 ]; do
+            sleep 1
+            ((wait_time++))
+        done
+        if [ ! -f "$LOG_FILE" ]; then
+            print_error "Log file never appeared: $LOG_FILE"
+            exit 1
+        fi
+    fi
+    monitor_log "$1"
+else
+    show_usage
+    exit 1
+fi
