@@ -75,6 +75,8 @@ handle_invalid_player_name() {
         # Fallback: ban by name if IP is not available
         send_server_command "/ban $clean_name"
     fi
+    # Añadir el comando de kick después del ban
+    send_server_command "/kick $clean_name"
     return 0
 }
 
