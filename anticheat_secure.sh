@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Color codes for output
+# Color codes for output (ASCII escape sequences)
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -43,7 +43,7 @@ declare -A player_message_times
 declare -A player_message_counts
 
 # Config
-SPAM_THRESHOLD=2   # "más de dos mensajes en un segundo" => >2
+SPAM_THRESHOLD=2   # "more than two messages in a single second" => >2
 
 # Validate player names: only A-Z a-z 0-9 and underscore, 1-16 chars
 is_valid_player_name() {
@@ -57,14 +57,13 @@ is_valid_player_name() {
     fi
 }
 
-# Minimal sanitizer for sed/replacement contexts (escapa / y &). 
-# Nota: evitamos depender de esta función para búsquedas: preferimos AWK exacto (IGNORECASE).
+# Minimal sanitizer for sed/replacement contexts (escape / and &)
 sanitize_player_name() {
     local player_name="$1"
     printf '%s' "$player_name" | sed -e 's/[\/&]/\\&/g'
 }
 
-# Log acciones del anticheat
+# Log actions of anticheat
 log_anticheat_action() {
     local action="$1"
     local timestamp
@@ -115,7 +114,7 @@ write_json_file() {
 initialize_authorization_files() {
     [ ! -f "$AUTHORIZED_ADMINS_FILE" ] && touch "$AUTHORIZED_ADMINS_FILE"
     [ ! -f "$AUTHORIZED_MODS_FILE" ] && touch "$AUTHORIZED_MODS_FILE"
-    [ !极f "$PLAYERS_LOG" ] && touch "$PLAYERS_LOG"
+    [ ! -f "$PLAYERS_LOG" ] && touch "$PLAYERS_LOG"
     [ ! -f "$ANTICHEAT_ACTIONS_LOG" ] && touch "$ANTICHEAT_ACTIONS_LOG"
 }
 
@@ -124,7 +123,7 @@ get_player_rank() {
     local player_name="$1"
     if [ -f "$AUTHORIZED_ADMINS_FILE" ] && grep -q -i -x "$player_name" "$AUTHORIZED_ADMINS_FILE" 2>/dev/null; then
         echo "admin"
-    elif [ -f "$AUTHORIZED_MODS_FILE" ] && grep -q -i -x "$player_name极" "$AUTHORIZED_MODS_FILE" 2>/dev/null; then
+    elif [ -f "$AUTHORIZED_MODS_FILE" ] && grep -q -i -x "$player_name" "$AUTHORIZED_MODS_FILE" 2>/dev/null; then
         echo "mod"
     else
         echo "NONE"
@@ -149,7 +148,7 @@ check_username_theft() {
         if [ "$stored_ip" != "$player_ip" ]; then
             if [ "$stored_rank" != "NONE" ]; then
                 print_error "CRITICAL: Username theft detected! $player_name ($stored_rank) from IP $player_ip (expected: $stored_ip)"
-                log_anticheat_action "CRITICAL USERNAME THEFT: $player_name ($stored_rank) from IP $player_ip (expected: $极ored_ip)"
+                log_anticheat_action "CRITICAL USERNAME THEFT: $player_name ($stored_rank) from IP $player_ip (expected: $stored_ip)"
                 send_server_command "/stop"
                 send_server_command "/ban $player_ip"
                 print_error "Server stopped and IP $player_ip banned due to username theft attempt on ranked account!"
@@ -172,14 +171,12 @@ update_players_log() {
     (
         flock -x 200
 
-        # ensure consistent format: trim fields when writing
         local player_rank
         player_rank=$(get_player_rank "$player_name")
         [ -z "$player_rank" ] && player_rank="NONE"
 
-        # check existence (case-insensitive) using awk
         local exists
-        exists=$(awk -F'|' -极 name="$player_name" '
+        exists=$(awk -F'|' -v name="$player_name" '
         BEGIN { IGNORECASE = 1; found = 0 }
         {
             n = $1; gsub(/^[ \t]+|[ \t]+$/, "", n)
@@ -188,7 +185,6 @@ update_players_log() {
         END { print found }' "$PLAYERS_LOG" 2>/dev/null || echo 0)
 
         if [ "$exists" -eq 1 ]; then
-            # update first matching line
             awk -F'|' -v name="$player_name" -v ip="$player_ip" -v rank="$player_rank" '
             BEGIN { IGNORECASE = 1; OFS = " | " }
             {
@@ -197,7 +193,6 @@ update_players_log() {
                     print name, ip, rank
                     printed = 1
                 } else {
-                    # print normalized fields to keep format consistent
                     f1 = $1; f2 = $2; f3 = $3
                     gsub(/^[ \t]+|[ \t]+$/, "", f1); gsub(/^[ \t]+|[ \t]+$/, "", f2); gsub(/^[ \t]+|[ \t]+$/, "", f3)
                     if (f1 == "") next
@@ -206,17 +201,16 @@ update_players_log() {
             }' "$PLAYERS_LOG" > "${PLAYERS_LOG}.tmp" && mv "${PLAYERS_LOG}.tmp" "$PLAYERS_LOG"
             print_warning "Updated player IP in log: $player_name ($player_ip) - $player_rank"
         else
-            # add new player guaranteed with spaces around |
             echo "${player_name} | ${player_ip} | ${player_rank}" >> "$PLAYERS_LOG"
             print_success "Added player to log: $player_name ($player_ip) - $player_rank"
         fi
     ) 200>"${PLAYERS_LOG}.lock"
 }
 
-# Sync authorized lists (source of truth: adminlist.txt / modlist.txt -> authorized_ files)
+# Sync authorized lists (adminlist.txt / modlist.txt -> authorized_ files)
 validate_authorization() {
     local admin_list="$LOG_DIR/adminlist.txt"
-    local mod_list="$LOG_DIR/mod极list.txt"
+    local mod_list="$LOG_DIR/modlist.txt"
 
     if [ -f "$admin_list" ]; then
         while IFS= read -r admin || [ -n "$admin" ]; do
@@ -230,7 +224,7 @@ validate_authorization() {
 
     if [ -f "$mod_list" ]; then
         while IFS= read -r mod || [ -n "$mod" ]; do
-            mod=$(echo "$mod" | sed '极/^[[:space:]]*//;s/[[:space:]]*$//')
+            mod=$(echo "$mod" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             [[ -z "$mod" || "$mod" =~ ^# ]] && continue
             if ! grep -q -i -x "$mod" "$AUTHORIZED_MODS_FILE"; then
                 echo "$mod" >> "$AUTHORIZED_MODS_FILE"
@@ -238,7 +232,6 @@ validate_authorization() {
         done < <(grep -v "^[[:space:]]*#" "$mod_list" 2>/dev/null || true)
     fi
 
-    # Deduplicate and sort normalized files
     [ -f "$AUTHORIZED_ADMINS_FILE" ] && sort -fu "$AUTHORIZED_ADMINS_FILE" -o "$AUTHORIZED_ADMINS_FILE"
     [ -f "$AUTHORIZED_MODS_FILE" ] && sort -fu "$AUTHORIZED_MODS_FILE" -o "$AUTHORIZED_MODS_FILE"
 }
@@ -261,7 +254,7 @@ record_admin_offense() {
         current_offenses=0
     fi
     current_offenses=$((current_offenses + 1))
-    offenses_data=$(echo "$offenses_data" | jq --arg admin "$admin_name" --argjson count "$current_极ffenses" --argjson time "$current_time" '.[$admin] = {"count": $count, "last_offense": $time}')
+    offenses_data=$(echo "$offenses_data" | jq --arg admin "$admin_name" --argjson count "$current_offenses" --argjson time "$current_time" '.[$admin] = {"count": $count, "last_offense": $time}')
     write_json_file "$ADMIN_OFFENSES_FILE" "$offenses_data"
     print_warning "Recorded offense #${current_offenses} for admin ${admin_name}"
     log_anticheat_action "ADMIN OFFENSE: $admin_name - count: $current_offenses"
@@ -280,7 +273,7 @@ clear_admin_offenses() {
 remove_from_list_file() {
     local player_name="$1" list_type="$2"
     local list_file="$LOG_DIR/${list_type}list.txt"
-    [ ! -f "$list_file极" ] && return 1
+    [ ! -f "$list_file" ] && return 1
     if grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i -x "$player_name"; then
         awk -v name="$player_name" 'BEGIN{IGNORECASE=1} $0 !~ "^"name"$" {print}' "$list_file" > "${list_file}.tmp" && mv "${list_file}.tmp" "$list_file"
         return 0
@@ -288,7 +281,7 @@ remove_from_list_file() {
     return 1
 }
 
-# Improved screen session check: look for ".sessionname" in screen -ls output
+# Improved screen session check
 screen_session_exists() {
     local session="$1"
     screen -ls 2>/dev/null | grep -qE "\.${session}(\s|\)|$)"
@@ -332,7 +325,7 @@ get_ip_by_name() {
     if [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then
         echo "unknown"; return 1
     fi
-    awk -F'|' -v pname="$name" 'BEGIN{IGNORECASE=1} /Player Connected/ { part=$1; sub(/.*Player Connected[[:space:]]*/,"",part); gsub(/^[ \t]+|[ \t]+$/,"",part); ip=$2; gsub(/^[ \t]+|[ \t]+$/,"",ip); if(part==pname) last_ip=ip } END{ if(last_ip) print last极; else print "unknown" }' "$LOG_FILE"
+    awk -F'|' -v pname="$name" 'BEGIN{IGNORECASE=1} /Player Connected/ { part=$1; sub(/.*Player Connected[[:space:]]*/,"",part); gsub(/^[ \t]+|[ \t]+$/,"",part); ip=$2; gsub(/^[ \t]+|[ \t]+$/,"",ip); if(part==pname) last_ip=ip } END{ if(last_ip) print last_ip; else print "unknown" }' "$LOG_FILE"
 }
 
 # Ban by IP when possible
@@ -351,62 +344,53 @@ ban_player() {
     fi
 }
 
-# Handle unauthorized command
-handle_unauthorized_command() {
-    local player_name="$1" command="$2" target="$3"
-    local player_ip
-    player_ip=$(get_ip_by_name "$player_name")
-    print_error "UNAUTHORIZED COMMAND: $player_name attempted $command $target"
-    log_anticheat_action "UNAUTHORIZED COMMAND: $player_name ($player_ip) attempted $command $target"
-    ban_player "$player_name" "attempting unauthorized command: $command $target"
-}
-
 # Detect spam & dangerous commands (returns 0 OK, non-zero if action taken)
 detect_spam_and_dangerous_commands() {
     local line="$1"
-    
-    # Extraer la parte del mensaje eliminando el timestamp y prefijos del log
-    local message_part
-    if [[ "$line" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
-        # Eliminar timestamp y prefijo del servidor
-        message_part=$(echo "$line" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+\ [^]]+]\ //')
-    else
-        message_part="$line"
-    fi
-    
-    if [[ "$message_part" =~ ^([A-Za-z0-9_]{1,16}):[[:space:]]*(.+)$ ]]; then
+
+    # Look for "<player>: <message>" anywhere in the line (not anchored to start)
+    if [[ "$line" =~ ([A-Za-z0-9_]{1,16})[:][[:space:]]*(.+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}" message="${BASH_REMATCH[2]}"
         player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        ! is_valid_player_name "$player_name" && return 0
-        
-        # Usar tiempo de alta precisión (milisegundos) para detectar spam
-        local current_time_ms
-        current_time_ms=$(date +%s%3N)  # Segundos + milisegundos
-        
+
+        # Skip server messages
+        if [ "$player_name" = "SERVER" ]; then
+            return 0
+        fi
+
+        # Skip invalid player names
+        if ! is_valid_player_name "$player_name"; then
+            return 0
+        fi
+
+        local current_time
+        current_time=$(date +%s)
+
+        # Initialize spam detection for player if not exists
         if [ -z "${player_message_times[$player_name]}" ]; then
-            player_message_times["$player_name"]=$current_time_ms
+            player_message_times["$player_name"]=$current_time
             player_message_counts["$player_name"]=1
             return 0
         fi
-        
-        # Calcular diferencia de tiempo en milisegundos
-        local time_diff=$((current_time_ms - ${player_message_times[$player_name]}))
-        
-        if [ "$time_diff" -lt 1000 ]; then  # Menos de 1 segundo
+
+        # If same second, increment counter
+        if [ "$current_time" -eq "${player_message_times[$player_name]}" ]; then
             player_message_counts["$player_name"]=$((player_message_counts[$player_name] + 1))
+
+            # More than SPAM_THRESHOLD messages in the same second => spam
             if [ "${player_message_counts[$player_name]}" -gt "$SPAM_THRESHOLD" ]; then
-                print_error "SPAM DETECTED: $player_name sent ${player_message_counts[$player_name]} messages in $time_diff ms"
+                print_error "SPAM DETECTED: $player_name sent ${player_message_counts[$player_name]} messages in one second"
                 ban_player "$player_name" "spamming the chat"
                 send_server_command "WARNING: $player_name has been banned for spamming the chat!"
                 return 1
             fi
         else
-            # Resetear contador si ha pasado más de 1 segundo
-            player_message_times["$player_name"]=$current_time_ms
+            # New second: reset counter
+            player_message_times["$player_name"]=$current_time
             player_message_counts["$player_name"]=1
         fi
 
-        # Dangerous commands (includes admin/mod)
+        # Check for dangerous commands (includes admin/mod)
         if [[ "$message" =~ ^\/(stop|shutdown|restart|reload|admin|mod)\b ]]; then
             local player_rank ip offense_count
             player_rank=$(get_player_rank "$player_name")
@@ -417,7 +401,7 @@ detect_spam_and_dangerous_commands() {
                 if [ "$offense_count" -ge 2 ]; then
                     if [ -n "$ip" ] && [ "$ip" != "unknown" ]; then
                         send_server_command "/ban $ip"
-                        send_server_command "WARNING: $player_name ($player_rank极 has been banned for repeated dangerous commands (IP: $ip)!"
+                        send_server_command "WARNING: $player_name ($player_rank) has been banned for repeated dangerous commands (IP: $ip)!"
                         log_anticheat_action "BANNED RANKED: $player_name ($player_rank) IP:$ip for repeated dangerous commands"
                     else
                         send_server_command "/ban $player_name"
@@ -440,17 +424,16 @@ detect_spam_and_dangerous_commands() {
             fi
         fi
     fi
+
     return 0
 }
 
 # Filter server log lines we don't want to process
 filter_server_log() {
     while read -r line; do
-        # skip some known noise
         if [[ "$line" == *"Server closed"* || "$line" == *"Starting server"* || "$line" == *"adminlist.txt"* || "$line" == *"modlist.txt"* ]]; then
             continue
         fi
-        # skip server welcome messages "SERVER: say" that include "Welcome"
         if [[ "$line" == *"SERVER: say"* && "$line" == *"Welcome"* ]]; then
             continue
         fi
@@ -475,7 +458,7 @@ monitor_log() {
 
     # Background periodic validation
     (
-        while true极 do
+        while true; do
             sleep 30
             validate_authorization
         done
@@ -503,9 +486,9 @@ monitor_log() {
         exit 1
     fi
 
-    # Use process substitution to avoid subshell for while-loop
+    # Read from tail through filter_server_log (process substitution keeps loop in current shell)
     while read -r line; do
-        # If detect did action, skip further processing of this line
+        # If detect did action (non-zero), skip further processing of this line
         if ! detect_spam_and_dangerous_commands "$line"; then
             continue
         fi
@@ -575,7 +558,7 @@ monitor_log() {
             local pname
             pname=$(echo "$line" | sed 's/.*Player Disconnected[[:space:]]*//; s/^[[:space:]]*//; s/[[:space:]]*$//')
             if [[ "$pname" == *\\* || "$pname" == */* ]]; then
-                print_warning "Player with invalid name disconnected: $极name"
+                print_warning "Player with invalid name disconnected: $pname"
                 continue
             fi
             if is_valid_player_name "$pname"; then
