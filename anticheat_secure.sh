@@ -40,10 +40,13 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 PLAYERS_LOG="$LOG_DIR/players.log"
 SCREEN_SERVER="blockheads_server_$PORT"
+ADMIN_SPAM_FILE="$LOG_DIR/admin_spam_$PORT.json"
 
 # Track player messages for spam detection
 declare -A player_message_times
 declare -A player_message_counts
+declare -A admin_command_times
+declare -A admin_command_counts
 
 # Function to validate player names
 is_valid_player_name() {
@@ -129,6 +132,7 @@ validate_authorization() {
 # Function to initialize admin offenses
 initialize_admin_offenses() {
     [ ! -f "$ADMIN_OFFENSES_FILE" ] && echo '{}' > "$ADMIN_OFFENSES_FILE"
+    [ ! -f "$ADMIN_SPAM_FILE" ] && echo '{}' > "$ADMIN_SPAM_FILE"
 }
 
 # Function to record admin offense
@@ -290,6 +294,69 @@ check_username_theft() {
     return 0
 }
 
+# Function to check for admin command spam
+check_admin_command_spam() {
+    local admin_name="$1" current_time=$(date +%s)
+    
+    # Initialize if not set
+    if [ -z "${admin_command_times[$admin_name]}" ]; then
+        admin_command_times[$admin_name]=$current_time
+        admin_command_counts[$admin_name]=1
+        return 0
+    fi
+    
+    local last_time=${admin_command_times[$admin_name]}
+    local count=${admin_command_counts[$admin_name]}
+    
+    # Reset count if more than 1 second has passed
+    if [ $((current_time - last_time)) -gt 1 ]; then
+        admin_command_times[$admin_name]=$current_time
+        admin_command_counts[$admin_name]=1
+        return 0
+    fi
+    
+    # Increment count
+    count=$((count + 1))
+    admin_command_counts[$admin_name]=$count
+    
+    if [ $count -gt 1 ]; then
+        print_error "ADMIN COMMAND SPAM DETECTED: $admin_name issued $count commands in 1 second"
+        
+        # Get admin IP
+        local admin_ip=$(get_ip_by_name "$admin_name")
+        
+        # Record spam offense
+        local spam_data=$(read_json_file "$ADMIN_SPAM_FILE" 2>/dev/null || echo '{}')
+        local current_offenses=$(echo "$spam_data" | jq -r --arg admin "$admin_name" '.[$admin]?.count // 0')
+        current_offenses=$((current_offenses + 1))
+        
+        spam_data=$(echo "$spam_data" | jq --arg admin "$admin_name" \
+            --argjson count "$current_offenses" --argjson time "$current_time" \
+            '.[$admin] = {"count": $count, "last_offense": $time, "ip": "'"$admin_ip"'"}')
+        write_json_file "$ADMIN_SPAM_FILE" "$spam_data"
+        
+        # Ban IP for 5 minutes on first offense
+        if [ $current_offenses -eq 1 ]; then
+            send_server_command "/ban $admin_ip"
+            send_server_command "WARNING: Admin $admin_name (IP: $admin_ip) was banned for 5 minutes for command spam"
+            
+            # Schedule unban after 5 minutes
+            (
+                sleep 300
+                send_server_command "/unban $admin_ip"
+                print_success "Unbanned IP: $admin_ip after spam ban"
+            ) &
+        fi
+        
+        # Kick player every time they try to join during ban period
+        send_server_command "/kick $admin_name"
+        
+        return 1
+    fi
+    
+    return 0
+}
+
 # Function to detect spam and dangerous commands
 check_dangerous_activity() {
     local player_name="$1" message="$2" current_time=$(date +%s)
@@ -299,6 +366,13 @@ check_dangerous_activity() {
     
     # Get player IP for banning
     local player_ip=$(get_ip_by_name "$player_name")
+    
+    # Check for admin command spam
+    if is_player_in_list "$player_name" "admin" && [[ "$message" =~ ^/ ]]; then
+        if ! check_admin_command_spam "$player_name"; then
+            return 1
+        fi
+    fi
     
     # Check for spam (more than 2 messages in 1 second)
     if [ -n "${player_message_times[$player_name]}" ]; then
@@ -374,7 +448,9 @@ handle_unauthorized_command() {
         if [ "$offense_count" -eq 1 ]; then
             send_server_command "$player_name, this is your first warning! Only the server console can assign ranks."
         elif [ "$offense_count" -eq 2 ]; then
-            print_warning "SECOND OFFENSE: Admin $player_name is being demoted to mod"
+            send_server_command "$player_name, this is your second warning! Next offense will result in demotion."
+        elif [ "$offense_count" -eq 3 ]; then
+            print_warning "THIRD OFFENSE: Admin $player_name is being demoted to mod"
             echo "$player_name" >> "$AUTHORIZED_MODS_FILE"
             sed -i "/^$player_name$/Id" "$AUTHORIZED_ADMINS_FILE"
             send_server_command_silent "/unadmin $player_name"
@@ -415,6 +491,7 @@ cleanup() {
     print_status "Cleaning up anticheat..."
     kill $(jobs -p) 2>/dev/null
     rm -f "${ADMIN_OFFENSES_FILE}.lock" 2>/dev/null
+    rm -f "${ADMIN_SPAM_FILE}.lock" 2>/dev/null
     exit 0
 }
 
@@ -461,6 +538,21 @@ monitor_log() {
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
+            # Check for spam ban
+            local spam_data=$(read_json_file "$ADMIN_SPAM_FILE" 2>/dev/null || echo '{}')
+            local spam_info=$(echo "$spam_data" | jq -r --arg player "$player_name" '.[$player] // empty')
+            if [ -n "$spam_info" ]; then
+                local spam_ip=$(echo "$spam_info" | jq -r '.ip')
+                local spam_time=$(echo "$spam_info" | jq -r '.last_offense')
+                local current_time=$(date +%s)
+                
+                if [ "$player_ip" = "$spam_ip" ] && [ $((current_time - spam_time)) -lt 300 ]; then
+                    send_server_command "/kick $player_name"
+                    print_error "Kicked $player_name for previous command spam offense"
+                    continue
+                fi
+            fi
             
             if [[ "$player_name" == *\\* || "$player_name" == */* || "$player_name" == *\$* || "$player_name" == *\(* || "$player_name" == *\)* || "$player_name" == *\;* || "$player_name" == *\`* ]]; then
                 handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
