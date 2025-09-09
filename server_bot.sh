@@ -138,7 +138,6 @@ show_welcome_message() {
     local last_welcome_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_welcome_time // 0')
     last_welcome_time=${last_welcome_time:-0}
     
-    # 30-second cooldown for welcome messages
     [ "$force_send" -eq 1 ] || [ "$last_welcome_time" -eq 0 ] || [ $((current_time - last_welcome_time)) -ge 30 ] && {
         [ "$is_new_player" = "true" ] && {
             send_server_command "Hello $player_name! Welcome to the server. Type !help to check available commands."
@@ -363,21 +362,19 @@ server_sent_welcome_recently() {
     return 1
 }
 
-# Function to filter server log - only show economy-related messages
+# Function to filter server log - ONLY SHOW COMMAND-RELATED INFO
 filter_server_log() {
     while read -r line; do
-        # Skip irrelevant server messages
-        [[ "$line" == *"Server closed"* || "$line" == *"Starting server"* || \
-          "$line" == *"adminlist.txt"* || "$line" == *"modlist.txt"* || \
-          "$line" == *"World load complete"* || "$line" == *"using seed:"* || \
-          "$line" == *"save delay:"* || "$line" == *"Exiting World"* || \
-          "$line" == *"Loading world named"* ]] && continue
-        
-        # Show only player connections, disconnections, and chat messages with economy commands
-        if [[ "$line" =~ Player\ Connected || "$line" =~ Player\ Disconnected || \
-              ("$line" =~ :\ .*&& ("$line" =~ !tickets || "$line" =~ !buy || "$line" =~ !give || "$line" =~ !help)) ]]; then
-            echo "$line"
+        # Filter out spammy console messages, only show important info
+        if [[ "$line" == *"Server closed"* || "$line" == *"Starting server"* || \
+              "$line" == *"adminlist.txt"* || "$line" == *"modlist.txt"* || \
+              "$line" == *"World saved"* || "$line" == *"Player Connected"* || \
+              "$line" == *"Player Disconnected"* || "$line" == *"SERVER: say"* || \
+              "$line" == *"ticket"* || "$line" == *"!help"* || "$line" == *"!buy"* || \
+              "$line" == *"!give"* || "$line" == *"!set"* || "$line" == *"!tickets"* ]]; then
+            continue
         fi
+        echo "$line"
     done
 }
 
@@ -441,7 +438,7 @@ monitor_log() {
         exit 1
     fi
 
-    # Start monitoring the log
+    # Start monitoring the log - ONLY SHOW COMMAND-RELATED INFO
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read -r line; do
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
@@ -498,7 +495,10 @@ monitor_log() {
             continue
         fi
 
-        print_status "Other log line: $line"
+        # Only show command-related information, filter out spam
+        if [[ "$line" == *"!help"* || "$line" == *"!tickets"* || "$line" == *"!buy"* || "$line" == *"!give"* || "$line" == *"!set"* ]]; then
+            print_status "Command detected: $line"
+        fi
     done
 
     rm -f "$admin_pipe"
