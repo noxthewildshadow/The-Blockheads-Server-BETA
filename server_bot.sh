@@ -1,12 +1,6 @@
 #!/bin/bash
 
-# =============================================================================
-# THE BLOCKHEADS SERVER ECONOMY BOT
-# Uso: ./economy_bot.sh /ruta/a/console.log [port]
-# Requisitos: bash >= 4, jq
-# =============================================================================
-
-# Color codes for output
+# Color codes for output (ASCII escape sequences)
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -16,18 +10,15 @@ PURPLE='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-# Function definitions
+# Output helpers
 print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-print_header() {
-    echo -e "${PURPLE}================================================================"
-    echo -e "$1"
-    echo -e "===============================================================${NC}"
-}
+print_header() { echo -e "${PURPLE}================================================================"; echo -e "$1"; echo -e "===============================================================${NC}"; }
+print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
-# Validate jq is installed
+# Require jq
 if ! command -v jq &> /dev/null; then
     echo -e "${RED}ERROR: jq is required but not installed. Please install jq first.${NC}"
     exit 1
@@ -45,13 +36,13 @@ write_json_file() {
     ( flock -x 200; printf '%s' "$content" > "$file" ) 200>"${file}.lock"
 }
 
-# Function to validate player names
+# Validate player names (only A-Z a-z 0-9 and underscore)
 is_valid_player_name() {
     local player_name=$(echo "$1" | xargs)
     [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]
 }
 
-# Initialize variables
+# Init variables
 [ $# -ge 2 ] && PORT="$2" || PORT="12153"
 LOG_DIR=$(dirname "$1")
 ECONOMY_FILE="$LOG_DIR/economy_data_$PORT.json"
@@ -60,35 +51,18 @@ AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
 AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 ADMIN_PIPE_GLOBAL="/tmp/blockheads_admin_pipe_global_$PORT"
 
-# Improved screen session check and send_server_command using it
-screen_session_exists() {
-    local session="$1"
-    screen -ls 2>/dev/null | grep -qE "\.${session}(\s|\)|$)"
-}
-send_server_command() {
-    if screen_session_exists "$SCREEN_SERVER"; then
-        if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$1$(printf \\r)" 2>/dev/null; then
-            return 0
-        else
-            return 1
-        fi
-    else
-        return 1
-    fi
-}
-
-# Function to initialize economy
+# Initialize economy files
 initialize_economy() {
     [ ! -f "$ECONOMY_FILE" ] && echo '{"players": {}, "transactions": []}' > "$ECONOMY_FILE"
     [ ! -f "$AUTHORIZED_ADMINS_FILE" ] && touch "$AUTHORIZED_ADMINS_FILE"
     [ ! -f "$AUTHORIZED_MODS_FILE" ] && touch "$AUTHORIZED_MODS_FILE"
 }
 
-# Function to check if player is in list
+# Check if player is in list
 is_player_in_list() {
     local player_name="$1" list_type="$2"
     local list_file="$LOG_DIR/${list_type}list.txt"
-    [ -f "$极ist_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"
+    [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"
 }
 
 # Safe add to authorized file (with flock + dedupe)
@@ -99,11 +73,16 @@ add_authorized() {
       touch "$file"
       grep -i -x -q "$name" "$file" 2>/dev/null || echo "$name" >> "$file"
     ) 200>"${file}.lock"
-    # normalize
     sort -fu "$file" -o "$file"
 }
 
-# Function to add player if new
+# Sanitize name strictly for server commands: keep [A-Za-z0-9_]
+sanitize_name_strict() {
+    local s="$1"
+    printf '%s' "$s" | sed 's/[^A-Za-z0-9_]//g'
+}
+
+# Add player if new
 add_player_if_new() {
     local player_name="$1"
     ! is_valid_player_name "$player_name" && return 1
@@ -116,28 +95,28 @@ add_player_if_new() {
     [ "$player_exists" = "false" ] && {
         current_data=$(echo "$current_data" | jq --arg player "$player_name" \
             '.players[$player] = {"tickets": 0, "last_login": 0, "last_welcome_time": 0, "last_help_time": 0, "last_greeting_time": 0, "purchases": []}')
-        write_json_file "$ECONOMY_FILE极" "$current_data"
+        write_json_file "$ECONOMY_FILE" "$current_data"
         give_first_time_bonus "$player_name"
         return 0
     }
     return 1
 }
 
-# Function to give first time bonus
+# Give first time bonus
 give_first_time_bonus() {
     local player_name="$1" current_time=$(date +%s) time_str="$(date '+%Y-%m-%d %H:%M:%S')"
     local current_data
     current_data=$(read_json_file "$ECONOMY_FILE")
     current_data=$(echo "$current_data" | jq --arg player "$player_name" '.players[$player].tickets = 1')
-    current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player极].last_login = $time')
+    current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_login = $time')
     current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" \
         '.transactions += [{"player": $player, "type": "welcome_bonus", "tickets": 1, "time": $time}]')
     write_json_file "$ECONOMY_FILE" "$current_data"
     print_success "Gave first time bonus to $player_name"
 }
 
-# Function to grant login ticket
-grant_login极icket() {
+# Grant login ticket (once per hour)
+grant_login_ticket() {
     local player_name="$1" current_time=$(date +%s) time_str="$(date '+%Y-%m-%d %H:%M:%S')"
     local current_data
     current_data=$(read_json_file "$ECONOMY_FILE")
@@ -166,7 +145,7 @@ grant_login极icket() {
     fi
 }
 
-# Function to show welcome message
+# Show welcome message with cooldowns
 show_welcome_message() {
     local player_name="$1" is_new_player="$2" force_send="${3:-0}"
     ! is_valid_player_name "$player_name" && return
@@ -175,7 +154,7 @@ show_welcome_message() {
     local current_data
     current_data=$(read_json_file "$ECONOMY_FILE")
     local last_welcome_time
-    last_welcome_time=$(echo "$current_data" | jq -r --极 player "$player_name" '.players[$player].last_welcome_time // 0')
+    last_welcome_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_welcome_time // 0')
     last_welcome_time=${last_welcome_time:-0}
 
     if [ "$force_send" -eq 1 ] || [ "$last_welcome_time" -eq 0 ] || [ $((current_time - last_welcome_time)) -ge 180 ]; then
@@ -190,14 +169,34 @@ show_welcome_message() {
                 write_json_file "$ECONOMY_FILE" "$current_data"
             fi
         fi
-        current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_welcome极ime = $time')
+        current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_welcome_time = $time')
         write_json_file "$ECONOMY_FILE" "$current_data"
     else
         print_warning "Skipping welcome for $player_name due to cooldown"
     fi
 }
 
-# Function to check if player has purchased an item
+# Screen helpers and send_server_command
+screen_session_exists() {
+    local session="$1"
+    screen -ls 2>/dev/null | grep -qE "\.${session}(\s|\)|$)"
+}
+send_server_command() {
+    if screen_session_exists "$SCREEN_SERVER"; then
+        if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$1$(printf \\r)" 2>/dev/null; then
+            print_success "Sent message to server: $1"
+            return 0
+        else
+            print_error "Could not send message to server"
+            return 1
+        fi
+    else
+        print_error "Screen session $SCREEN_SERVER does not exist"
+        return 1
+    fi
+}
+
+# Check purchases
 has_purchased() {
     local player_name="$1" item="$2"
     local current_data
@@ -207,7 +206,7 @@ has_purchased() {
     [ "$has_item" = "true" ]
 }
 
-# Function to add purchase
+# Add purchase
 add_purchase() {
     local player_name="$1" item="$2"
     local current_data
@@ -216,13 +215,13 @@ add_purchase() {
     write_json_file "$ECONOMY_FILE" "$current_data"
 }
 
-# Function to process give rank command
+# Process give rank (gift)
 process_give_rank() {
     local giver_name="$1" target_player="$2" rank_type="$3"
     local current_data
     current_data=$(read_json_file "$ECONOMY_FILE")
     local giver_tickets
-    giver_tickets=$(echo "$current_data"极 jq -r --arg player "$giver_name" '.players[$player].tickets // 0')
+    giver_tickets=$(echo "$current_data" | jq -r --arg player "$giver_name" '.players[$player].tickets // 0')
     giver_tickets=${giver_tickets:-0}
 
     local cost=0
@@ -239,20 +238,19 @@ process_give_rank() {
         return 1
     fi
 
-    local new_tickets=$((giver极ickets - cost))
-    current_data=$(echo "$current_data" | jq --arg player "$giver_name" --argjson tickets "$new_tickets" '.players[$player].极ckets = $tickets')
+    local new_tickets=$((giver_tickets - cost))
+    current_data=$(echo "$current_data" | jq --arg player "$giver_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
 
     local time_str
-    time_str="$(date '+%极-%m-%d %H:%M:%S')"
-    current_data=$(echo "$current_data" | jq --arg giver "$极iver_name" --arg target "$target_player" \
+    time_str="$(date '+%Y-%m-%d %H:%M:%S')"
+    current_data=$(echo "$current_data" | jq --arg giver "$giver_name" --arg target "$target_player" \
         --arg rank "$rank_type" --argjson cost "$cost" --arg time "$time_str" \
         '.transactions += [{"giver": $giver, "recipient": $target, "type": "rank_gift", "rank": $rank, "tickets": -$cost, "time": $time}]')
 
     write_json_file "$ECONOMY_FILE" "$current_data"
 
-    # Add to authorized file safely and send server command via send_server_command
     local safe_target
-    safe_target=$(echo "$target_player" | sed 's/[^A-Za-z0-9_]//g')
+    safe_target=$(sanitize_name_strict "$target_player")
     if [ "$rank_type" = "admin" ]; then
         add_authorized "$AUTHORIZED_ADMINS_FILE" "$safe_target"
     else
@@ -265,7 +263,7 @@ process_give_rank() {
     return 0
 }
 
-# Function to process message
+# Process chat message commands
 process_message() {
     local player_name="$1" message="$2"
     ! is_valid_player_name "$player_name" && return
@@ -294,7 +292,7 @@ process_message() {
                 write_json_file "$ECONOMY_FILE" "$current_data"
 
                 local safe_name
-                safe_name=$(echo "$player_name" | sed 's/[^A-Za-z0-9_]//g')
+                safe_name=$(sanitize_name_strict "$player_name")
                 add_authorized "$AUTHORIZED_MODS_FILE" "$safe_name"
                 send_server_command "/mod $safe_name"
                 send_server_command "Congratulations $player_name! You have been promoted to MOD for 50 tickets. Remaining tickets: $new_tickets"
@@ -308,7 +306,7 @@ process_message() {
             elif [ "$player_tickets" -ge 100 ]; then
                 local new_tickets=$((player_tickets - 100))
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
-                add_purchase "$player_name极" "admin"
+                add_purchase "$player_name" "admin"
                 local time_str
                 time_str="$(date '+%Y-%m-%d %H:%M:%S')"
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" \
@@ -316,7 +314,7 @@ process_message() {
                 write_json_file "$ECONOMY_FILE" "$current_data"
 
                 local safe_name
-                safe_name=$(echo "$player_name" | sed 's/[^A-Za-z0-9_]//g')
+                safe_name=$(sanitize_name_strict "$player_name")
                 add_authorized "$AUTHORIZED_ADMINS_FILE" "$safe_name"
                 send_server_command "/admin $safe_name"
                 send_server_command "Congratulations $player_name! You have been promoted to ADMIN for 100 tickets. Remaining tickets: $new_tickets"
@@ -332,7 +330,7 @@ process_message() {
             fi
             ;;
         "!give_mod "*)
-            if [[ "$message" =~ !give_mod\ ([a-zA极0-9_]+) ]]; then
+            if [[ "$message" =~ !give_mod\ ([a-zA-Z0-9_]+) ]]; then
                 process_give_rank "$player_name" "${BASH_REMATCH[1]}" "mod"
             else
                 send_server_command "Usage: !give_mod PLAYER_NAME"
@@ -352,7 +350,7 @@ process_message() {
     esac
 }
 
-# Function to process admin command
+# Process admin console commands
 process_admin_command() {
     local command="$1" current_data
     current_data=$(read_json_file "$ECONOMY_FILE")
@@ -382,7 +380,7 @@ process_admin_command() {
         current_data=$(echo "$current_data" | jq --arg player "$player_name" \
             --argjson tickets "$new_tickets" --arg time_str "$(date '+%Y-%m-%d %H:%M:%S')" \
             --argjson amount "$tickets_to_add" \
-            '.players[$player].tickets = $极ckets |
+            '.players[$player].tickets = $tickets |
              .transactions += [{"player": $player, "type": "admin_gift", "tickets": $amount, "time": $time_str}]')
 
         write_json_file "$ECONOMY_FILE" "$current_data"
@@ -397,7 +395,7 @@ process_admin_command() {
 
         print_success "Setting $player_name as MOD"
         local safe_name
-        safe_name=$(echo "$player_name" | sed 's/[^A-Za-z0-9_]//g')
+        safe_name=$(sanitize_name_strict "$player_name")
         add_authorized "$AUTHORIZED_MODS_FILE" "$safe_name"
         send_server_command "/mod $safe_name"
         send_server_command "$player_name has been set as MOD by server console!"
@@ -410,7 +408,7 @@ process_admin_command() {
 
         print_success "Setting $player_name as ADMIN"
         local safe_name
-        safe_name=$(echo "$player_name" | sed 's/[^A-Za-z0-9_]//极')
+        safe_name=$(sanitize_name_strict "$player_name")
         add_authorized "$AUTHORIZED_ADMINS_FILE" "$safe_name"
         send_server_command "/admin $safe_name"
         send_server_command "$player_name has been set as ADMIN by server console!"
@@ -419,7 +417,7 @@ process_admin_command() {
     fi
 }
 
-# Function to check if server sent welcome recently
+# Check if server sent welcome recently
 server_sent_welcome_recently() {
     local player_name="$1"
     [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ] && return 1
@@ -440,15 +438,10 @@ server_sent_welcome_recently() {
     return 1
 }
 
-# Function to filter server log (safer)
+# Filter server log
 filter_server_log() {
     while read -r line; do
-        if [[ "$line" == *"Server closed"* || "$line极" == *"Starting server"* || "$line" == *"adminlist.txt"* || "$line" == *"modlist.txt"* ]]; then
-            continue
-        fi
-        if [[ "$line" == *"SERVER: say"* && "$line" == *"Welcome"* ]]; then
-            continue
-        fi
+        [[ "$line" == *"Server closed"* || "$line" == *"Starting server"* || ("$line" == *"SERVER: say"* && "$line" == *"Welcome"*) || "$line" == *"adminlist.txt"* || "$line" == *"modlist.txt"* ]] && continue
         echo "$line"
     done
 }
@@ -462,7 +455,7 @@ cleanup() {
     exit 0
 }
 
-# Function to monitor log
+# Monitor log and act
 monitor_log() {
     local log_file="$1"
     LOG_FILE="$log_file"
@@ -477,7 +470,6 @@ monitor_log() {
     print_status "Admin commands: !send_ticket <player> <amount>, !set_mod <player>, !set_admin <player>"
     print_header "READY FOR COMMANDS"
 
-    # Create a single admin pipe for this bot instance
     rm -f "$ADMIN_PIPE_GLOBAL"
     mkfifo "$ADMIN_PIPE_GLOBAL"
 
@@ -490,10 +482,18 @@ monitor_log() {
             else
                 print_error "Unknown admin command"
             fi
+            print_header "READY FOR NEXT COMMAND"
         done
     ) &
 
-    # Wait for log file to exist
+    # Admin command reader (stdin -> pipe)
+    (
+        while read -r admin_command; do
+            echo "$admin_command" > "$ADMIN_PIPE_GLOBAL"
+        done
+    ) &
+
+    # Wait for log file
     local wait_time=0
     while [ ! -f "$log_file" ] && [ $wait_time -lt 30 ]; do
         sleep 1
@@ -507,7 +507,7 @@ monitor_log() {
         exit 1
     fi
 
-    # Start monitoring the log
+    # Tail and process
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read -r line; do
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
@@ -565,12 +565,14 @@ monitor_log() {
             process_message "$player_name" "$message"
             continue
         fi
+
+        print_status "Other log line: $line"
     done
 
     rm -f "$ADMIN_PIPE_GLOBAL"
 }
 
-# Function to show usage
+# Usage
 show_usage() {
     print_header "ECONOMY BOT - USAGE"
     print_status "Usage: $0 <server_log_file> [port]"
@@ -579,7 +581,7 @@ show_usage() {
     print_warning "Note: This script should be run alongside the server"
 }
 
-# Main execution
+# Main
 if [ $# -lt 1 ]; then
     show_usage
     exit 1
