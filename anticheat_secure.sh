@@ -41,20 +41,22 @@ AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 PLAYERS_LOG="$LOG_DIR/players.log"
 SCREEN_SERVER="blockheads_server_$PORT"
 
-# Track player messages and commands for spam detection
+# Track player messages for spam detection
 declare -A player_message_times
 declare -A player_message_counts
-declare -A player_command_times
 
-# Function to extract real player name from ID-prefixed format
-extract_real_name() {
+# Track admin commands for spam detection
+declare -A admin_last_command_time
+declare -A admin_command_count
+
+# Function to normalize player names
+normalize_player_name() {
     local name="$1"
-    # Remove any numeric prefix with bracket (e.g., "12345] ")
-    if [[ "$name" =~ ^[0-9]+\]\ (.+)$ ]]; then
-        echo "${BASH_REMATCH[1]}"
-    else
-        echo "$name"
-    fi
+    # Remove numeric ID prefix and any following non-alphanumeric characters
+    name=$(echo "$name" | sed -E 's/^[0-9]+\]?[[:space:]]*//')
+    # Remove any remaining invalid characters (keep only A-Z, a-z, 0-9, _)
+    name=$(echo "$name" | tr -cd '[:alnum:]_')
+    echo "$name"
 }
 
 # Function to validate player names
@@ -365,25 +367,6 @@ check_dangerous_activity() {
     return 0
 }
 
-# Function to handle command spam
-handle_command_spam() {
-    local player_name="$1" player_ip="$2"
-    print_error "COMMAND SPAM DETECTED: $player_name sent multiple commands in less than 1 second"
-    
-    # Ban the IP for 5 minutes
-    send_server_command "/ban $player_ip"
-    send_server_command "WARNING: $player_name (IP: $player_ip) was banned for 5 minutes for command spamming"
-    
-    # Schedule unban after 5 minutes
-    (
-        sleep 300
-        send_server_command "/unban $player_ip"
-        print_success "Unbanned IP: $player_ip after 5 minutes"
-    ) &
-    
-    return 1
-}
-
 # Function to handle unauthorized command
 handle_unauthorized_command() {
     local player_name="$1" command="$2" target_player="$3"
@@ -392,49 +375,35 @@ handle_unauthorized_command() {
     if is_player_in_list "$player_name" "admin"; then
         print_error "UNAUTHORIZED COMMAND: Admin $player_name attempted to use $command on $target_player"
         send_server_command "WARNING: Admin $player_name attempted unauthorized rank assignment!"
-        
-        # Remove the unauthorized rank assignment immediately
         local command_type=""
         [ "$command" = "/admin" ] && command_type="admin"
         [ "$command" = "/mod" ] && command_type="mod"
-        
         if [ -n "$command_type" ]; then
             send_server_command_silent "/un${command_type} $target_player"
             remove_from_list_file "$target_player" "$command_type"
             send_delayed_uncommands "$target_player" "$command_type"
         fi
-        
-        # Record offense and handle based on count
         record_admin_offense "$player_name"
         local offense_count=$?
-        
         if [ "$offense_count" -eq 1 ]; then
             send_server_command "$player_name, this is your first warning! Only the server console can assign ranks."
         elif [ "$offense_count" -eq 2 ]; then
-            send_server_command "$player_name, this is your second warning! Next offense will result in demotion."
+            send_server_command "$player_name, this is your second warning! One more and you will be demoted to mod."
         elif [ "$offense_count" -ge 3 ]; then
             print_warning "THIRD OFFENSE: Admin $player_name is being demoted to mod"
-            
-            # Update authorized files
-            echo "$player_name" >> "$AUTHORIZED_MODS_FILE"
-            sed -i "/^$player_name$/Id" "$AUTHORIZED_ADMINS_FILE"
-            
-            # Update server ranks
-            send_server_command_silent "/unadmin $player_name"
+            # Remove from admin files
             remove_from_list_file "$player_name" "admin"
+            send_server_command_silent "/unadmin $player_name"
+            # Add to mod files
+            echo "$player_name" >> "$AUTHORIZED_MODS_FILE"
             send_server_command "/mod $player_name"
-            
             # Update players.log
             update_player_rank "$player_name" "mod" "$player_ip"
-            
-            send_server_command "ALERT: Admin $player_name has been demoted to moderator for unauthorized commands!"
             clear_admin_offenses "$player_name"
         fi
     else
         print_warning "Non-admin player $player_name attempted to use $command on $target_player"
         send_server_command "$player_name, you don't have permission to assign ranks."
-        
-        # Remove any rank assignment
         if [ "$command" = "/admin" ]; then
             send_server_command_silent "/unadmin $target_player"
             remove_from_list_file "$target_player" "admin"
@@ -507,7 +476,7 @@ monitor_log() {
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read -r line; do
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
-            player_name=$(extract_real_name "$player_name")
+            player_name=$(normalize_player_name "$player_name")
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             if [[ "$player_name" == *\\* || "$player_name" == */* || "$player_name" == *\$* || "$player_name" == *\(* || "$player_name" == *\)* || "$player_name" == *\;* || "$player_name" == *\`* ]]; then
@@ -528,22 +497,34 @@ monitor_log() {
             print_success "Player connected: $player_name (IP: $player_ip)"
         fi
 
-        # Check for admin/mod commands
         if [[ "$line" =~ ([^:]+):\ \/(admin|mod)\ ([^[:space:]]+) ]]; then
             local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
-            command_user=$(extract_real_name "$command_user")
+            command_user=$(normalize_player_name "$command_user")
             command_user=$(echo "$command_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            target_player=$(extract_real_name "$target_player")
+            target_player=$(normalize_player_name "$target_player")
             target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
-            # Check command spam
+            # Check for rapid commands (anti-spam)
             local current_time=$(date +%s)
-            if [ -n "${player_command_times[$command_user]}" ] && [ $((current_time - player_command_times[$command_user])) -lt 1 ]; then
-                local player_ip=$(get_ip_by_name "$command_user")
-                handle_command_spam "$command_user" "$player_ip"
-                continue
+            if [ -n "${admin_last_command_time[$command_user]}" ]; then
+                local time_diff=$((current_time - admin_last_command_time[$command_user]))
+                if [ $time_diff -lt 1 ]; then
+                    admin_command_count[$command_user]=$((admin_command_count[$command_user] + 1))
+                    if [ ${admin_command_count[$command_user]} -ge 2 ]; then
+                        # Ban IP for 5 minutes
+                        local player_ip=$(get_ip_by_name "$command_user")
+                        send_server_command "/ban $player_ip"
+                        send_server_command "/kick $command_user"
+                        print_error "Banned $command_user for rapid commands (possible account theft)"
+                        # Schedule unban after 5 minutes
+                        (sleep 300; send_server_command "/unban $player_ip") &
+                        continue
+                    fi
+                else
+                    admin_command_count[$command_user]=0
+                fi
             fi
-            player_command_times[$command_user]=$current_time
+            admin_last_command_time[$command_user]=$current_time
             
             # Check if target player name is invalid
             if [[ "$target_player" == *\\* || "$target_player" == */* || "$target_player" == *\$* || "$target_player" == *\(* || "$target_player" == *\)* || "$target_player" == *\;* || "$target_player" == *\`* ]]; then
@@ -558,13 +539,24 @@ monitor_log() {
                 continue
             fi
             
-            # Skip if command user is SERVER (legitimate)
+            if [[ "$command_user" == *\\* || "$command_user" == */* || "$command_user" == *\$* || "$command_user" == *\(* || "$command_user" == *\)* || "$command_user" == *\;* || "$command_user" == *\`* ]]; then
+                local ipu=$(get_ip_by_name "$command_user")
+                handle_invalid_player_name "$command_user" "$ipu" ""
+                continue
+            fi
+            
+            if ! is_valid_player_name "$command_user"; then
+                local ipu2=$(get_ip_by_name "$command_user")
+                handle_invalid_player_name "$command_user" "$ipu2" ""
+                continue
+            fi
+            
             [ "$command_user" != "SERVER" ] && handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
         fi
 
         if [[ "$line" =~ Player\ Disconnected\ (.+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
-            player_name=$(extract_real_name "$player_name")
+            player_name=$(normalize_player_name "$player_name")
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             if [[ "$player_name" == *\\* || "$player_name" == */* || "$player_name" == *\$* || "$player_name" == *\(* || "$player_name" == *\)* || "$player_name" == *\;* || "$player_name" == *\`* ]]; then
@@ -582,7 +574,7 @@ monitor_log() {
         # Check for chat messages and dangerous commands
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
             local player_name="${BASH_REMATCH[1]}" message="${BASH_REMATCH[2]}"
-            player_name=$(extract_real_name "$player_name")
+            player_name=$(normalize_player_name "$player_name")
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             if ! is_valid_player_name "$player_name"; then
