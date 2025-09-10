@@ -49,6 +49,10 @@ declare -A player_message_counts
 declare -A admin_last_command_time
 declare -A admin_command_count
 
+# Track new connections and their grace period
+declare -A player_connection_time
+declare -A player_grace_period
+
 # Function to normalize player names
 normalize_player_name() {
     local name="$1"
@@ -188,9 +192,43 @@ update_player_rank() {
         # Remove existing entry
         sed -i "/^$player_name|/Id" "$PLAYERS_LOG"
         # Add new entry
-        echo "$player_name|$player_ip|$new_rank" >> "$PLAYERS_LOG"
+        echo "$player_name|$player_ip|$new_rank|NONE" >> "$PLAYERS_LOG"
         print_success "Updated player rank in registry: $player_name -> $new_rank"
     fi
+}
+
+# Function to update player password in players.log
+update_player_password() {
+    local player_name="$1" password="$2"
+    if [ -f "$PLAYERS_LOG" ]; then
+        # Find player and update password
+        while IFS='|' read -r name ip rank pass; do
+            if [ "$name" = "$player_name" ]; then
+                # Update the line with new password
+                sed -i "s/^$name|.*/$name|$ip|$rank|$password/" "$PLAYERS_LOG"
+                print_success "Updated password for player: $player_name"
+                return 0
+            fi
+        done < "$PLAYERS_LOG"
+        print_error "Player not found in registry: $player_name"
+        return 1
+    fi
+    return 1
+}
+
+# Function to get player info from players.log
+get_player_info() {
+    local player_name="$1"
+    if [ -f "$PLAYERS_LOG" ]; then
+        while IFS='|' read -r name ip rank pass; do
+            if [ "$name" = "$player_name" ]; then
+                echo "$ip|$rank|$pass"
+                return 0
+            fi
+        done < "$PLAYERS_LOG"
+    fi
+    echo "unknown|NONE|NONE"
+    return 1
 }
 
 # Function to send delayed uncommands
@@ -259,6 +297,12 @@ get_ip_by_name() {
     ' "$LOG_FILE"
 }
 
+# Function to generate a random password
+generate_password() {
+    local length=7
+    tr -dc 'A-Za-z0-9' < /dev/urandom | head -c $length
+}
+
 # Function to check for username theft
 check_username_theft() {
     local player_name="$1" player_ip="$2"
@@ -266,42 +310,103 @@ check_username_theft() {
     # Skip if player name is invalid
     ! is_valid_player_name "$player_name" && return 0
     
-    # Check if player exists in players.log
-    if grep -q -i "^$player_name|" "$PLAYERS_LOG"; then
-        # Player exists, check if IP matches
-        local registered_ip=$(grep -i "^$player_name|" "$PLAYERS_LOG" | head -1 | cut -d'|' -f2 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        local registered_rank=$(grep -i "^$player_name|" "$PLAYERS_LOG" | head -1 | cut -d'|' -f3 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        
-        if [ "$registered_ip" != "$player_ip" ]; then
-            # IP doesn't match - possible username theft
-            print_error "USERNAME THEFT DETECTED: $player_name from IP $player_ip (registered IP: $registered_ip)"
-            
-            # Immediately kick the player using the stolen name
-            send_server_command "/kick $player_name"
-            print_error "Kicked player $player_name for username theft"
-            
-            if [ "$registered_rank" != "NONE" ]; then
-                # Player has rank - critical security issue
-                print_error "CRITICAL: Player with rank ($registered_rank) username theft detected!"
-                # Ban the IP but don't stop the server
-                send_server_command "/ban $player_ip"
-                print_error "IP $player_ip banned due to username theft of ranked player"
-                return 1
-            else
-                # Regular player - just ban the IP
-                send_server_command "/ban $player_ip"
-                print_error "IP $player_ip banned for username theft"
-                return 1
-            fi
-        fi
-    else
-        # New player - add to players.log
+    # Get player info from registry
+    local player_info=$(get_player_info "$player_name")
+    local registered_ip=$(echo "$player_info" | cut -d'|' -f1)
+    local registered_rank=$(echo "$player_info" | cut -d'|' -f2)
+    local registered_pass=$(echo "$player_info" | cut -d'|' -f3)
+    
+    # If player is new, add to registry
+    if [ "$registered_ip" = "unknown" ]; then
         local rank=$(get_player_rank "$player_name")
-        echo "$player_name|$player_ip|$rank" >> "$PLAYERS_LOG"
+        echo "$player_name|$player_ip|$rank|NONE" >> "$PLAYERS_LOG"
         print_success "Added new player to registry: $player_name ($player_ip) with rank: $rank"
+        player_connection_time["$player_name"]=$(date +%s)
+        player_grace_period["$player_name"]=1  # Enable grace period for new players
+        send_server_command "Welcome $player_name! Use !give_psw to generate a recovery password in case your IP changes."
+        return 0
+    fi
+    
+    # Check if IP matches
+    if [ "$registered_ip" != "$player_ip" ]; then
+        # IP doesn't match - possible username theft or IP change
+        print_warning "IP MISMATCH: $player_name from IP $player_ip (registered IP: $registered_ip)"
+        
+        # Start grace period (25 seconds)
+        player_connection_time["$player_name"]=$(date +%s)
+        player_grace_period["$player_name"]=1
+        
+        if [ "$registered_pass" != "NONE" ]; then
+            # Player has a recovery password
+            send_server_command "WARNING: $player_name, your IP doesn't match our records!"
+            send_server_command "Use !restore_ip YOUR_PASSWORD within 25 seconds to verify your identity."
+            send_server_command "Use !give_psw if you need to see your password again."
+        else
+            # Player doesn't have a recovery password
+            send_server_command "WARNING: $player_name, your IP doesn't match our records!"
+            send_server_command "Use !give_psw to generate a recovery password, then !restore_ip YOUR_PASSWORD."
+            send_server_command "You have 25 seconds to verify your identity."
+        fi
+        
+        # Schedule IP check after grace period
+        (
+            sleep 25
+            if [ -n "${player_grace_period[$player_name]}" ]; then
+                # Grace period expired without restoration
+                print_error "USERNAME THEFT DETECTED: $player_name from IP $player_ip (registered IP: $registered_ip)"
+                send_server_command "/kick $player_name"
+                send_server_command "WARNING: $player_name was kicked for possible username theft!"
+                
+                if [ "$registered_rank" != "NONE" ]; then
+                    # Player has rank - critical security issue
+                    print_error "CRITICAL: Player with rank ($registered_rank) username theft detected!"
+                    send_server_command "/ban $player_ip"
+                    print_error "IP $player_ip banned due to username theft of ranked player"
+                else
+                    # Regular player - just ban the IP
+                    send_server_command "/ban $player_ip"
+                    print_error "IP $player_ip banned for username theft"
+                fi
+                
+                # Clear grace period
+                unset player_grace_period["$player_name"]
+            fi
+        ) &
+        
+        return 1
     fi
     
     return 0
+}
+
+# Function to restore IP address
+restore_ip_address() {
+    local player_name="$1" password="$2" new_ip="$3"
+    
+    # Get player info from registry
+    local player_info=$(get_player_info "$player_name")
+    local registered_ip=$(echo "$player_info" | cut -d'|' -f1)
+    local registered_rank=$(echo "$player_info" | cut -d'|' -f2)
+    local registered_pass=$(echo "$player_info" | cut -d'|' -f3)
+    
+    # Check if password matches
+    if [ "$registered_pass" = "$password" ]; then
+        # Update IP in registry
+        if [ -f "$PLAYERS_LOG" ]; then
+            sed -i "s/^$player_name|.*/$player_name|$new_ip|$registered_rank|$registered_pass/" "$PLAYERS_LOG"
+            print_success "Restored IP for $player_name: $registered_ip -> $new_ip"
+            send_server_command "IP successfully restored for $player_name!"
+            send_server_command "/clear"  # Clear chat to protect password
+            
+            # End grace period
+            unset player_grace_period["$player_name"]
+            return 0
+        fi
+    else
+        print_error "Invalid restoration password for $player_name"
+        send_server_command "ERROR: Invalid restoration password for $player_name!"
+        return 1
+    fi
 }
 
 # Function to detect spam and dangerous commands
@@ -310,6 +415,24 @@ check_dangerous_activity() {
     
     # Skip if player name is invalid or is server
     ! is_valid_player_name "$player_name" || [ "$player_name" = "SERVER" ] && return 0
+    
+    # Check if player is in grace period
+    if [ -n "${player_grace_period[$player_name]}" ]; then
+        # Check if grace period is still valid (25 seconds)
+        local connection_time=${player_connection_time[$player_name]}
+        if [ $((current_time - connection_time)) -le 25 ]; then
+            # Check for dangerous commands during grace period
+            if [[ "$message" == "/stop"* || "$message" == "/ban"* || \
+                  "$message" == "/admin"* || "$message" == "/mod"* || \
+                  "$message" == "/kick"* || "$message" == "/save"* ]]; then
+                send_server_command "WARNING: $player_name, your commands are being ignored during IP verification."
+                return 1
+            fi
+        else
+            # Grace period expired, remove it
+            unset player_grace_period["$player_name"]
+        fi
+    fi
     
     # Get player IP for banning
     local player_ip=$(get_ip_by_name "$player_name")
@@ -416,6 +539,67 @@ handle_unauthorized_command() {
     fi
 }
 
+# Function to process password commands
+process_password_commands() {
+    local player_name="$1" message="$2" player_ip="$3"
+    
+    case "$message" in
+        "!give_psw")
+            # Generate a new password
+            local new_password=$(generate_password)
+            if update_player_password "$player_name" "$new_password"; then
+                send_server_command "$player_name, your recovery password is: $new_password"
+                send_server_command "Save this password in a safe place! Use !restore_ip $new_password if your IP changes."
+                send_server_command "/clear"  # Clear chat to protect password
+            else
+                send_server_command "ERROR: Could not generate password for $player_name"
+            fi
+            return 0
+            ;;
+        "!change_psw"*)
+            # Change password (requires old password)
+            if [[ "$message" =~ !change_psw[[:space:]]+([A-Za-z0-9]+) ]]; then
+                local old_password="${BASH_REMATCH[1]}"
+                local player_info=$(get_player_info "$player_name")
+                local current_pass=$(echo "$player_info" | cut -d'|' -f3)
+                
+                if [ "$current_pass" = "$old_password" ]; then
+                    local new_password=$(generate_password)
+                    if update_player_password "$player_name" "$new_password"; then
+                        send_server_command "$player_name, your new recovery password is: $new_password"
+                        send_server_command "Save this password in a safe place!"
+                        send_server_command "/clear"  # Clear chat to protect password
+                    else
+                        send_server_command "ERROR: Could not change password for $player_name"
+                    fi
+                else
+                    send_server_command "ERROR: Invalid current password for $player_name"
+                fi
+            else
+                send_server_command "Usage: !change_psw OLD_PASSWORD"
+            fi
+            return 0
+            ;;
+        "!restore_ip"*)
+            # Restore IP address with password
+            if [[ "$message" =~ !restore_ip[[:space:]]+([A-Za-z0-9]+) ]]; then
+                local password="${BASH_REMATCH[1]}"
+                if restore_ip_address "$player_name" "$password" "$player_ip"; then
+                    return 0
+                else
+                    send_server_command "ERROR: Could not restore IP for $player_name"
+                    return 1
+                fi
+            else
+                send_server_command "Usage: !restore_ip PASSWORD"
+            fi
+            return 0
+            ;;
+    esac
+    
+    return 1
+}
+
 # Function to filter server log
 filter_server_log() {
     while read -r line; do
@@ -457,7 +641,7 @@ monitor_log() {
     print_status "Port: $PORT"
     print_status "Log directory: $LOG_DIR"
     print_header "SECURITY SYSTEM ACTIVE"
-    
+
     # Wait for log file to exist
     local wait_time=0
     while [ ! -f "$log_file" ] && [ $wait_time -lt 30 ]; do
@@ -479,7 +663,11 @@ monitor_log() {
             player_name=$(normalize_player_name "$player_name")
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
-            if [[ "$player_name" == *\\* || "$player_name" == */* || "$player_name" == *\$* || "$player_name" == *\(* || "$player_name" == *\)* || "$player_name" == *\;* || "$player_name" == *\`* ]]; then
+            # Enhanced detection of illegal characters including backslash
+            if [[ "$player_name" == *\\* || "$player_name" == */* || "$player_name" == *\$* || \
+                  "$player_name" == *\(* || "$player_name" == *\)* || "$player_name" == *\;* || \
+                  "$player_name" == *\`* || "$player_name" == *\"* || "$player_name" == *\'* || \
+                  "$player_name" == ** || "$player_name" == ** || "$player_name" =~ [[:space:]] ]]; then
                 handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
                 continue
             fi
@@ -527,7 +715,10 @@ monitor_log() {
             admin_last_command_time[$command_user]=$current_time
             
             # Check if target player name is invalid
-            if [[ "$target_player" == *\\* || "$target_player" == */* || "$target_player" == *\$* || "$target_player" == *\(* || "$target_player" == *\)* || "$target_player" == *\;* || "$target_player" == *\`* ]]; then
+            if [[ "$target_player" == *\\* || "$target_player" == */* || "$target_player" == *\$* || \
+                  "$target_player" == *\(* || "$target_player" == *\)* || "$target_player" == *\;* || \
+                  "$target_player" == *\`* || "$target_player" == *\"* || "$target_player" == *\'* || \
+                  "$target_player" == ** || "$target_player" == ** || "$target_player" =~ [[:space:]] ]]; then
                 print_error "Admin $command_user attempted to assign rank to invalid player: $target_player"
                 handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
                 continue
@@ -539,7 +730,10 @@ monitor_log() {
                 continue
             fi
             
-            if [[ "$command_user" == *\\* || "$command_user" == */* || "$command_user" == *\$* || "$command_user" == *\(* || "$command_user" == *\)* || "$command_user" == *\;* || "$command_user" == *\`* ]]; then
+            if [[ "$command_user" == *\\* || "$command_user" == */* || "$command_user" == *\$* || \
+                  "$command_user" == *\(* || "$command_user" == *\)* || "$command_user" == *\;* || \
+                  "$command_user" == *\`* || "$command_user" == *\"* || "$command_user" == *\'* || \
+                  "$command_user" == ** || "$command_user" == ** || "$command_user" =~ [[:space:]] ]]; then
                 local ipu=$(get_ip_by_name "$command_user")
                 handle_invalid_player_name "$command_user" "$ipu" ""
                 continue
@@ -559,13 +753,18 @@ monitor_log() {
             player_name=$(normalize_player_name "$player_name")
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
-            if [[ "$player_name" == *\\* || "$player_name" == */* || "$player_name" == *\$* || "$player_name" == *\(* || "$player_name" == *\)* || "$player_name" == *\;* || "$player_name" == *\`* ]]; then
+            if [[ "$player_name" == *\\* || "$player_name" == */* || "$player_name" == *\$* || \
+                  "$player_name" == *\(* || "$player_name" == *\)* || "$player_name" == *\;* || \
+                  "$player_name" == *\`* || "$player_name" == *\"* || "$player_name" == *\'* || \
+                  "$player_name" == ** || "$player_name" == ** || "$player_name" =~ [[:space:]] ]]; then
                 print_warning "Player with invalid name disconnected: $player_name"
                 continue
             fi
             
             if is_valid_player_name "$player_name"; then
                 print_warning "Player disconnected: $player_name"
+                # Clear grace period if player disconnects
+                unset player_grace_period["$player_name"]
             else
                 print_warning "Player with invalid name disconnected: $player_name"
             fi
@@ -578,6 +777,14 @@ monitor_log() {
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             if ! is_valid_player_name "$player_name"; then
+                continue
+            fi
+            
+            # Get player IP for password commands
+            local player_ip=$(get_ip_by_name "$player_name")
+            
+            # Process password-related commands first
+            if process_password_commands "$player_name" "$message" "$player_ip"; then
                 continue
             fi
             
