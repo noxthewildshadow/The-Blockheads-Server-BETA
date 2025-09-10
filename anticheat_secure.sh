@@ -46,6 +46,17 @@ declare -A player_message_times
 declare -A player_message_counts
 declare -A player_command_times
 
+# Function to extract real player name from ID-prefixed format
+extract_real_name() {
+    local name="$1"
+    # Remove any numeric prefix with bracket (e.g., "12345] ")
+    if [[ "$name" =~ ^[0-9]+\]\ (.+)$ ]]; then
+        echo "${BASH_REMATCH[1]}"
+    else
+        echo "$name"
+    fi
+}
+
 # Function to validate player names
 is_valid_player_name() {
     local player_name="$1"
@@ -496,6 +507,7 @@ monitor_log() {
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read -r line; do
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
+            player_name=$(extract_real_name "$player_name")
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             if [[ "$player_name" == *\\* || "$player_name" == */* || "$player_name" == *\$* || "$player_name" == *\(* || "$player_name" == *\)* || "$player_name" == *\;* || "$player_name" == *\`* ]]; then
@@ -519,7 +531,9 @@ monitor_log() {
         # Check for admin/mod commands
         if [[ "$line" =~ ([^:]+):\ \/(admin|mod)\ ([^[:space:]]+) ]]; then
             local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
+            command_user=$(extract_real_name "$command_user")
             command_user=$(echo "$command_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            target_player=$(extract_real_name "$target_player")
             target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             # Check command spam
@@ -550,6 +564,7 @@ monitor_log() {
 
         if [[ "$line" =~ Player\ Disconnected\ (.+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
+            player_name=$(extract_real_name "$player_name")
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             if [[ "$player_name" == *\\* || "$player_name" == */* || "$player_name" == *\$* || "$player_name" == *\(* || "$player_name" == *\)* || "$player_name" == *\;* || "$player_name" == *\`* ]]; then
@@ -567,6 +582,7 @@ monitor_log() {
         # Check for chat messages and dangerous commands
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
             local player_name="${BASH_REMATCH[1]}" message="${BASH_REMATCH[2]}"
+            player_name=$(extract_real_name "$player_name")
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             if ! is_valid_player_name "$player_name"; then
