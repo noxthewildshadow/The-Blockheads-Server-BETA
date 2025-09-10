@@ -46,6 +46,17 @@ write_json_file() {
     flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
 }
 
+# Function to extract real player name from ID-prefixed format
+extract_real_name() {
+    local name="$1"
+    # Remove any numeric prefix with bracket (e.g., "12345] ")
+    if [[ "$name" =~ ^[0-9]+\]\ (.+)$ ]]; then
+        echo "${BASH_REMATCH[1]}"
+    else
+        echo "$name"
+    fi
+}
+
 # Function to validate player names
 is_valid_player_name() {
     local player_name=$(echo "$1" | xargs)
@@ -454,6 +465,7 @@ monitor_log() {
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read -r line; do
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
+            player_name=$(extract_real_name "$player_name")
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             [ "$player_name" == "SERVER" ] && continue
 
@@ -479,6 +491,7 @@ monitor_log() {
 
         if [[ "$line" =~ Player\ Disconnected\ ([a-zA-Z0-9_]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
+            player_name=$(extract_real_name "$player_name")
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             [ "$player_name" == "SERVER" ] && continue
             
@@ -493,6 +506,7 @@ monitor_log() {
 
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
             local player_name="${BASH_REMATCH[1]}" message="${BASH_REMATCH[2]}"
+            player_name=$(extract_real_name "$player_name")
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             [ "$player_name" == "SERVER" ] && continue
             
