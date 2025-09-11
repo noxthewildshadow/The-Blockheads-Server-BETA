@@ -256,8 +256,8 @@ process_give_rank() {
     giver_tickets=${giver_tickets:-0}
     
     local cost=0
-    [ "$rank_type" = "admin" ] && cost=140
-    [ "$rank_type" = "mod" ] && cost=70
+    [ "$rank_type" = "ADMIN" ] && cost=140
+    [ "$rank_type" = "MOD" ] && cost=70
     
     [ "$giver_tickets" -lt "$cost" ] && {
         send_server_command "$giver_name, you need $cost tickets to give $rank_type rank, but you only have $giver_tickets."
@@ -314,15 +314,15 @@ process_message() {
             send_server_command "$player_name, you have $player_tickets tickets."
             ;;
         "!buy_mod")
-            (has_purchased "$player_name" "mod" || [ "$(get_player_rank "$player_name")" = "mod" ]) && {
+            (has_purchased "$player_name" "MOD" || [ "$(get_player_rank "$player_name")" = "MOD" ]) && {
                 send_server_command "$player_name, you already have MOD rank."
             } || [ "$player_tickets" -ge 50 ] && {
                 local new_tickets=$((player_tickets - 50))
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
-                add_purchase "$player_name" "mod"
+                add_purchase "$player_name" "MOD"
                 local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" \
-                    '.transactions += [{"player": $player, "type": "purchase", "item": "mod", "tickets": -50, "time": $time}]')
+                    '.transactions += [{"player": $player, "type": "purchase", "item": "MOD", "tickets": -50, "time": $time}]')
                 write_json_file "$ECONOMY_FILE" "$current_data"
                 
                 # Update players.log with the new rank
@@ -331,11 +331,11 @@ process_message() {
                     local player_ip=$(echo "$player_info" | cut -d'|' -f1)
                     local player_password=$(echo "$player_info" | cut -d'|' -f3)
                     local ban_status=$(echo "$player_info" | cut -d'|' -f4)
-                    update_player_info "$player_name" "$player_ip" "mod" "$player_password" "$ban_status"
+                    update_player_info "$player_name" "$player_ip" "MOD" "$player_password" "$ban_status"
                 else
                     # If player doesn't exist in players.log, create entry
                     local player_ip=$(get_ip_by_name "$player_name")
-                    update_player_info "$player_name" "$player_ip" "mod" "NONE" "NONE"
+                    update_player_info "$player_name" "$player_ip" "MOD" "NONE" "NONE"
                 fi
                 
                 # Apply the rank in-game
@@ -344,15 +344,15 @@ process_message() {
             } || send_server_command "$player_name, you need $((50 - player_tickets)) more tickets to buy MOD rank."
             ;;
         "!buy_admin")
-            (has_purchased "$player_name" "admin" || [ "$(get_player_rank "$player_name")" = "admin" ]) && {
+            (has_purchased "$player_name" "ADMIN" || [ "$(get_player_rank "$player_name")" = "ADMIN" ]) && {
                 send_server_command "$player_name, you already have ADMIN rank."
             } || [ "$player_tickets" -ge 100 ] && {
                 local new_tickets=$((player_tickets - 100))
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
-                add_purchase "$player_name" "admin"
+                add_purchase "$player_name" "ADMIN"
                 local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" \
-                    '.transactions += [{"player": $player, "type": "purchase", "item": "admin", "tickets": -100, "time": $time}]')
+                    '.transactions += [{"player": $player, "type": "purchase", "item": "ADMIN", "tickets": -100, "time": $time}]')
                 write_json_file "$ECONOMY_FILE" "$current_data"
                 
                 # Update players.log with the new rank
@@ -361,11 +361,11 @@ process_message() {
                     local player_ip=$(echo "$player_info" | cut -d'|' -f1)
                     local player_password=$(echo "$player_info" | cut -d'|' -f3)
                     local ban_status=$(echo "$player_info" | cut -d'|' -f4)
-                    update_player_info "$player_name" "$player_ip" "admin" "$player_password" "$ban_status"
+                    update_player_info "$player_name" "$player_ip" "ADMIN" "$player_password" "$ban_status"
                 else
                     # If player doesn't exist in players.log, create entry
                     local player_ip=$(get_ip_by_name "$player_name")
-                    update_player_info "$player_name" "$player_ip" "admin" "NONE" "NONE"
+                    update_player_info "$player_name" "$player_ip" "ADMIN" "NONE" "NONE"
                 fi
                 
                 # Apply the rank in-game
@@ -375,12 +375,12 @@ process_message() {
             ;;
         "!give_admin "*)
             [[ "$message" =~ !give_admin\ ([a-zA-Z0-9_]+) ]] && \
-            process_give_rank "$player_name" "${BASH_REMATCH[1]}" "admin" || \
+            process_give_rank "$player_name" "${BASH_REMATCH[1]}" "ADMIN" || \
             send_server_command "Usage: !give_admin PLAYER_NAME"
             ;;
         "!give_mod "*)
             [[ "$message" =~ !give_mod\ ([a-zA-Z0-9_]+) ]] && \
-            process_give_rank "$player_name" "${BASH_REMATCH[1]}" "mod" || \
+            process_give_rank "$player_name" "${BASH_REMATCH[1]}" "MOD" || \
             send_server_command "Usage: !give_mod PLAYER_NAME"
             ;;
         "!set_admin"|"!set_mod")
@@ -442,11 +442,11 @@ process_admin_command() {
             local player_ip=$(echo "$player_info" | cut -d'|' -f1)
             local player_password=$(echo "$player_info" | cut -d'|' -f3)
             local ban_status=$(echo "$player_info" | cut -d'|' -f4)
-            update_player_info "$player_name" "$player_ip" "mod" "$player_password" "$ban_status"
+            update_player_info "$player_name" "$player_ip" "MOD" "$player_password" "$ban_status"
         else
             # If player doesn't exist in players.log, create entry
             local player_ip=$(get_ip_by_name "$player_name")
-            update_player_info "$player_name" "$player_ip" "mod" "NONE" "NONE"
+            update_player_info "$player_name" "$player_ip" "MOD" "NONE" "NONE"
         fi
         
         # Apply the rank in-game
@@ -464,11 +464,11 @@ process_admin_command() {
             local player_ip=$(echo "$player_info" | cut -d'|' -f1)
             local player_password=$(echo "$player_info" | cut -d'|' -f3)
             local ban_status=$(echo "$player_info" | cut -d'|' -f4)
-            update_player_info "$player_name" "$player_ip" "admin" "$player_password" "$ban_status"
+            update_player_info "$player_name" "$player_ip" "ADMIN" "$player_password" "$ban_status"
         else
             # If player doesn't exist in players.log, create entry
             local player_ip=$(get_ip_by_name "$player_name")
-            update_player_info "$player_name" "$player_ip" "admin" "NONE" "NONE"
+            update_player_info "$player_name" "$player_ip" "ADMIN" "NONE" "NONE"
         fi
         
         # Apply the rank in-game
