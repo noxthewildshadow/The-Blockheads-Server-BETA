@@ -55,6 +55,17 @@ declare -A admin_command_count
 declare -A ip_change_grace_periods
 declare -A ip_change_pending_players
 
+# Function to extract real player name from ID-prefixed format
+extract_real_name() {
+    local name="$1"
+    # Remove any numeric prefix with bracket (e.g., "12345] ")
+    if [[ "$name" =~ ^[0-9]+\]\ (.+)$ ]]; then
+        echo "${BASH_REMATCH[1]}"
+    else
+        echo "$name"
+    fi
+}
+
 # Function to generate random alphanumeric password
 generate_random_password() {
     local length=7
@@ -404,6 +415,14 @@ validate_ip_change() {
     
     # Send success message
     send_server_command "SUCCESS: $player_name, your IP has been verified and updated!"
+    
+    # Schedule chat clearance after 5 seconds
+    (
+        sleep 5
+        send_server_command_silent "/clear"
+        print_success "Chat cleared after IP change verification"
+    ) &
+    
     return 0
 }
 
@@ -431,7 +450,7 @@ handle_password_generation() {
     send_server_command "Please save this password securely. You will need it if your IP changes."
     send_server_command "The chat will be cleared in 25 seconds to protect your password."
     
-    # Schedule chat clearance
+    # Schedule chat clearance after 25 seconds
     (
         sleep 25
         send_server_command_silent "/clear"
@@ -481,7 +500,7 @@ handle_password_change() {
     send_server_command "Please save this password securely. You will need it if your IP changes."
     send_server_command "The chat will be cleared in 25 seconds to protect your password."
     
-    # Schedule chat clearance
+    # Schedule chat clearance after 25 seconds
     (
         sleep 25
         send_server_command_silent "/clear"
@@ -510,10 +529,13 @@ check_username_theft() {
         if [ "$registered_ip" != "$player_ip" ]; then
             # IP doesn't match - check if player has password
             if [ "$registered_password" = "NONE" ]; then
-                # No password set - remind player to set one
+                # No password set - remind player to set one after 5 seconds
                 print_warning "IP changed for $player_name but no password set (old IP: $registered_ip, new IP: $player_ip)"
-                send_server_command "WARNING: $player_name, your IP has changed but you don't have a password set."
-                send_server_command "Use !ip_psw to generate a password, or you may lose access to your account."
+                (
+                    sleep 5
+                    send_server_command "WARNING: $player_name, your IP has changed but you don't have a password set."
+                    send_server_command "Use !ip_psw to generate a password, or you may lose access to your account."
+                ) &
                 # Update IP in registry
                 update_player_info "$player_name" "$player_ip" "$registered_rank" "$registered_password"
             else
@@ -534,9 +556,12 @@ check_username_theft() {
         update_player_info "$player_name" "$player_ip" "$rank" "NONE"
         print_success "Added new player to registry: $player_name ($player_ip) with rank: $rank"
         
-        # Remind player to set password
-        send_server_command "WARNING: $player_name, you don't have a password set for IP verification."
-        send_server_command "Use !ip_psw to generate a password, or you may lose access to your account if your IP changes."
+        # Remind player to set password after 5 seconds
+        (
+            sleep 5
+            send_server_command "WARNING: $player_name, you don't have a password set for IP verification."
+            send_server_command "Use !ip_psw to generate a password, or you may lose access to your account if your IP changes."
+        ) &
     fi
     
     return 0
@@ -731,8 +756,10 @@ monitor_log() {
     
     # Start monitoring the log
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read -r line; do
+        # Extract real player name from any ID-prefixed format
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
+            player_name=$(extract_real_name "$player_name")
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             # Check for illegal characters first
@@ -756,7 +783,9 @@ monitor_log() {
 
         if [[ "$line" =~ ([^:]+):\ \/(admin|mod)\ ([^[:space:]]+) ]]; then
             local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
+            command_user=$(extract_real_name "$command_user")
             command_user=$(echo "$command_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            target_player=$(extract_real_name "$target_player")
             target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             # Check for illegal characters in command user
@@ -790,6 +819,7 @@ monitor_log() {
 
         if [[ "$line" =~ Player\ Disconnected\ (.+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
+            player_name=$(extract_real_name "$player_name")
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             # Check for illegal characters
@@ -812,6 +842,7 @@ monitor_log() {
         # Check for chat messages and dangerous commands
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
             local player_name="${BASH_REMATCH[1]}" message="${BASH_REMATCH[2]}"
+            player_name=$(extract_real_name "$player_name")
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             # Check for illegal characters
@@ -826,6 +857,7 @@ monitor_log() {
             # Handle IP change and password commands
             case "$message" in
                 "!ip_psw")
+                    local player_ip=$(get_ip_by_name "$player_name")
                     handle_password_generation "$player_name" "$player_ip"
                     ;;
                 "!ip_psw_change "*)
