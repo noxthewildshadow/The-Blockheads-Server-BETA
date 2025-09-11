@@ -38,10 +38,10 @@ WGET_OPTIONS="--timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --rea
 ORIGINAL_USER=${SUDO_USER:-$USER}
 USER_HOME=$(getent passwd "$ORIGINAL_USER" | cut -d: -f6)
 
-# URLs for server download
+# URLs for server download (fixed duplicate URLs)
 SERVER_URLS=(
     "https://github.com/noxthewildshadow/The-Blockheads-Server-BETA/releases/download/1.0/blockheads_server171.tar"
-    "https://github.com/noxthewildshadow/The-Blockheads-Server-BETA/releases/download/1.0/blockheads_server171.tar"
+    "https://archive.org/download/blockheads_server171/blockheads_server171.tar"
 )
 
 TEMP_FILE="/tmp/blockheads_server171.tar"
@@ -220,6 +220,20 @@ done
 
 [ $DOWNLOAD_SUCCESS -eq 0 ] && print_error "Failed to download server file" && exit 1
 
+# Verify downloaded file integrity
+print_step "Verifying downloaded file..."
+if [ ! -s "$TEMP_FILE" ]; then
+    print_error "Downloaded file is empty or corrupted"
+    rm -f "$TEMP_FILE"
+    exit 1
+fi
+
+if ! tar -tf "$TEMP_FILE" >/dev/null 2>&1; then
+    print_error "Downloaded file is not a valid tar archive"
+    rm -f "$TEMP_FILE"
+    exit 1
+fi
+
 print_step "[4/8] Extracting files..."
 EXTRACT_DIR="/tmp/blockheads_extract_$$"
 mkdir -p "$EXTRACT_DIR"
@@ -228,6 +242,17 @@ if ! tar -xf "$TEMP_FILE" -C "$EXTRACT_DIR"; then
     print_error "Failed to extract server files"
     rm -rf "$EXTRACT_DIR"
     exit 1
+fi
+
+# Safe copy with confirmation for existing files
+if [ -n "$(ls -A . 2>/dev/null)" ]; then
+    print_warning "Current directory is not empty. Files may be overwritten."
+    read -p "Continue? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        print_error "Installation cancelled by user"
+        rm -rf "$EXTRACT_DIR"
+        exit 1
+    fi
 fi
 
 cp -r "$EXTRACT_DIR"/* ./
@@ -264,13 +289,18 @@ COUNT=0
 for LIB in "${!LIBS[@]}"; do
     [ -z "${LIBS[$LIB]}" ] && continue
     COUNT=$((COUNT+1))
-    PERCENTAGE=$((COUNT * 100 / TOTAL_LIBS))
-    echo -n "Patching $LIB -> ${LIBS[$LIB]} "
-    printf "[%-50s] %d%%" "$(printf '#%.0s' $(seq 1 $((PERCENTAGE/2))))" "$PERCENTAGE"
+    if [ $TOTAL_LIBS -gt 0 ]; then
+        PERCENTAGE=$((COUNT * 100 / TOTAL_LIBS))
+        BAR_LENGTH=$((PERCENTAGE / 2))
+        BAR=$(printf '#%.0s' $(seq 1 $BAR_LENGTH))
+        printf "Patching %s -> %s [%-50s] %d%%\r" "$LIB" "${LIBS[$LIB]}" "$BAR" "$PERCENTAGE"
+    else
+        echo "Patching $LIB -> ${LIBS[$LIB]}"
+    fi
+    
     if ! patchelf --replace-needed "$LIB" "${LIBS[$LIB]}" "$SERVER_BINARY"; then
         print_warning "Failed to patch $LIB"
     fi
-    printf "\r"
 done
 
 echo -e "\n"
