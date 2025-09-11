@@ -416,7 +416,7 @@ validate_ip_change() {
     # Send success message
     send_server_command "SUCCESS: $player_name, your IP has been verified and updated!"
     
-    # Schedule chat clearance after 5 seconds
+    # Clear chat after 5 seconds to hide password
     (
         sleep 5
         send_server_command_silent "/clear"
@@ -450,7 +450,7 @@ handle_password_generation() {
     send_server_command "Please save this password securely. You will need it if your IP changes."
     send_server_command "The chat will be cleared in 25 seconds to protect your password."
     
-    # Schedule chat clearance after 25 seconds
+    # Schedule chat clearance
     (
         sleep 25
         send_server_command_silent "/clear"
@@ -500,7 +500,7 @@ handle_password_change() {
     send_server_command "Please save this password securely. You will need it if your IP changes."
     send_server_command "The chat will be cleared in 25 seconds to protect your password."
     
-    # Schedule chat clearance after 25 seconds
+    # Schedule chat clearance
     (
         sleep 25
         send_server_command_silent "/clear"
@@ -756,7 +756,6 @@ monitor_log() {
     
     # Start monitoring the log
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read -r line; do
-        # Extract real player name from any ID-prefixed format
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
             player_name=$(extract_real_name "$player_name")
@@ -857,7 +856,6 @@ monitor_log() {
             # Handle IP change and password commands
             case "$message" in
                 "!ip_psw")
-                    local player_ip=$(get_ip_by_name "$player_name")
                     handle_password_generation "$player_name" "$player_ip"
                     ;;
                 "!ip_psw_change "*)
