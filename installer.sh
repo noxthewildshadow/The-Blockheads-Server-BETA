@@ -2,7 +2,7 @@
 set -e
 
 # =============================================================================
-# THE BLOCKHEADS LINUX SERVER INSTALLER
+# THE BLOCKHEADS LINUX SERVER INSTALLER - OPTIMIZED VERSION
 # =============================================================================
 
 # Color codes for output
@@ -29,25 +29,8 @@ print_header() {
 }
 print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
-# Progress bar function
-progress_bar() {
-    local duration=${1}
-    local increment=$((100/duration))
-    for ((i=0; i<=duration; i++)); do
-        percentage=$((i * increment))
-        printf "\r[%-50s] %d%%" "$(printf '#%.0s' $(seq 1 $((i/2))))" "$percentage"
-        sleep 1
-    done
-    printf "\n"
-}
-
-# Function to find library
-find_library() {
-    SEARCH=$1
-    LIBRARY=$(ldconfig -p | grep -F "$SEARCH" -m 1 | awk '{print $NF}' | head -1)
-    [ -z "$LIBRARY" ] && return 1
-    printf '%s' "$LIBRARY"
-}
+# Wget options for faster downloads
+WGET_OPTIONS="--timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --read-timeout=30 -q"
 
 # Check if running as root
 [ "$EUID" -ne 0 ] && print_error "This script requires root privileges." && exit 1
@@ -64,10 +47,12 @@ SERVER_URLS=(
 TEMP_FILE="/tmp/blockheads_server171.tar"
 SERVER_BINARY="blockheads_server171"
 
-RAW_BASE="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/refs/heads/main"
-SERVER_MANAGER_URL="$RAW_BASE/server_manager.sh"
-BOT_SCRIPT_URL="$RAW_BASE/server_bot.sh"
-ANTICHEAT_SCRIPT_URL="$RAW_BASE/anticheat_secure.sh"
+# GitHub raw content URLs
+SCRIPTS=(
+    "server_manager.sh"
+    "server_bot.sh"
+    "anticheat_secure.sh"
+)
 
 # Package lists for different distributions
 declare -a PACKAGES_DEBIAN=(
@@ -84,6 +69,14 @@ declare -a PACKAGES_ARCH=(
 )
 
 print_header "THE BLOCKHEADS LINUX SERVER INSTALLER"
+
+# Function to find library
+find_library() {
+    SEARCH=$1
+    LIBRARY=$(ldconfig -p | grep -F "$SEARCH" -m 1 | awk '{print $NF}' | head -1)
+    [ -z "$LIBRARY" ] && return 1
+    printf '%s' "$LIBRARY"
+}
 
 # Function to build libdispatch from source
 build_libdispatch() {
@@ -164,6 +157,29 @@ install_packages() {
     return 0
 }
 
+# Optimized function to download scripts
+download_script() {
+    local script_name=$1
+    local attempts=0
+    local max_attempts=3
+    
+    while [ $attempts -lt $max_attempts ]; do
+        print_status "Downloading $script_name (attempt $((attempts+1))/$max_attempts)"
+        if wget $WGET_OPTIONS -O "$script_name" \
+            "https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/$script_name"; then
+            return 0
+        fi
+        
+        attempts=$((attempts + 1))
+        if [ $attempts -lt $max_attempts ]; then
+            print_warning "Failed to download $script_name, retrying in 2 seconds..."
+            sleep 2
+        fi
+    done
+    
+    return 1
+}
+
 print_step "[1/8] Installing required packages..."
 if ! install_packages; then
     print_warning "Falling back to basic package installation..."
@@ -179,37 +195,21 @@ if ! install_packages; then
 fi
 
 print_step "[2/8] Downloading helper scripts from GitHub..."
-if ! wget -q -O server_manager.sh "$SERVER_MANAGER_URL"; then
-    SERVER_MANAGER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/server_manager.sh"
-    if ! wget -q -O server_manager.sh "$SERVER_MANAGER_URL"; then
-        print_error "Failed to download server_manager.sh"
+for script in "${SCRIPTS[@]}"; do
+    if download_script "$script"; then
+        print_success "Downloaded: $script"
+        chmod +x "$script"
+    else
+        print_error "Failed to download $script after multiple attempts"
         exit 1
     fi
-fi
-
-if ! wget -q -O server_bot.sh "$BOT_SCRIPT_URL"; then
-    BOT_SCRIPT_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/server_bot.sh"
-    if ! wget -q -O server_bot.sh "$BOT_SCRIPT_URL"; then
-        print_error "Failed to download server_bot.sh"
-        exit 1
-    fi
-fi
-
-if ! wget -q -O anticheat_secure.sh "$ANTICHEAT_SCRIPT_URL"; then
-    ANTICHEAT_SCRIPT_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/anticheat_secure.sh"
-    if ! wget -q -O anticheat_secure.sh "$ANTICHEAT_SCRIPT_URL"; then
-        print_error "Failed to download anticheat_secure.sh"
-        exit 1
-    fi
-fi
-
-chmod +x server_manager.sh server_bot.sh anticheat_secure.sh
+done
 
 print_step "[3/8] Downloading server archive..."
 DOWNLOAD_SUCCESS=0
 for URL in "${SERVER_URLS[@]}"; do
     print_status "Trying: $URL"
-    if wget -q --timeout=30 --tries=2 "$URL" -O "$TEMP_FILE"; then
+    if wget $WGET_OPTIONS --progress=bar:force "$URL" -O "$TEMP_FILE"; then
         DOWNLOAD_SUCCESS=1
         print_success "Download successful from $URL"
         break
