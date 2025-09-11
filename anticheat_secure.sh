@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =============================================================================
-# THE BLOCKHEADS ANTICHEAT & SERVER BOT - SISTEMA COMPLETO
+# THE BLOCKHEADS ANTICHEAT SECURITY SYSTEM WITH IP VERIFICATION
 # =============================================================================
 
 # Color codes for output
@@ -36,13 +36,12 @@ LOG_FILE="$1"
 PORT="$2"
 LOG_DIR=$(dirname "$LOG_FILE")
 ADMIN_OFFENSES_FILE="$LOG_DIR/admin_offenses_$PORT.json"
+AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
+AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 PLAYERS_LOG="$LOG_DIR/players.log"
 SCREEN_SERVER="blockheads_server_$PORT"
-
-# Server list files
-ADMIN_LIST="$LOG_DIR/adminlist.txt"
-MOD_LIST="$LOG_DIR/modlist.txt"
-BLACK_LIST="$LOG_DIR/blacklist.txt"
+IP_CHANGE_ATTEMPTS_FILE="$LOG_DIR/ip_change_attempts.json"
+PASSWORD_CHANGE_ATTEMPTS_FILE="$LOG_DIR/password_change_attempts.json"
 
 # Track player messages for spam detection
 declare -A player_message_times
@@ -55,9 +54,6 @@ declare -A admin_command_count
 # Track IP change grace periods
 declare -A ip_change_grace_periods
 declare -A ip_change_pending_players
-
-# Track banned players for periodic kicking
-declare -A banned_players
 
 # Function to extract real player name from ID-prefixed format
 extract_real_name() {
@@ -88,6 +84,44 @@ write_json_file() {
     local file_path="$1" content="$2"
     [ ! -f "$file_path" ] && touch "$file_path"
     flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
+}
+
+# Function to record IP change attempt
+record_ip_change_attempt() {
+    local player_name="$1" current_time=$(date +%s)
+    local attempts_data=$(read_json_file "$IP_CHANGE_ATTEMPTS_FILE" 2>/dev/null || echo '{}')
+    local current_attempts=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.attempts // 0')
+    local last_attempt_time=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.last_attempt // 0')
+    
+    # Reset counter if more than 1 hour has passed
+    [ $((current_time - last_attempt_time)) -gt 3600 ] && current_attempts=0
+    
+    current_attempts=$((current_attempts + 1))
+    attempts_data=$(echo "$attempts_data" | jq --arg player "$player_name" \
+        --argjson attempts "$current_attempts" --argjson time "$current_time" \
+        '.[$player] = {"attempts": $attempts, "last_attempt": $time}')
+    
+    write_json_file "$IP_CHANGE_ATTEMPTS_FILE" "$attempts_data"
+    return $current_attempts
+}
+
+# Function to record password change attempt
+record_password_change_attempt() {
+    local player_name="$1" current_time=$(date +%s)
+    local attempts_data=$(read_json_file "$PASSWORD_CHANGE_ATTEMPTS_FILE" 2>/dev/null || echo '{}')
+    local current_attempts=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.attempts // 0')
+    local last_attempt_time=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.last_attempt // 0')
+    
+    # Reset counter if more than 1 hour has passed
+    [ $((current_time - last_attempt_time)) -gt 3600 ] && current_attempts=0
+    
+    current_attempts=$((current_attempts + 1))
+    attempts_data=$(echo "$attempts_data" | jq --arg player "$player_name" \
+        --argjson attempts "$current_attempts" --argjson time "$current_time" \
+        '.[$player] = {"attempts": $attempts, "last_attempt": $time}')
+    
+    write_json_file "$PASSWORD_CHANGE_ATTEMPTS_FILE" "$attempts_data"
+    return $current_attempts
 }
 
 # Function to check for illegal characters in player names
@@ -147,129 +181,41 @@ handle_invalid_player_name() {
     return 0
 }
 
-# Function to initialize players.log with proper format
-initialize_players_log() {
+# Function to initialize authorization files
+initialize_authorization_files() {
+    [ ! -f "$AUTHORIZED_ADMINS_FILE" ] && touch "$AUTHORIZED_ADMINS_FILE"
+    [ ! -f "$AUTHORIZED_MODS_FILE" ] && touch "$AUTHORIZED_MODS_FILE"
     [ ! -f "$PLAYERS_LOG" ] && touch "$PLAYERS_LOG"
-    # Ensure the file has the proper header/format
-    if [ ! -s "$PLAYERS_LOG" ] || ! head -n 1 "$PLAYERS_LOG" | grep -q "^#"; then
-        echo "# Format: NAME|IP|RANK|PASSWORD|BAN_STATUS|TICKETS|PASSWORD_CHANGE_ATTEMPTS|IP_CHANGE_ATTEMPTS" > "$PLAYERS_LOG"
-    fi
+    [ ! -f "$IP_CHANGE_ATTEMPTS_FILE" ] && echo "{}" > "$IP_CHANGE_ATTEMPTS_FILE"
+    [ ! -f "$PASSWORD_CHANGE_ATTEMPTS_FILE" ] && echo "{}" > "$PASSWORD_CHANGE_ATTEMPTS_FILE"
 }
 
-# Function to update player info in players.log
-update_player_info() {
-    local player_name="$1" player_ip="$2" player_rank="$3" player_password="$4" \
-          ban_status="$5" tickets="$6" pwd_attempts="$7" ip_attempts="$8"
+# Function to validate authorization
+validate_authorization() {
+    local admin_list="$LOG_DIR/adminlist.txt"
+    local mod_list="$LOG_DIR/modlist.txt"
     
-    # Set default values if not provided
-    player_rank="${player_rank:-NONE}"
-    player_password="${player_password:-NONE}"
-    ban_status="${ban_status:-NONE}"
-    tickets="${tickets:-0}"
-    pwd_attempts="${pwd_attempts:-0}"
-    ip_attempts="${ip_attempts:-0}"
-    
-    # Remove existing entry
-    sed -i "/^$player_name|/d" "$PLAYERS_LOG"
-    
-    # Add new entry
-    echo "$player_name|$player_ip|$player_rank|$player_password|$ban_status|$tickets|$pwd_attempts|$ip_attempts" >> "$PLAYERS_LOG"
-    
-    print_success "Updated player info: $player_name (IP: $player_ip, Rank: $player_rank, Ban: $ban_status, Tickets: $tickets)"
-    
-    # Sync with server lists
-    sync_player_lists "$player_name" "$player_rank" "$ban_status"
-}
-
-# Function to get player info from players.log
-get_player_info() {
-    local player_name="$1"
-    if [ -f "$PLAYERS_LOG" ]; then
-        while IFS='|' read -r name ip rank password ban_status tickets pwd_attempts ip_attempts; do
-            # Skip comment lines
-            [[ "$name" =~ ^# ]] && continue
-            
-            if [ "$name" = "$player_name" ]; then
-                echo "$ip|$rank|$password|$ban_status|$tickets|$pwd_attempts|$ip_attempts"
-                return 0
-            fi
-        done < <(grep -i "^$player_name|" "$PLAYERS_LOG")
-    fi
-    echo ""
-}
-
-# Function to sync player lists with server
-sync_player_lists() {
-    local player_name="$1" player_rank="$2" ban_status="$3"
-    
-    # Update admin list
-    if [ "$player_rank" = "admin" ]; then
-        if ! grep -q "^$player_name$" "$ADMIN_LIST" 2>/dev/null; then
-            echo "$player_name" >> "$ADMIN_LIST"
-            send_server_command_silent "/admin $player_name"
-            print_success "Added $player_name to admin list"
+    [ -f "$admin_list" ] && while IFS= read -r admin || [ -n "$admin" ]; do
+        admin=$(echo "$admin" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [[ -z "$admin" || "$admin" =~ ^# || "$admin" =~ "Usernames in this file" ]] && continue
+        if ! grep -q -i "^$admin$" "$AUTHORIZED_ADMINS_FILE"; then
+            send_server_command "/unadmin $admin"
+            remove_from_list_file "$admin" "admin"
+            # Update player rank in players.log
+            update_player_rank "$admin" "NONE"
         fi
-    else
-        if grep -q "^$player_name$" "$ADMIN_LIST" 2>/dev/null; then
-            sed -i "/^$player_name$/d" "$ADMIN_LIST"
-            send_server_command_silent "/unadmin $player_name"
-            print_success "Removed $player_name from admin list"
-        fi
-    fi
+    done < <(grep -v "^[[:space:]]*#" "$admin_list" 2>/dev/null || true)
     
-    # Update mod list
-    if [ "$player_rank" = "mod" ]; then
-        if ! grep -q "^$player_name$" "$MOD_LIST" 2>/dev/null; then
-            echo "$player_name" >> "$MOD_LIST"
-            send_server_command_silent "/mod $player_name"
-            print_success "Added $player_name to mod list"
+    [ -f "$mod_list" ] && while IFS= read -r mod || [ -n "$mod" ]; do
+        mod=$(echo "$mod" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [[ -z "$mod" || "$mod" =~ ^# || "$mod" =~ "Usernames in this file" ]] && continue
+        if ! grep -q -i "^$mod$" "$AUTHORIZED_MODS_FILE"; then
+            send_server_command "/unmod $mod"
+            remove_from_list_file "$mod" "mod"
+            # Update player rank in players.log
+            update_player_rank "$mod" "NONE"
         fi
-    else
-        if grep -q "^$player_name$" "$MOD_LIST" 2>/dev/null; then
-            sed -i "/^$player_name$/d" "$MOD_LIST"
-            send_server_command_silent "/unmod $player_name"
-            print_success "Removed $player_name from mod list"
-        fi
-    fi
-    
-    # Update blacklist
-    if [ "$ban_status" = "BAN" ]; then
-        if ! grep -q "^$player_name$" "$BLACK_LIST" 2>/dev/null; then
-            echo "$player_name" >> "$BLACK_LIST"
-            # Get player IP for banning
-            local player_info=$(get_player_info "$player_name")
-            local player_ip=$(echo "$player_info" | cut -d'|' -f1)
-            if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
-                send_server_command_silent "/ban $player_ip"
-                banned_players["$player_name"]=1
-                print_success "Added $player_name to blacklist and banned IP"
-            fi
-        fi
-    else
-        if grep -q "^$player_name$" "$BLACK_LIST" 2>/dev/null; then
-            sed -i "/^$player_name$/d" "$BLACK_LIST"
-            # Get player IP for unbanning
-            local player_info=$(get_player_info "$player_name")
-            local player_ip=$(echo "$player_info" | cut -d'|' -f1)
-            if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
-                send_server_command_silent "/unban $player_ip"
-                unset banned_players["$player_name"]
-                print_success "Removed $player_name from blacklist and unbanned IP"
-            fi
-        fi
-    fi
-}
-
-# Function to periodically kick banned players
-kick_banned_players() {
-    while true; do
-        sleep 3
-        for player in "${!banned_players[@]}"; do
-            if [ -n "${banned_players[$player]}" ]; then
-                send_server_command_silent "/kick $player"
-            fi
-        done
-    done
+    done < <(grep -v "^[[:space:]]*#" "$mod_list" 2>/dev/null || true)
 }
 
 # Function to initialize admin offenses
@@ -301,6 +247,59 @@ clear_admin_offenses() {
     write_json_file "$ADMIN_OFFENSES_FILE" "$offenses_data"
 }
 
+# Function to remove from list file
+remove_from_list_file() {
+    local player_name="$1" list_type="$2"
+    local list_file="$LOG_DIR/${list_type}list.txt"
+    [ ! -f "$list_file" ] && return 1
+    if grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"; then
+        sed -i "/^$player_name$/Id" "$list_file"
+        return 0
+    fi
+    return 1
+}
+
+# Function to update player info in players.log
+update_player_info() {
+    local player_name="$1" player_ip="$2" player_rank="$3" player_password="$4"
+    if [ -f "$PLAYERS_LOG" ]; then
+        # Remove existing entry
+        sed -i "/^$player_name|/Id" "$PLAYERS_LOG"
+        # Add new entry
+        echo "$player_name|$player_ip|$player_rank|$player_password" >> "$PLAYERS_LOG"
+        print_success "Updated player info in registry: $player_name -> IP: $player_ip, Rank: $player_rank, Password: $player_password"
+    fi
+}
+
+# Function to update player rank in players.log
+update_player_rank() {
+    local player_name="$1" new_rank="$2"
+    local player_info=$(get_player_info "$player_name")
+    
+    if [ -n "$player_info" ]; then
+        local registered_ip=$(echo "$player_info" | cut -d'|' -f1)
+        local registered_password=$(echo "$player_info" | cut -d'|' -f3)
+        update_player_info "$player_name" "$registered_ip" "$new_rank" "$registered_password"
+        print_success "Updated player rank in registry: $player_name -> $new_rank"
+    else
+        print_error "Player $player_name not found in registry. Cannot update rank."
+    fi
+}
+
+# Function to get player info from players.log
+get_player_info() {
+    local player_name="$1"
+    if [ -f "$PLAYERS_LOG" ]; then
+        while IFS='|' read -r name ip rank password; do
+            if [ "$name" = "$player_name" ]; then
+                echo "$ip|$rank|$password"
+                return 0
+            fi
+        done < <(grep -i "^$player_name|" "$PLAYERS_LOG")
+    fi
+    echo ""
+}
+
 # Function to send delayed uncommands
 send_delayed_uncommands() {
     local target_player="$1" command_type="$2"
@@ -308,6 +307,7 @@ send_delayed_uncommands() {
         sleep 2; send_server_command_silent "/un${command_type} $target_player"
         sleep 2; send_server_command_silent "/un${command_type} $target_player"
         sleep 1; send_server_command_silent "/un${command_type} $target_player"
+        remove_from_list_file "$target_player" "$command_type"
     ) &
 }
 
@@ -327,29 +327,26 @@ send_server_command() {
     fi
 }
 
-# Function to get player rank from players.log
+# Function to check if player is in list
+is_player_in_list() {
+    local player_name="$1" list_type="$2"
+    local list_file="$LOG_DIR/${list_type}list.txt"
+    [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"
+}
+
+# Function to get player rank
 get_player_rank() {
     local player_name="$1"
-    local player_info=$(get_player_info "$player_name")
-    if [ -n "$player_info" ]; then
-        echo "$player_info" | cut -d'|' -f2
+    if is_player_in_list "$player_name" "admin"; then
+        echo "admin"
+    elif is_player_in_list "$player_name" "mod"; then
+        echo "mod"
     else
         echo "NONE"
     fi
 }
 
-# Function to get player tickets from players.log
-get_player_tickets() {
-    local player_name="$1"
-    local player_info=$(get_player_info "$player_name")
-    if [ -n "$player_info" ]; then
-        echo "$player_info" | cut -d'|' -f5
-    else
-        echo "0"
-    fi
-}
-
-# Function to get IP by name from server log
+# Function to get IP by name
 get_ip_by_name() {
     local name="$1"
     if [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then
@@ -421,21 +418,14 @@ validate_ip_change() {
     local registered_ip=$(echo "$player_info" | cut -d'|' -f1)
     local registered_rank=$(echo "$player_info" | cut -d'|' -f2)
     local registered_password=$(echo "$player_info" | cut -d'|' -f3)
-    local ban_status=$(echo "$player_info" | cut -d'|' -f4)
-    local tickets=$(echo "$player_info" | cut -d'|' -f5)
-    local pwd_attempts=$(echo "$player_info" | cut -d'|' -f6)
-    local ip_attempts=$(echo "$player_info" | cut -d'|' -f7)
     
     if [ "$registered_password" != "$password" ]; then
         print_error "Invalid password for IP change: $player_name"
-        # Update IP change attempts
-        ip_attempts=$((ip_attempts + 1))
-        update_player_info "$player_name" "$registered_ip" "$registered_rank" "$registered_password" "$ban_status" "$tickets" "$pwd_attempts" "$ip_attempts"
         return 1
     fi
     
-    # Update IP in players.log and reset attempts
-    update_player_info "$player_name" "$current_ip" "$registered_rank" "$registered_password" "$ban_status" "$tickets" "$pwd_attempts" "0"
+    # Update IP in players.log
+    update_player_info "$player_name" "$current_ip" "$registered_rank" "$registered_password"
     print_success "IP updated for $player_name: $current_ip"
     
     # End grace period
@@ -460,23 +450,19 @@ handle_password_generation() {
     local player_name="$1" player_ip="$2"
     local player_info=$(get_player_info "$player_name")
     local player_rank=$(get_player_rank "$player_name")
-    local ban_status="NONE"
-    local tickets="0"
-    local pwd_attempts="0"
-    local ip_attempts="0"
-    
-    if [ -n "$player_info" ]; then
-        ban_status=$(echo "$player_info" | cut -d'|' -f4)
-        tickets=$(echo "$player_info" | cut -d'|' -f5)
-        pwd_attempts=$(echo "$player_info" | cut -d'|' -f6)
-        ip_attempts=$(echo "$player_info" | cut -d'|' -f7)
-    fi
     
     # Generate random password
     local new_password=$(generate_random_password)
     
-    # Update player info
-    update_player_info "$player_name" "$player_ip" "$player_rank" "$new_password" "$ban_status" "$tickets" "$pwd_attempts" "$ip_attempts"
+    if [ -z "$player_info" ]; then
+        # New player - add to players.log
+        update_player_info "$player_name" "$player_ip" "$player_rank" "$new_password"
+    else
+        # Existing player - update password
+        local registered_ip=$(echo "$player_info" | cut -d'|' -f1)
+        local registered_rank=$(echo "$player_info" | cut -d'|' -f2)
+        update_player_info "$player_name" "$registered_ip" "$registered_rank" "$new_password"
+    fi
     
     # Send password to player
     send_server_command "$player_name, your new password is: $new_password"
@@ -507,22 +493,18 @@ handle_password_change() {
     local registered_ip=$(echo "$player_info" | cut -d'|' -f1)
     local registered_rank=$(echo "$player_info" | cut -d'|' -f2)
     local registered_password=$(echo "$player_info" | cut -d'|' -f3)
-    local ban_status=$(echo "$player_info" | cut -d'|' -f4)
-    local tickets=$(echo "$player_info" | cut -d'|' -f5)
-    local pwd_attempts=$(echo "$player_info" | cut -d'|' -f6)
-    local ip_attempts=$(echo "$player_info" | cut -d'|' -f7)
     
     if [ "$registered_password" != "$old_password" ]; then
         print_error "Invalid old password for $player_name"
-        # Update password change attempts
-        pwd_attempts=$((pwd_attempts + 1))
-        update_player_info "$player_name" "$registered_ip" "$registered_rank" "$registered_password" "$ban_status" "$tickets" "$pwd_attempts" "$ip_attempts"
         send_server_command "$player_name, the old password is incorrect."
         return 1
     fi
     
-    # Check password change attempts (max 3 per hour)
-    if [ "$pwd_attempts" -ge 3 ]; then
+    # Check password change attempts
+    record_password_change_attempt "$player_name"
+    local attempt_count=$?
+    
+    if [ $attempt_count -gt 3 ]; then
         print_error "Password change limit exceeded for $player_name"
         send_server_command "$player_name, you've exceeded the password change limit (3 times per hour)."
         return 1
@@ -530,9 +512,7 @@ handle_password_change() {
     
     # Generate new password
     local new_password=$(generate_random_password)
-    
-    # Update player info with new password and reset attempts
-    update_player_info "$player_name" "$registered_ip" "$registered_rank" "$new_password" "$ban_status" "$tickets" "0" "$ip_attempts"
+    update_player_info "$player_name" "$registered_ip" "$registered_rank" "$new_password"
     
     # Send new password to player
     send_server_command "$player_name, your new password is: $new_password"
@@ -547,78 +527,6 @@ handle_password_change() {
     ) &
     
     return 0
-}
-
-# Function to handle rank purchase
-handle_rank_purchase() {
-    local player_name="$1" rank_type="$2" cost="$3"
-    local player_info=$(get_player_info "$player_name")
-    
-    if [ -z "$player_info" ]; then
-        print_error "Player $player_name not found in registry"
-        send_server_command "$player_name, you need to register first with !ip_psw"
-        return 1
-    fi
-    
-    local registered_ip=$(echo "$player_info" | cut -d'|' -f1)
-    local registered_rank=$(echo "$player_info" | cut -d'|' -f2)
-    local registered_password=$(echo "$player_info" | cut -d'|' -f3)
-    local ban_status=$(echo "$player_info" | cut -d'|' -f4)
-    local tickets=$(echo "$player_info" | cut -d'|' -f5)
-    local pwd_attempts=$(echo "$player_info" | cut -d'|' -f6)
-    local ip_attempts=$(echo "$player_info" | cut -d'|' -f7)
-    
-    # Check if player already has this rank
-    if [ "$registered_rank" = "$rank_type" ]; then
-        send_server_command "$player_name, you already have $rank_type rank."
-        return 1
-    fi
-    
-    # Check if player has enough tickets
-    if [ "$tickets" -lt "$cost" ]; then
-        send_server_command "$player_name, you need $cost tickets to buy $rank_type rank, but you only have $tickets."
-        return 1
-    fi
-    
-    # Deduct tickets and update rank
-    local new_tickets=$((tickets - cost))
-    update_player_info "$player_name" "$registered_ip" "$rank_type" "$registered_password" "$ban_status" "$new_tickets" "$pwd_attempts" "$ip_attempts"
-    
-    # Send success message
-    send_server_command "Congratulations $player_name! You have been promoted to $rank_type for $cost tickets. Remaining tickets: $new_tickets"
-    
-    return 0
-}
-
-# Function to grant login ticket
-grant_login_ticket() {
-    local player_name="$1" current_time=$(date +%s)
-    local player_info=$(get_player_info "$player_name")
-    
-    if [ -z "$player_info" ]; then
-        print_error "Player $player_name not found in registry"
-        return 1
-    fi
-    
-    local registered_ip=$(echo "$player_info" | cut -d'|' -f1)
-    local registered_rank=$(echo "$player_info" | cut -d'|' -f2)
-    local registered_password=$(echo "$player_info" | cut -d'|' -f3)
-    local ban_status=$(echo "$player_info" | cut -d'|' -f4)
-    local tickets=$(echo "$player_info" | cut -d'|' -f5)
-    local pwd_attempts=$(echo "$player_info" | cut -d'|' -f6)
-    local ip_attempts=$(echo "$player_info" | cut -d'|' -f7)
-    local last_login=$(echo "$player_info" | cut -d'|' -f8)
-    
-    # Grant ticket if it's been more than 1 hour since last login
-    if [ -z "$last_login" ] || [ $((current_time - last_login)) -ge 3600 ]; then
-        local new_tickets=$((tickets + 1))
-        update_player_info "$player_name" "$registered_ip" "$registered_rank" "$registered_password" "$ban_status" "$new_tickets" "$pwd_attempts" "$ip_attempts" "$current_time"
-        send_server_command "$player_name, you received 1 login ticket! Total tickets: $new_tickets"
-    else
-        local next_login=$((last_login + 3600))
-        local time_left=$((next_login - current_time))
-        send_server_command "$player_name, you must wait $((time_left / 60)) minutes for your next ticket."
-    fi
 }
 
 # Function to check for username theft with IP verification
@@ -636,10 +544,6 @@ check_username_theft() {
         local registered_ip=$(echo "$player_info" | cut -d'|' -f1)
         local registered_rank=$(echo "$player_info" | cut -d'|' -f2)
         local registered_password=$(echo "$player_info" | cut -d'|' -f3)
-        local ban_status=$(echo "$player_info" | cut -d'|' -f4)
-        local tickets=$(echo "$player_info" | cut -d'|' -f5)
-        local pwd_attempts=$(echo "$player_info" | cut -d'|' -f6)
-        local ip_attempts=$(echo "$player_info" | cut -d'|' -f7)
         
         if [ "$registered_ip" != "$player_ip" ]; then
             # IP doesn't match - check if player has password
@@ -652,7 +556,7 @@ check_username_theft() {
                     send_server_command "Use !ip_psw to generate a password, or you may lose access to your account."
                 ) &
                 # Update IP in registry
-                update_player_info "$player_name" "$player_ip" "$registered_rank" "$registered_password" "$ban_status" "$tickets" "$pwd_attempts" "$ip_attempts"
+                update_player_info "$player_name" "$player_ip" "$registered_rank" "$registered_password"
             else
                 # Password set - start grace period
                 print_warning "IP changed for $player_name (old IP: $registered_ip, new IP: $player_ip)"
@@ -662,16 +566,13 @@ check_username_theft() {
             # IP matches - update rank if needed
             local current_rank=$(get_player_rank "$player_name")
             if [ "$current_rank" != "$registered_rank" ]; then
-                update_player_info "$player_name" "$player_ip" "$current_rank" "$registered_password" "$ban_status" "$tickets" "$pwd_attempts" "$ip_attempts"
+                update_player_info "$player_name" "$player_ip" "$current_rank" "$registered_password"
             fi
-            
-            # Grant login ticket
-            grant_login_ticket "$player_name"
         fi
     else
         # New player - add to players.log with no password
         local rank=$(get_player_rank "$player_name")
-        update_player_info "$player_name" "$player_ip" "$rank" "NONE" "NONE" "0" "0" "0"
+        update_player_info "$player_name" "$player_ip" "$rank" "NONE"
         print_success "Added new player to registry: $player_name ($player_ip) with rank: $rank"
         
         # Remind player to set password after 5 seconds
@@ -720,17 +621,6 @@ check_dangerous_activity() {
             
             if [ $count -gt 2 ]; then
                 print_error "SPAM DETECTED: $player_name sent $count messages in 1 second"
-                # Ban player and update players.log
-                local player_info=$(get_player_info "$player_name")
-                local registered_ip=$(echo "$player_info" | cut -d'|' -f1)
-                local registered_rank=$(echo "$player_info" | cut -d'|' -f2)
-                local registered_password=$(echo "$player_info" | cut -d'|' -f3)
-                local tickets=$(echo "$player_info" | cut -d'|' -f5)
-                local pwd_attempts=$(echo "$player_info" | cut -d'|' -f6)
-                local ip_attempts=$(echo "$player_info" | cut -d'|' -f7)
-                
-                update_player_info "$player_name" "$registered_ip" "$registered_rank" "$registered_password" "BAN" "$tickets" "$pwd_attempts" "$ip_attempts"
-                
                 send_server_command "/ban $player_ip"
                 send_server_command "WARNING: $player_name (IP: $player_ip) was banned for spamming"
                 return 1
@@ -759,17 +649,6 @@ check_dangerous_activity() {
                 local offense_count=$?
                 
                 if [ $offense_count -ge 2 ]; then
-                    # Ban player and update players.log
-                    local player_info=$(get_player_info "$player_name")
-                    local registered_ip=$(echo "$player_info" | cut -d'|' -f1)
-                    local registered_rank=$(echo "$player_info" | cut -d'|' -f2)
-                    local registered_password=$(echo "$player_info" | cut -d'|' -f3)
-                    local tickets=$(echo "$player_info" | cut -d'|' -f5)
-                    local pwd_attempts=$(echo "$player_info" | cut -d'|' -f6)
-                    local ip_attempts=$(echo "$player_info" | cut -d'|' -f7)
-                    
-                    update_player_info "$player_name" "$registered_ip" "$registered_rank" "$registered_password" "BAN" "$tickets" "$pwd_attempts" "$ip_attempts"
-                    
                     send_server_command "/ban $player_ip"
                     send_server_command "WARNING: $player_name (IP: $player_ip) was banned for attempting dangerous commands"
                     return 1
@@ -789,8 +668,7 @@ handle_unauthorized_command() {
     local player_name="$1" command="$2" target_player="$3"
     local player_ip=$(get_ip_by_name "$player_name")
     
-    local player_rank=$(get_player_rank "$player_name")
-    if [ "$player_rank" = "admin" ]; then
+    if is_player_in_list "$player_name" "admin"; then
         print_error "UNAUTHORIZED COMMAND: Admin $player_name attempted to use $command on $target_player"
         send_server_command "WARNING: Admin $player_name attempted unauthorized rank assignment!"
         local command_type=""
@@ -798,7 +676,10 @@ handle_unauthorized_command() {
         [ "$command" = "/mod" ] && command_type="mod"
         if [ -n "$command_type" ]; then
             send_server_command_silent "/un${command_type} $target_player"
+            remove_from_list_file "$target_player" "$command_type"
             send_delayed_uncommands "$target_player" "$command_type"
+            # Update player rank in players.log
+            update_player_rank "$target_player" "NONE"
         fi
         record_admin_offense "$player_name"
         local offense_count=$?
@@ -808,16 +689,14 @@ handle_unauthorized_command() {
             send_server_command "$player_name, this is your second warning! One more and you will be demoted to mod."
         elif [ "$offense_count" -ge 3 ]; then
             print_warning "THIRD OFFENSE: Admin $player_name is being demoted to mod"
-            # Update player rank to mod
-            local player_info=$(get_player_info "$player_name")
-            local registered_ip=$(echo "$player_info" | cut -d'|' -f1)
-            local registered_password=$(echo "$player_info" | cut -d'|' -f3)
-            local ban_status=$(echo "$player_info" | cut -d'|' -f4)
-            local tickets=$(echo "$player_info" | cut -d'|' -f5)
-            local pwd_attempts=$(echo "$player_info" | cut -d'|' -f6)
-            local ip_attempts=$(echo "$player_info" | cut -d'|' -f7)
-            
-            update_player_info "$player_name" "$registered_ip" "mod" "$registered_password" "$ban_status" "$tickets" "$pwd_attempts" "$ip_attempts"
+            # Remove from admin files
+            remove_from_list_file "$player_name" "admin"
+            send_server_command_silent "/unadmin $player_name"
+            # Add to mod files
+            echo "$player_name" >> "$AUTHORIZED_MODS_FILE"
+            send_server_command "/mod $player_name"
+            # Update players.log
+            update_player_rank "$player_name" "mod"
             clear_admin_offenses "$player_name"
         fi
     else
@@ -825,10 +704,16 @@ handle_unauthorized_command() {
         send_server_command "$player_name, you don't have permission to assign ranks."
         if [ "$command" = "/admin" ]; then
             send_server_command_silent "/unadmin $target_player"
+            remove_from_list_file "$target_player" "admin"
             send_delayed_uncommands "$target_player" "admin"
+            # Update player rank in players.log
+            update_player_rank "$target_player" "NONE"
         elif [ "$command" = "/mod" ]; then
             send_server_command_silent "/unmod $target_player"
+            remove_from_list_file "$target_player" "mod"
             send_delayed_uncommands "$target_player" "mod"
+            # Update player rank in players.log
+            update_player_rank "$target_player" "NONE"
         fi
     fi
 }
@@ -848,49 +733,30 @@ cleanup() {
     print_status "Cleaning up anticheat..."
     kill $(jobs -p) 2>/dev/null
     rm -f "${ADMIN_OFFENSES_FILE}.lock" 2>/dev/null
+    rm -f "${IP_CHANGE_ATTEMPTS_FILE}.lock" 2>/dev/null
+    rm -f "${PASSWORD_CHANGE_ATTEMPTS_FILE}.lock" 2>/dev/null
     exit 0
-}
-
-# Function to monitor players.log for changes and sync with server lists
-monitor_players_log() {
-    local last_modified=$(stat -c %Y "$PLAYERS_LOG" 2>/dev/null || stat -f %m "$PLAYERS_LOG")
-    while true; do
-        sleep 1
-        local current_modified=$(stat -c %Y "$PLAYERS_LOG" 2>/dev/null || stat -f %m "$PLAYERS_LOG")
-        if [ "$current_modified" -ne "$last_modified" ]; then
-            print_status "players.log modified - syncing with server lists"
-            last_modified=$current_modified
-            
-            # Read players.log and sync all players
-            while IFS='|' read -r name ip rank password ban_status tickets pwd_attempts ip_attempts; do
-                # Skip comment lines
-                [[ "$name" =~ ^# ]] && continue
-                [[ -z "$name" ]] && continue
-                
-                sync_player_lists "$name" "$rank" "$ban_status"
-            done < "$PLAYERS_LOG"
-        fi
-    done
 }
 
 # Function to monitor log
 monitor_log() {
     local log_file="$1"
     LOG_FILE="$log_file"
-    initialize_players_log
+    initialize_authorization_files
     initialize_admin_offenses
     
-    # Start players.log monitoring in background
-    monitor_players_log &
-    local monitor_pid=$!
-    
-    # Start banned players kicker in background
-    kick_banned_players &
-    local kicker_pid=$!
+    # Start validation process in background
+    (
+        while true; do 
+            sleep 30
+            validate_authorization
+        done
+    ) &
+    local validation_pid=$!
     
     trap cleanup EXIT INT TERM
     
-    print_header "STARTING ANTICHEAT SECURITY SYSTEM WITH ENHANCED players.log MANAGEMENT"
+    print_header "STARTING ANTICHEAT SECURITY SYSTEM WITH IP VERIFICATION"
     print_status "Monitoring: $log_file"
     print_status "Port: $PORT"
     print_status "Log directory: $LOG_DIR"
@@ -906,7 +772,7 @@ monitor_log() {
     
     if [ ! -f "$log_file" ]; then
         print_error "Log file never appeared: $log_file"
-        kill $monitor_pid $kicker_pid 2>/dev/null
+        kill $validation_pid 2>/dev/null
         exit 1
     fi
     
@@ -1035,16 +901,6 @@ monitor_log() {
                         send_server_command "$player_name, you don't have a pending IP change verification."
                     fi
                     ;;
-                "!buy_admin")
-                    handle_rank_purchase "$player_name" "admin" 100
-                    ;;
-                "!buy_mod")
-                    handle_rank_purchase "$player_name" "mod" 50
-                    ;;
-                "!tickets")
-                    local tickets=$(get_player_tickets "$player_name")
-                    send_server_command "$player_name, you have $tickets tickets."
-                    ;;
                 *)
                     # Check for dangerous activity
                     check_dangerous_activity "$player_name" "$message"
@@ -1053,7 +909,7 @@ monitor_log() {
         fi
     done
     
-    kill $monitor_pid $kicker_pid 2>/dev/null
+    kill $validation_pid 2>/dev/null
 }
 
 # Function to show usage
