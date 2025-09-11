@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =============================================================================
-# THE BLOCKHEADS ANTICHEAT SECURITY SYSTEM WITH IP VERIFICATION
+# THE BLOCKHEADS SERVER MANAGEMENT SYSTEM
 # =============================================================================
 
 # Color codes for output
@@ -35,12 +35,20 @@ fi
 LOG_FILE="$1"
 PORT="$2"
 LOG_DIR=$(dirname "$LOG_FILE")
+ADMIN_OFFENSES_FILE="$LOG_DIR/admin_offenses_$PORT.json"
 PLAYERS_LOG="$LOG_DIR/players.log"
+ECONOMY_FILE="$LOG_DIR/economy_data_$PORT.json"
 SCREEN_SERVER="blockheads_server_$PORT"
+IP_CHANGE_ATTEMPTS_FILE="$LOG_DIR/ip_change_attempts.json"
+PASSWORD_CHANGE_ATTEMPTS_FILE="$LOG_DIR/password_change_attempts.json"
 
 # Track player messages for spam detection
 declare -A player_message_times
 declare -A player_message_counts
+
+# Track admin commands for spam detection
+declare -A admin_last_command_time
+declare -A admin_command_count
 
 # Track IP change grace periods
 declare -A ip_change_grace_periods
@@ -49,7 +57,7 @@ declare -A ip_change_pending_players
 # Function to sync players.log with list files
 sync_list_files() {
     local list_type="$1"
-    local list_file="$LOG_DIR/${list_type}list.txt"
+    local list_file="$LOG_DIR/${list_type}.txt"
     
     [ ! -f "$PLAYERS_LOG" ] && return
     
@@ -89,6 +97,58 @@ extract_real_name() {
 generate_random_password() {
     local length=7
     tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$length"
+}
+
+# Function to read JSON file with locking
+read_json_file() {
+    local file_path="$1"
+    [ ! -f "$file_path" ] && echo "{}" > "$file_path" && echo "{}" && return 0
+    flock -s 200 cat "$file_path" 200>"${file_path}.lock"
+}
+
+# Function to write JSON file with locking
+write_json_file() {
+    local file_path="$1" content="$2"
+    [ ! -f "$file_path" ] && touch "$file_path"
+    flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
+}
+
+# Function to record IP change attempt
+record_ip_change_attempt() {
+    local player_name="$1" current_time=$(date +%s)
+    local attempts_data=$(read_json_file "$IP_CHANGE_ATTEMPTS_FILE" 2>/dev/null || echo '{}')
+    local current_attempts=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.attempts // 0')
+    local last_attempt_time=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.last_attempt // 0')
+    
+    # Reset counter if more than 1 hour has passed
+    [ $((current_time - last_attempt_time)) -gt 3600 ] && current_attempts=0
+    
+    current_attempts=$((current_attempts + 1))
+    attempts_data=$(echo "$attempts_data" | jq --arg player "$player_name" \
+        --argjson attempts "$current_attempts" --argjson time "$current_time" \
+        '.[$player] = {"attempts": $attempts, "last_attempt": $time}')
+    
+    write_json_file "$IP_CHANGE_ATTEMPTS_FILE" "$attempts_data"
+    return $current_attempts
+}
+
+# Function to record password change attempt
+record_password_change_attempt() {
+    local player_name="$1" current_time=$(date +%s)
+    local attempts_data=$(read_json_file "$PASSWORD_CHANGE_ATTEMPTS_FILE" 2>/dev/null || echo '{}')
+    local current_attempts=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.attempts // 0')
+    local last_attempt_time=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.last_attempt // 0')
+    
+    # Reset counter if more than 1 hour has passed
+    [ $((current_time - last_attempt_time)) -gt 3600 ] && current_attempts=0
+    
+    current_attempts=$((current_attempts + 1))
+    attempts_data=$(echo "$attempts_data" | jq --arg player "$player_name" \
+        --argjson attempts "$current_attempts" --argjson time "$current_time" \
+        '.[$player] = {"attempts": $attempts, "last_attempt": $time}')
+    
+    write_json_file "$PASSWORD_CHANGE_ATTEMPTS_FILE" "$attempts_data"
+    return $current_attempts
 }
 
 # Function to check for illegal characters in player names
@@ -151,9 +211,99 @@ handle_invalid_player_name() {
 # Function to initialize authorization files
 initialize_authorization_files() {
     [ ! -f "$PLAYERS_LOG" ] && touch "$PLAYERS_LOG"
+    [ ! -f "$IP_CHANGE_ATTEMPTS_FILE" ] && echo "{}" > "$IP_CHANGE_ATTEMPTS_FILE"
+    [ ! -f "$PASSWORD_CHANGE_ATTEMPTS_FILE" ] && echo "{}" > "$PASSWORD_CHANGE_ATTEMPTS_FILE"
     
     # Sync list files with players.log
     sync_all_list_files
+}
+
+# Function to initialize economy
+initialize_economy() {
+    [ ! -f "$ECONOMY_FILE" ] && echo '{"players": {}, "transactions": []}' > "$ECONOMY_FILE"
+}
+
+# Function to add player to economy if new
+add_player_if_new() {
+    local player_name="$1"
+    ! is_valid_player_name "$player_name" && return 1
+    
+    local current_data=$(read_json_file "$ECONOMY_FILE")
+    local player_exists=$(echo "$current_data" | jq --arg player "$player_name" '.players | has($player)')
+    
+    [ "$player_exists" = "false" ] && {
+        current_data=$(echo "$current_data" | jq --arg player "$player_name" \
+            '.players[$player] = {"tickets": 0, "last_login": 0, "last_welcome_time": 0, "last_help_time": 0, "last_greeting_time": 0, "purchases": []}')
+        write_json_file "$ECONOMY_FILE" "$current_data"
+        give_first_time_bonus "$player_name"
+        return 0
+    }
+    return 1
+}
+
+# Function to give first time bonus
+give_first_time_bonus() {
+    local player_name="$1" current_time=$(date +%s) time_str="$(date '+%Y-%m-%d %H:%M:%S')"
+    local current_data=$(read_json_file "$ECONOMY_FILE")
+    current_data=$(echo "$current_data" | jq --arg player "$player_name" '.players[$player].tickets = 1')
+    current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_login = $time')
+    current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" \
+        '.transactions += [{"player": $player, "type": "welcome_bonus", "tickets": 1, "time": $time}]')
+    write_json_file "$ECONOMY_FILE" "$current_data"
+}
+
+# Function to grant login ticket
+grant_login_ticket() {
+    local player_name="$1" current_time=$(date +%s) time_str="$(date '+%Y-%m-%d %H:%M:%S')"
+    local current_data=$(read_json_file "$ECONOMY_FILE")
+    local last_login=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_login // 0')
+    last_login=${last_login:-0}
+    
+    [ "$last_login" -eq 0 ] || [ $((current_time - last_login)) -ge 3600 ] && {
+        local current_tickets=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].tickets // 0')
+        current_tickets=${current_tickets:-0}
+        local new_tickets=$((current_tickets + 1))
+        
+        current_data=$(echo "$current_data" | jq --arg player "$player_name" \
+            --argjson tickets "$new_tickets" --argjson time "$current_time" --arg time_str "$time_str" \
+            '.players[$player].tickets = $tickets | 
+             .players[$player].last_login = $time |
+             .transactions += [{"player": $player, "type": "login_bonus", "tickets": 1, "time": $time_str}]')
+        
+        write_json_file "$ECONOMY_FILE" "$current_data"
+        print_success "Granted 1 ticket to $player_name (Total: $new_tickets)"
+    } || {
+        local next_login=$((last_login + 3600))
+        local time_left=$((next_login - current_time))
+        print_warning "$player_name must wait $((time_left / 60)) minutes for next ticket"
+    }
+}
+
+# Function to show welcome message
+show_welcome_message() {
+    local player_name="$1" is_new_player="$2" force_send="${3:-0}"
+    ! is_valid_player_name "$player_name" && return
+    
+    local current_time=$(date +%s)
+    local current_data=$(read_json_file "$ECONOMY_FILE")
+    local last_welcome_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_welcome_time // 0')
+    last_welcome_time=${last_welcome_time:-0}
+    
+    # 30-second cooldown for welcome messages
+    [ "$force_send" -eq 1 ] || [ "$last_welcome_time" -eq 0 ] || [ $((current_time - last_welcome_time)) -ge 30 ] && {
+        [ "$is_new_player" = "true" ] && {
+            send_server_command "Hello $player_name! Welcome to the server. Type !help to check available commands."
+        } || {
+            local last_greeting_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_greeting_time // 0')
+            [ $((current_time - last_greeting_time)) -ge 600 ] && {
+                send_server_command "Welcome back $player_name! Type !help to see available commands."
+                current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_greeting_time = $time')
+                write_json_file "$ECONOMY_FILE" "$current_data"
+            }
+        }
+        current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_welcome_time = $time')
+        write_json_file "$ECONOMY_FILE" "$current_data"
+    } || print_warning "Skipping welcome for $player_name due to cooldown"
 }
 
 # Function to validate authorization
@@ -162,10 +312,39 @@ validate_authorization() {
     sync_all_list_files
 }
 
+# Function to initialize admin offenses
+initialize_admin_offenses() {
+    [ ! -f "$ADMIN_OFFENSES_FILE" ] && echo '{}' > "$ADMIN_OFFENSES_FILE"
+}
+
+# Function to record admin offense
+record_admin_offense() {
+    local admin_name="$1" current_time=$(date +%s)
+    local offenses_data=$(read_json_file "$ADMIN_OFFENSES_FILE" 2>/dev/null || echo '{}')
+    local current_offenses=$(echo "$offenses_data" | jq -r --arg admin "$admin_name" '.[$admin]?.count // 0')
+    local last_offense_time=$(echo "$offenses_data" | jq -r --arg admin "$admin_name" '.[$admin]?.last_offense // 0')
+    [ $((current_time - last_offense_time)) -gt 300 ] && current_offenses=0
+    current_offenses=$((current_offenses + 1))
+    offenses_data=$(echo "$offenses_data" | jq --arg admin "$admin_name" \
+        --argjson count "$current_offenses" --argjson time "$current_time" \
+        '.[$admin] = {"count": $count, "last_offense": $time}')
+    write_json_file "$ADMIN_OFFENSES_FILE" "$offenses_data"
+    print_warning "Recorded offense #$current_offenses for admin $admin_name"
+    return $current_offenses
+}
+
+# Function to clear admin offenses
+clear_admin_offenses() {
+    local admin_name="$1"
+    local offenses_data=$(read_json_file "$ADMIN_OFFENSES_FILE" 2>/dev/null || echo '{}')
+    offenses_data=$(echo "$offenses_data" | jq --arg admin "$admin_name" 'del(.[$admin])')
+    write_json_file "$ADMIN_OFFENSES_FILE" "$offenses_data"
+}
+
 # Function to remove from list file
 remove_from_list_file() {
     local player_name="$1" list_type="$2"
-    local list_file="$LOG_DIR/${list_type}list.txt"
+    local list_file="$LOG_DIR/${list_type}.txt"
     [ ! -f "$list_file" ] && return 1
     if grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"; then
         sed -i "/^$player_name$/Id" "$list_file"
@@ -232,7 +411,7 @@ send_server_command() {
 # Function to check if player is in list
 is_player_in_list() {
     local player_name="$1" list_type="$2"
-    local list_file="$LOG_DIR/${list_type}list.txt"
+    local list_file="$LOG_DIR/${list_type}.txt"
     [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"
 }
 
@@ -405,6 +584,16 @@ handle_password_change() {
         return 1
     fi
     
+    # Check password change attempts
+    record_password_change_attempt "$player_name"
+    local attempt_count=$?
+    
+    if [ $attempt_count -gt 3 ]; then
+        print_error "Password change limit exceeded for $player_name"
+        send_server_command "$player_name, you've exceeded the password change limit (3 times per hour)."
+        return 1
+    fi
+    
     # Generate new password
     local new_password=$(generate_random_password)
     update_player_info "$player_name" "$registered_ip" "$registered_rank" "$new_password" "$ban_status"
@@ -540,6 +729,30 @@ check_dangerous_activity() {
         player_message_counts[$player_name]=1
     fi
     
+    # Check for dangerous commands from ranked players
+    local rank=$(get_player_rank "$player_name")
+    if [ "$rank" != "NONE" ]; then
+        # List of dangerous commands
+        local dangerous_commands="/stop /shutdown /restart /banall /kickall /op /deop /save-off"
+        
+        for cmd in $dangerous_commands; do
+            if [[ "$message" == "$cmd"* ]]; then
+                print_error "DANGEROUS COMMAND: $player_name ($rank) attempted to use: $message"
+                record_admin_offense "$player_name"
+                local offense_count=$?
+                
+                if [ $offense_count -ge 2 ]; then
+                    send_server_command "/ban $player_ip"
+                    send_server_command "WARNING: $player_name (IP: $player_ip) was banned for attempting dangerous commands"
+                    return 1
+                else
+                    send_server_command "WARNING: $player_name, dangerous commands are restricted!"
+                    return 0
+                fi
+            fi
+        done
+    fi
+    
     return 0
 }
 
@@ -559,7 +772,26 @@ handle_unauthorized_command() {
             remove_from_list_file "$target_player" "$command_type"
             send_delayed_uncommands "$target_player" "$command_type"
         fi
-        send_server_command "$player_name, only the server console can assign ranks."
+        record_admin_offense "$player_name"
+        local offense_count=$?
+        if [ "$offense_count" -eq 1 ]; then
+            send_server_command "$player_name, this is your first warning! Only the server console can assign ranks."
+        elif [ "$offense_count" -eq 2 ]; then
+            send_server_command "$player_name, this is your second warning! One more and you will be demoted to mod."
+        elif [ "$offense_count" -ge 3 ]; then
+            print_warning "THIRD OFFENSE: Admin $player_name is being demoted to mod for multiple unauthorized rank assignment attempts"
+            # Remove from admin files
+            remove_from_list_file "$player_name" "admin"
+            send_server_command_silent "/unadmin $player_name"
+            # Add to mod files
+            local player_info=$(get_player_info "$player_name")
+            local registered_ip=$(echo "$player_info" | cut -d'|' -f1)
+            local registered_password=$(echo "$player_info" | cut -d'|' -f3)
+            local ban_status=$(echo "$player_info" | cut -d'|' -f4)
+            update_player_info "$player_name" "$registered_ip" "mod" "$registered_password" "$ban_status"
+            send_server_command "$player_name has been demoted to MOD for multiple unauthorized rank assignment attempts."
+            clear_admin_offenses "$player_name"
+        fi
     else
         print_warning "Non-admin player $player_name attempted to use $command on $target_player"
         send_server_command "$player_name, you don't have permission to assign ranks."
@@ -575,6 +807,270 @@ handle_unauthorized_command() {
     fi
 }
 
+# Function to check if player has purchased an item
+has_purchased() {
+    local player_name="$1" item="$2"
+    local current_data=$(read_json_file "$ECONOMY_FILE")
+    local has_item=$(echo "$current_data" | jq --arg player "$player_name" --arg item "$item" '.players[$player].purchases | index($item) != null')
+    [ "$has_item" = "true" ]
+}
+
+# Function to add purchase
+add_purchase() {
+    local player_name="$1" item="$2"
+    local current_data=$(read_json_file "$ECONOMY_FILE")
+    current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg item "$item" '.players[$player].purchases += [$item]')
+    write_json_file "$ECONOMY_FILE" "$current_data"
+}
+
+# Function to process give rank command
+process_give_rank() {
+    local giver_name="$1" target_player="$2" rank_type="$3"
+    local current_data=$(read_json_file "$ECONOMY_FILE")
+    local giver_tickets=$(echo "$current_data" | jq -r --arg player "$giver_name" '.players[$player].tickets // 0')
+    giver_tickets=${giver_tickets:-0}
+    
+    local cost=0
+    [ "$rank_type" = "admin" ] && cost=140
+    [ "$rank_type" = "mod" ] && cost=70
+    
+    [ "$giver_tickets" -lt "$cost" ] && {
+        send_server_command "$giver_name, you need $cost tickets to give $rank_type rank, but you only have $giver_tickets."
+        return 1
+    }
+    
+    ! is_valid_player_name "$target_player" && {
+        send_server_command "$giver_name, invalid player name: $target_player"
+        return 1
+    }
+    
+    local new_tickets=$((giver_tickets - cost))
+    current_data=$(echo "$current_data" | jq --arg player "$giver_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
+    
+    local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
+    current_data=$(echo "$current_data" | jq --arg giver "$giver_name" --arg target "$target_player" \
+        --arg rank "$rank_type" --argjson cost "$cost" --arg time "$time_str" \
+        '.transactions += [{"giver": $giver, "recipient": $target, "type": "rank_gift", "rank": $rank, "tickets": -$cost, "time": $time}]')
+    
+    write_json_file "$ECONOMY_FILE" "$current_data"
+    
+    # Update players.log with the new rank
+    local target_info=$(get_player_info "$target_player")
+    if [ -n "$target_info" ]; then
+        local target_ip=$(echo "$target_info" | cut -d'|' -f1)
+        local target_password=$(echo "$target_info" | cut -d'|' -f3)
+        local ban_status=$(echo "$target_info" | cut -d'|' -f4)
+        update_player_info "$target_player" "$target_ip" "$rank_type" "$target_password" "$ban_status"
+    else
+        # If player doesn't exist in players.log, create entry
+        local target_ip=$(get_ip_by_name "$target_player")
+        update_player_info "$target_player" "$target_ip" "$rank_type" "NONE" "NONE"
+    fi
+    
+    # Apply the rank in-game
+    screen -S "$SCREEN_SERVER" -p 0 -X stuff "/$rank_type $target_player$(printf \\r)"
+    
+    send_server_command "Congratulations! $giver_name has gifted $rank_type rank to $target_player for $cost tickets."
+    send_server_command "$giver_name, your new ticket balance: $new_tickets"
+    return 0
+}
+
+# Function to process economy message
+process_economy_message() {
+    local player_name="$1" message="$2"
+    ! is_valid_player_name "$player_name" && return
+    
+    local current_data=$(read_json_file "$ECONOMY_FILE")
+    local player_tickets=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].tickets // 0')
+    player_tickets=${player_tickets:-0}
+    
+    case "$message" in
+        "!tickets"|"ltickets")
+            send_server_command "$player_name, you have $player_tickets tickets."
+            ;;
+        "!buy_mod")
+            (has_purchased "$player_name" "mod" || [ "$(get_player_rank "$player_name")" = "mod" ]) && {
+                send_server_command "$player_name, you already have MOD rank."
+            } || [ "$player_tickets" -ge 50 ] && {
+                local new_tickets=$((player_tickets - 50))
+                current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
+                add_purchase "$player_name" "mod"
+                local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
+                current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" \
+                    '.transactions += [{"player": $player, "type": "purchase", "item": "mod", "tickets": -50, "time": $time}]')
+                write_json_file "$ECONOMY_FILE" "$current_data"
+                
+                # Update players.log with the new rank
+                local player_info=$(get_player_info "$player_name")
+                if [ -n "$player_info" ]; then
+                    local player_ip=$(echo "$player_info" | cut -d'|' -f1)
+                    local player_password=$(echo "$player_info" | cut -d'|' -f3)
+                    local ban_status=$(echo "$player_info" | cut -d'|' -f4)
+                    update_player_info "$player_name" "$player_ip" "mod" "$player_password" "$ban_status"
+                else
+                    # If player doesn't exist in players.log, create entry
+                    local player_ip=$(get_ip_by_name "$player_name")
+                    update_player_info "$player_name" "$player_ip" "mod" "NONE" "NONE"
+                fi
+                
+                # Apply the rank in-game
+                screen -S "$SCREEN_SERVER" -p 0 -X stuff "/mod $player_name$(printf \\r)"
+                send_server_command "Congratulations $player_name! You have been promoted to MOD for 50 tickets. Remaining tickets: $new_tickets"
+            } || send_server_command "$player_name, you need $((50 - player_tickets)) more tickets to buy MOD rank."
+            ;;
+        "!buy_admin")
+            (has_purchased "$player_name" "admin" || [ "$(get_player_rank "$player_name")" = "admin" ]) && {
+                send_server_command "$player_name, you already have ADMIN rank."
+            } || [ "$player_tickets" -ge 100 ] && {
+                local new_tickets=$((player_tickets - 100))
+                current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
+                add_purchase "$player_name" "admin"
+                local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
+                current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" \
+                    '.transactions += [{"player": $player, "type": "purchase", "item": "admin", "tickets": -100, "time": $time}]')
+                write_json_file "$ECONOMY_FILE" "$current_data"
+                
+                # Update players.log with the new rank
+                local player_info=$(get_player_info "$player_name")
+                if [ -n "$player_info" ]; then
+                    local player_ip=$(echo "$player_info" | cut -d'|' -f1)
+                    local player_password=$(echo "$player_info" | cut -d'|' -f3)
+                    local ban_status=$(echo "$player_info" | cut -d'|' -f4)
+                    update_player_info "$player_name" "$player_ip" "admin" "$player_password" "$ban_status"
+                else
+                    # If player doesn't exist in players.log, create entry
+                    local player_ip=$(get_ip_by_name "$player_name")
+                    update_player_info "$player_name" "$player_ip" "admin" "NONE" "NONE"
+                fi
+                
+                # Apply the rank in-game
+                screen -S "$SCREEN_SERVER" -p 0 -X stuff "/admin $player_name$(printf \\r)"
+                send_server_command "Congratulations $player_name! You have been promoted to ADMIN for 100 tickets. Remaining tickets: $new_tickets"
+            } || send_server_command "$player_name, you need $((100 - player_tickets)) more tickets to buy ADMIN rank."
+            ;;
+        "!give_admin "*)
+            [[ "$message" =~ !give_admin\ ([a-zA-Z0-9_]+) ]] && \
+            process_give_rank "$player_name" "${BASH_REMATCH[1]}" "admin" || \
+            send_server_command "Usage: !give_admin PLAYER_NAME"
+            ;;
+        "!give_mod "*)
+            [[ "$message" =~ !give_mod\ ([a-zA-Z0-9_]+) ]] && \
+            process_give_rank "$player_name" "${BASH_REMATCH[1]}" "mod" || \
+            send_server_command "Usage: !give_mod PLAYER_NAME"
+            ;;
+        "!help")
+            send_server_command "Available commands:"
+            send_server_command "!tickets - Check your tickets"
+            send_server_command "!buy_mod - Buy MOD rank for 50 tickets"
+            send_server_command "!buy_admin - Buy ADMIN rank for 100 tickets"
+            send_server_command "!give_mod PLAYER - Gift MOD rank (70 tickets)"
+            send_server_command "!give_admin PLAYER - Gift ADMIN rank (140 tickets)"
+            send_server_command "!ip_psw - Generate IP verification password"
+            send_server_command "!ip_psw_change OLD_PASSWORD - Change IP verification password"
+            send_server_command "!ip_change PASSWORD - Verify IP change with password"
+            ;;
+    esac
+}
+
+# Function to process admin command
+process_admin_command() {
+    local command="$1" current_data=$(read_json_file "$ECONOMY_FILE")
+    
+    if [[ "$command" =~ ^!send_ticket\ ([a-zA-Z0-9_]+)\ ([0-9]+)$ ]]; then
+        local player_name="${BASH_REMATCH[1]}" tickets_to_add="${BASH_REMATCH[2]}"
+        
+        ! is_valid_player_name "$player_name" && {
+            print_error "Invalid player name: $player_name"
+            return 1
+        }
+        
+        [[ ! "$tickets_to_add" =~ ^[0-9]+$ ]] || [ "$tickets_to_add" -le 0 ] && {
+            print_error "Invalid ticket amount: $tickets_to_add"
+            return 1
+        }
+        
+        local player_exists=$(echo "$current_data" | jq --arg player "$player_name" '.players | has($player)')
+        [ "$player_exists" = "false" ] && print_error "Player $player_name not found" && return 1
+        
+        local current_tickets=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].tickets // 0')
+        current_tickets=${current_tickets:-0}
+        local new_tickets=$((current_tickets + tickets_to_add))
+        
+        current_data=$(echo "$current_data" | jq --arg player "$player_name" \
+            --argjson tickets "$new_tickets" --arg time_str "$(date '+%Y-%m-%d %H:%M:%S')" \
+            --argjson amount "$tickets_to_add" \
+            '.players[$player].tickets = $tickets |
+             .transactions += [{"player": $player, "type": "admin_gift", "tickets": $amount, "time": $time_str}]')
+        
+        write_json_file "$ECONOMY_FILE" "$current_data"
+        print_success "Added $tickets_to_add tickets to $player_name (Total: $new_tickets)"
+        send_server_command "$player_name received $tickets_to_add tickets from admin! Total: $new_tickets"
+    elif [[ "$command" =~ ^!set_mod\ ([a-zA-Z0-9_]+)$ ]]; then
+        local player_name="${BASH_REMATCH[1]}"
+        ! is_valid_player_name "$player_name" && print_error "Invalid player name: $player_name" && return 1
+        
+        print_success "Setting $player_name as MOD"
+        
+        # Update players.log with the new rank
+        local player_info=$(get_player_info "$player_name")
+        if [ -n "$player_info" ]; then
+            local player_ip=$(echo "$player_info" | cut -d'|' -f1)
+            local player_password=$(echo "$player_info" | cut -d'|' -f3)
+            local ban_status=$(echo "$player_info" | cut -d'|' -f4)
+            update_player_info "$player_name" "$player_ip" "mod" "$player_password" "$ban_status"
+        else
+            # If player doesn't exist in players.log, create entry
+            local player_ip=$(get_ip_by_name "$player_name")
+            update_player_info "$player_name" "$player_ip" "mod" "NONE" "NONE"
+        fi
+        
+        # Apply the rank in-game
+        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/mod $player_name$(printf \\r)"
+        send_server_command "$player_name has been set as MOD by server console!"
+    elif [[ "$command" =~ ^!set_admin\ ([a-zA-Z0-9_]+)$ ]]; then
+        local player_name="${BASH_REMATCH[1]}"
+        ! is_valid_player_name "$player_name" && print_error "Invalid player name: $player_name" && return 1
+        
+        print_success "Setting $player_name as ADMIN"
+        
+        # Update players.log with the new rank
+        local player_info=$(get_player_info "$player_name")
+        if [ -n "$player_info" ]; then
+            local player_ip=$(echo "$player_info" | cut -d'|' -f1)
+            local player_password=$(echo "$player_info" | cut -d'|' -f3)
+            local ban_status=$(echo "$player_info" | cut -d'|' -f4)
+            update_player_info "$player_name" "$player_ip" "admin" "$player_password" "$ban_status"
+        else
+            # If player doesn't exist in players.log, create entry
+            local player_ip=$(get_ip_by_name "$player_name")
+            update_player_info "$player_name" "$player_ip" "admin" "NONE" "NONE"
+        fi
+        
+        # Apply the rank in-game
+        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/admin $player_name$(printf \\r)"
+        send_server_command "$player_name has been set as ADMIN by server console!"
+    else
+        print_error "Unknown admin command: $command"
+    fi
+}
+
+# Function to check if server sent welcome recently
+server_sent_welcome_recently() {
+    local player_name="$1"
+    [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ] && return 1
+    local player_lc=$(echo "$player_name" | tr '[:upper:]' '[:lower:]')
+    
+    tail -n 100 "$LOG_FILE" 2>/dev/null | grep -i "server:.*welcome.*$player_lc" | head -1 | grep -q . && return 0
+    
+    local current_time=$(date +%s)
+    local current_data=$(read_json_file "$ECONOMY_FILE")
+    local last_welcome_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_welcome_time // 0')
+    
+    [ "$last_welcome_time" -gt 0 ] && [ $((current_time - last_welcome_time)) -le 30 ] && return 0
+    
+    return 1
+}
+
 # Function to filter server log
 filter_server_log() {
     while read -r line; do
@@ -587,8 +1083,12 @@ filter_server_log() {
 
 # Function to cleanup
 cleanup() {
-    print_status "Cleaning up anticheat..."
+    print_status "Cleaning up..."
     kill $(jobs -p) 2>/dev/null
+    rm -f "${ADMIN_OFFENSES_FILE}.lock" 2>/dev/null
+    rm -f "${IP_CHANGE_ATTEMPTS_FILE}.lock" 2>/dev/null
+    rm -f "${PASSWORD_CHANGE_ATTEMPTS_FILE}.lock" 2>/dev/null
+    rm -f "${ECONOMY_FILE}.lock" 2>/dev/null
     exit 0
 }
 
@@ -597,6 +1097,8 @@ monitor_log() {
     local log_file="$1"
     LOG_FILE="$log_file"
     initialize_authorization_files
+    initialize_admin_offenses
+    initialize_economy
     
     # Start validation process in background
     (
@@ -609,11 +1111,11 @@ monitor_log() {
     
     trap cleanup EXIT INT TERM
     
-    print_header "STARTING ANTICHEAT SECURITY SYSTEM WITH IP VERIFICATION"
+    print_header "STARTING BLOCKHEADS SERVER MANAGEMENT SYSTEM"
     print_status "Monitoring: $log_file"
     print_status "Port: $PORT"
     print_status "Log directory: $LOG_DIR"
-    print_header "SECURITY SYSTEM ACTIVE"
+    print_header "SECURITY AND ECONOMY SYSTEMS ACTIVE"
     
     # Wait for log file to exist
     local wait_time=0
@@ -653,6 +1155,17 @@ monitor_log() {
             fi
             
             print_success "Player connected: $player_name (IP: $player_ip)"
+
+            local is_new_player="false"
+            add_player_if_new "$player_name" && is_new_player="true"
+
+            sleep 3
+
+            ! server_sent_welcome_recently "$player_name" && \
+            show_welcome_message "$player_name" "$is_new_player" 1 || \
+            print_warning "Server already welcomed $player_name"
+
+            [ "$is_new_player" = "false" ] && grant_login_ticket "$player_name"
         fi
 
         if [[ "$line" =~ ([^:]+):\ \/(admin|mod)\ ([^[:space:]]+) ]]; then
@@ -757,8 +1270,18 @@ monitor_log() {
                 *)
                     # Check for dangerous activity
                     check_dangerous_activity "$player_name" "$message"
+                    
+                    # Process economy commands
+                    process_economy_message "$player_name" "$message"
                     ;;
             esac
+        fi
+        
+        # Process admin commands from console
+        if [[ "$line" =~ SERVER:\ (.+)$ ]]; then
+            local admin_command="${BASH_REMATCH[1]}"
+            [[ "$admin_command" == "!send_ticket "* || "$admin_command" == "!set_mod "* || "$admin_command" == "!set_admin "* ]] && \
+            process_admin_command "$admin_command"
         fi
     done
     
@@ -767,7 +1290,7 @@ monitor_log() {
 
 # Function to show usage
 show_usage() {
-    print_header "ANTICHEAT SECURITY SYSTEM - USAGE"
+    print_header "BLOCKHEADS SERVER MANAGEMENT SYSTEM - USAGE"
     print_status "Usage: $0 <server_log_file> [port]"
     print_status "Example: $0 /path/to/console.log 12153"
     echo ""
