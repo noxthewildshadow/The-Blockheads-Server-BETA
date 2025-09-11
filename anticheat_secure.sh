@@ -56,7 +56,7 @@ declare -A ip_change_pending_players
 # Function to sync players.log with list files
 sync_list_files() {
     local list_type="$1"
-    local list_file="$LOG_DIR/${list_type}list.txt"
+    local list_file="$LOG_DIR/${list_type}.txt"
     
     [ ! -f "$PLAYERS_LOG" ] && return
     
@@ -66,12 +66,12 @@ sync_list_files() {
     
     # Add players with the appropriate rank
     while IFS='|' read -r name ip rank password ban_status; do
-        if [ "$rank" = "$list_type" ]; then
+        if [ "$list_type" = "blacklist" ] && [ "$ban_status" = "Blacklisted" ]; then
+            echo "$name" >> "$list_file"
+        elif [ "$rank" = "$list_type" ]; then
             echo "$name" >> "$list_file"
         fi
     done < "$PLAYERS_LOG"
-    
-    print_success "Synced ${list_type}list.txt with players.log"
 }
 
 # Function to sync all list files
@@ -255,7 +255,7 @@ clear_admin_offenses() {
 # Function to remove from list file
 remove_from_list_file() {
     local player_name="$1" list_type="$2"
-    local list_file="$LOG_DIR/${list_type}list.txt"
+    local list_file="$LOG_DIR/${list_type}.txt"
     [ ! -f "$list_file" ] && return 1
     if grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"; then
         sed -i "/^$player_name$/Id" "$list_file"
@@ -272,7 +272,6 @@ update_player_info() {
         sed -i "/^$player_name|/Id" "$PLAYERS_LOG"
         # Add new entry
         echo "$player_name|$player_ip|$player_rank|$player_password|$ban_status" >> "$PLAYERS_LOG"
-        print_success "Updated player info in registry: $player_name -> IP: $player_ip, Rank: $player_rank, Password: $player_password, Ban: $ban_status"
         
         # Sync list files after update
         sync_all_list_files
@@ -323,7 +322,7 @@ send_server_command() {
 # Function to check if player is in list
 is_player_in_list() {
     local player_name="$1" list_type="$2"
-    local list_file="$LOG_DIR/${list_type}list.txt"
+    local list_file="$LOG_DIR/${list_type}.txt"
     [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"
 }
 
@@ -542,6 +541,14 @@ check_username_theft() {
         local registered_password=$(echo "$player_info" | cut -d'|' -f3)
         local ban_status=$(echo "$player_info" | cut -d'|' -f4)
         
+        # Check if player is blacklisted
+        if [ "$ban_status" = "Blacklisted" ]; then
+            print_error "Blacklisted player $player_name tried to connect. Banning..."
+            send_server_command "/ban $player_ip"
+            send_server_command "/kick $player_name"
+            return 1
+        fi
+        
         if [ "$registered_ip" != "$player_ip" ]; then
             # IP doesn't match - check if player has password
             if [ "$registered_password" = "NONE" ]; then
@@ -683,7 +690,7 @@ handle_unauthorized_command() {
         elif [ "$offense_count" -eq 2 ]; then
             send_server_command "$player_name, this is your second warning! One more and you will be demoted to mod."
         elif [ "$offense_count" -ge 3 ]; then
-            print_warning "THIRD OFFENSE: Admin $player_name is being demoted to mod"
+            print_warning "THIRD OFFENSE: Admin $player_name is being demoted to mod for multiple unauthorized rank assignment attempts"
             # Remove from admin files
             remove_from_list_file "$player_name" "admin"
             send_server_command_silent "/unadmin $player_name"
@@ -693,6 +700,7 @@ handle_unauthorized_command() {
             local registered_password=$(echo "$player_info" | cut -d'|' -f3)
             local ban_status=$(echo "$player_info" | cut -d'|' -f4)
             update_player_info "$player_name" "$registered_ip" "mod" "$registered_password" "$ban_status"
+            send_server_command "$player_name has been demoted to MOD for multiple unauthorized rank assignment attempts."
             clear_admin_offenses "$player_name"
         fi
     else
