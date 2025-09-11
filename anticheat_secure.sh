@@ -35,19 +35,12 @@ fi
 LOG_FILE="$1"
 PORT="$2"
 LOG_DIR=$(dirname "$LOG_FILE")
-ADMIN_OFFENSES_FILE="$LOG_DIR/admin_offenses_$PORT.json"
 PLAYERS_LOG="$LOG_DIR/players.log"
 SCREEN_SERVER="blockheads_server_$PORT"
-IP_CHANGE_ATTEMPTS_FILE="$LOG_DIR/ip_change_attempts.json"
-PASSWORD_CHANGE_ATTEMPTS_FILE="$LOG_DIR/password_change_attempts.json"
 
 # Track player messages for spam detection
 declare -A player_message_times
 declare -A player_message_counts
-
-# Track admin commands for spam detection
-declare -A admin_last_command_time
-declare -A admin_command_count
 
 # Track IP change grace periods
 declare -A ip_change_grace_periods
@@ -56,7 +49,7 @@ declare -A ip_change_pending_players
 # Function to sync players.log with list files
 sync_list_files() {
     local list_type="$1"
-    local list_file="$LOG_DIR/${list_type}.txt"
+    local list_file="$LOG_DIR/${list_type}list.txt"
     
     [ ! -f "$PLAYERS_LOG" ] && return
     
@@ -96,58 +89,6 @@ extract_real_name() {
 generate_random_password() {
     local length=7
     tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$length"
-}
-
-# Function to read JSON file with locking
-read_json_file() {
-    local file_path="$1"
-    [ ! -f "$file_path" ] && echo "{}" > "$file_path" && echo "{}" && return 0
-    flock -s 200 cat "$file_path" 200>"${file_path}.lock"
-}
-
-# Function to write JSON file with locking
-write_json_file() {
-    local file_path="$1" content="$2"
-    [ ! -f "$file_path" ] && touch "$file_path"
-    flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
-}
-
-# Function to record IP change attempt
-record_ip_change_attempt() {
-    local player_name="$1" current_time=$(date +%s)
-    local attempts_data=$(read_json_file "$IP_CHANGE_ATTEMPTS_FILE" 2>/dev/null || echo '{}')
-    local current_attempts=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.attempts // 0')
-    local last_attempt_time=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.last_attempt // 0')
-    
-    # Reset counter if more than 1 hour has passed
-    [ $((current_time - last_attempt_time)) -gt 3600 ] && current_attempts=0
-    
-    current_attempts=$((current_attempts + 1))
-    attempts_data=$(echo "$attempts_data" | jq --arg player "$player_name" \
-        --argjson attempts "$current_attempts" --argjson time "$current_time" \
-        '.[$player] = {"attempts": $attempts, "last_attempt": $time}')
-    
-    write_json_file "$IP_CHANGE_ATTEMPTS_FILE" "$attempts_data"
-    return $current_attempts
-}
-
-# Function to record password change attempt
-record_password_change_attempt() {
-    local player_name="$1" current_time=$(date +%s)
-    local attempts_data=$(read_json_file "$PASSWORD_CHANGE_ATTEMPTS_FILE" 2>/dev/null || echo '{}')
-    local current_attempts=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.attempts // 0')
-    local last_attempt_time=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.last_attempt // 0')
-    
-    # Reset counter if more than 1 hour has passed
-    [ $((current_time - last_attempt_time)) -gt 3600 ] && current_attempts=0
-    
-    current_attempts=$((current_attempts + 1))
-    attempts_data=$(echo "$attempts_data" | jq --arg player "$player_name" \
-        --argjson attempts "$current_attempts" --argjson time "$current_time" \
-        '.[$player] = {"attempts": $attempts, "last_attempt": $time}')
-    
-    write_json_file "$PASSWORD_CHANGE_ATTEMPTS_FILE" "$attempts_data"
-    return $current_attempts
 }
 
 # Function to check for illegal characters in player names
@@ -210,8 +151,6 @@ handle_invalid_player_name() {
 # Function to initialize authorization files
 initialize_authorization_files() {
     [ ! -f "$PLAYERS_LOG" ] && touch "$PLAYERS_LOG"
-    [ ! -f "$IP_CHANGE_ATTEMPTS_FILE" ] && echo "{}" > "$IP_CHANGE_ATTEMPTS_FILE"
-    [ ! -f "$PASSWORD_CHANGE_ATTEMPTS_FILE" ] && echo "{}" > "$PASSWORD_CHANGE_ATTEMPTS_FILE"
     
     # Sync list files with players.log
     sync_all_list_files
@@ -223,39 +162,10 @@ validate_authorization() {
     sync_all_list_files
 }
 
-# Function to initialize admin offenses
-initialize_admin_offenses() {
-    [ ! -f "$ADMIN_OFFENSES_FILE" ] && echo '{}' > "$ADMIN_OFFENSES_FILE"
-}
-
-# Function to record admin offense
-record_admin_offense() {
-    local admin_name="$1" current_time=$(date +%s)
-    local offenses_data=$(read_json_file "$ADMIN_OFFENSES_FILE" 2>/dev/null || echo '{}')
-    local current_offenses=$(echo "$offenses_data" | jq -r --arg admin "$admin_name" '.[$admin]?.count // 0')
-    local last_offense_time=$(echo "$offenses_data" | jq -r --arg admin "$admin_name" '.[$admin]?.last_offense // 0')
-    [ $((current_time - last_offense_time)) -gt 300 ] && current_offenses=0
-    current_offenses=$((current_offenses + 1))
-    offenses_data=$(echo "$offenses_data" | jq --arg admin "$admin_name" \
-        --argjson count "$current_offenses" --argjson time "$current_time" \
-        '.[$admin] = {"count": $count, "last_offense": $time}')
-    write_json_file "$ADMIN_OFFENSES_FILE" "$offenses_data"
-    print_warning "Recorded offense #$current_offenses for admin $admin_name"
-    return $current_offenses
-}
-
-# Function to clear admin offenses
-clear_admin_offenses() {
-    local admin_name="$1"
-    local offenses_data=$(read_json_file "$ADMIN_OFFENSES_FILE" 2>/dev/null || echo '{}')
-    offenses_data=$(echo "$offenses_data" | jq --arg admin "$admin_name" 'del(.[$admin])')
-    write_json_file "$ADMIN_OFFENSES_FILE" "$offenses_data"
-}
-
 # Function to remove from list file
 remove_from_list_file() {
     local player_name="$1" list_type="$2"
-    local list_file="$LOG_DIR/${list_type}.txt"
+    local list_file="$LOG_DIR/${list_type}list.txt"
     [ ! -f "$list_file" ] && return 1
     if grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"; then
         sed -i "/^$player_name$/Id" "$list_file"
@@ -322,7 +232,7 @@ send_server_command() {
 # Function to check if player is in list
 is_player_in_list() {
     local player_name="$1" list_type="$2"
-    local list_file="$LOG_DIR/${list_type}.txt"
+    local list_file="$LOG_DIR/${list_type}list.txt"
     [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"
 }
 
@@ -495,16 +405,6 @@ handle_password_change() {
         return 1
     fi
     
-    # Check password change attempts
-    record_password_change_attempt "$player_name"
-    local attempt_count=$?
-    
-    if [ $attempt_count -gt 3 ]; then
-        print_error "Password change limit exceeded for $player_name"
-        send_server_command "$player_name, you've exceeded the password change limit (3 times per hour)."
-        return 1
-    fi
-    
     # Generate new password
     local new_password=$(generate_random_password)
     update_player_info "$player_name" "$registered_ip" "$registered_rank" "$new_password" "$ban_status"
@@ -640,30 +540,6 @@ check_dangerous_activity() {
         player_message_counts[$player_name]=1
     fi
     
-    # Check for dangerous commands from ranked players
-    local rank=$(get_player_rank "$player_name")
-    if [ "$rank" != "NONE" ]; then
-        # List of dangerous commands
-        local dangerous_commands="/stop /shutdown /restart /banall /kickall /op /deop /save-off"
-        
-        for cmd in $dangerous_commands; do
-            if [[ "$message" == "$cmd"* ]]; then
-                print_error "DANGEROUS COMMAND: $player_name ($rank) attempted to use: $message"
-                record_admin_offense "$player_name"
-                local offense_count=$?
-                
-                if [ $offense_count -ge 2 ]; then
-                    send_server_command "/ban $player_ip"
-                    send_server_command "WARNING: $player_name (IP: $player_ip) was banned for attempting dangerous commands"
-                    return 1
-                else
-                    send_server_command "WARNING: $player_name, dangerous commands are restricted!"
-                    return 0
-                fi
-            fi
-        done
-    fi
-    
     return 0
 }
 
@@ -683,26 +559,7 @@ handle_unauthorized_command() {
             remove_from_list_file "$target_player" "$command_type"
             send_delayed_uncommands "$target_player" "$command_type"
         fi
-        record_admin_offense "$player_name"
-        local offense_count=$?
-        if [ "$offense_count" -eq 1 ]; then
-            send_server_command "$player_name, this is your first warning! Only the server console can assign ranks."
-        elif [ "$offense_count" -eq 2 ]; then
-            send_server_command "$player_name, this is your second warning! One more and you will be demoted to mod."
-        elif [ "$offense_count" -ge 3 ]; then
-            print_warning "THIRD OFFENSE: Admin $player_name is being demoted to mod for multiple unauthorized rank assignment attempts"
-            # Remove from admin files
-            remove_from_list_file "$player_name" "admin"
-            send_server_command_silent "/unadmin $player_name"
-            # Add to mod files
-            local player_info=$(get_player_info "$player_name")
-            local registered_ip=$(echo "$player_info" | cut -d'|' -f1)
-            local registered_password=$(echo "$player_info" | cut -d'|' -f3)
-            local ban_status=$(echo "$player_info" | cut -d'|' -f4)
-            update_player_info "$player_name" "$registered_ip" "mod" "$registered_password" "$ban_status"
-            send_server_command "$player_name has been demoted to MOD for multiple unauthorized rank assignment attempts."
-            clear_admin_offenses "$player_name"
-        fi
+        send_server_command "$player_name, only the server console can assign ranks."
     else
         print_warning "Non-admin player $player_name attempted to use $command on $target_player"
         send_server_command "$player_name, you don't have permission to assign ranks."
@@ -732,9 +589,6 @@ filter_server_log() {
 cleanup() {
     print_status "Cleaning up anticheat..."
     kill $(jobs -p) 2>/dev/null
-    rm -f "${ADMIN_OFFENSES_FILE}.lock" 2>/dev/null
-    rm -f "${IP_CHANGE_ATTEMPTS_FILE}.lock" 2>/dev/null
-    rm -f "${PASSWORD_CHANGE_ATTEMPTS_FILE}.lock" 2>/dev/null
     exit 0
 }
 
@@ -743,7 +597,6 @@ monitor_log() {
     local log_file="$1"
     LOG_FILE="$log_file"
     initialize_authorization_files
-    initialize_admin_offenses
     
     # Start validation process in background
     (
