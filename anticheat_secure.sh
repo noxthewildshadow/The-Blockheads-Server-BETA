@@ -44,12 +44,16 @@ IP_CHANGE_ATTEMPTS_FILE="$LOG_DIR/ip_change_attempts.json"
 PASSWORD_CHANGE_ATTEMPTS_FILE="$LOG_DIR/password_change_attempts.json"
 
 # Track player messages for spam detection
-PLAYER_MESSAGE_TIMES_FILE="$LOG_DIR/player_message_times.json"
-PLAYER_MESSAGE_COUNTS_FILE="$LOG_DIR/player_message_counts.json"
+declare -A player_message_times
+declare -A player_message_counts
+
+# Track admin commands for spam detection
+declare -A admin_last_command_time
+declare -A admin_command_count
 
 # Track IP change grace periods
-IP_CHANGE_GRACE_FILE="$LOG_DIR/ip_change_grace.json"
-IP_CHANGE_PENDING_FILE="$LOG_DIR/ip_change_pending.json"
+declare -A ip_change_grace_periods
+declare -A ip_change_pending_players
 
 # Function to extract real player name from ID-prefixed format
 extract_real_name() {
@@ -72,28 +76,14 @@ generate_random_password() {
 read_json_file() {
     local file_path="$1"
     [ ! -f "$file_path" ] && echo "{}" > "$file_path" && echo "{}" && return 0
-    
-    # Use a lock file to prevent concurrent access
-    local lock_file="${file_path}.lock"
-    exec 200>"$lock_file"
-    flock -s 200
-    cat "$file_path"
-    flock -u 200
-    exec 200>&-
+    flock -s 200 cat "$file_path" 200>"${file_path}.lock"
 }
 
 # Function to write JSON file with locking
 write_json_file() {
     local file_path="$1" content="$2"
     [ ! -f "$file_path" ] && touch "$file_path"
-    
-    # Use a lock file to prevent concurrent access
-    local lock_file="${file_path}.lock"
-    exec 200>"$lock_file"
-    flock -x 200
-    echo "$content" > "$file_path"
-    flock -u 200
-    exec 200>&-
+    flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
 }
 
 # Function to record IP change attempt
@@ -156,7 +146,7 @@ is_valid_player_name() {
     fi
     
     # Then check if it matches the valid pattern
-    if [[ "$player_name" =~ ^[A-Za-z0-9_\-]{1,16}$ ]]; then
+    if [[ "$player_name" =~ ^[A-Za-z0-9_]{1,16}$ ]]; then
         return 0
     else
         return 1
@@ -198,10 +188,6 @@ initialize_authorization_files() {
     [ ! -f "$PLAYERS_LOG" ] && touch "$PLAYERS_LOG"
     [ ! -f "$IP_CHANGE_ATTEMPTS_FILE" ] && echo "{}" > "$IP_CHANGE_ATTEMPTS_FILE"
     [ ! -f "$PASSWORD_CHANGE_ATTEMPTS_FILE" ] && echo "{}" > "$PASSWORD_CHANGE_ATTEMPTS_FILE"
-    [ ! -f "$PLAYER_MESSAGE_TIMES_FILE" ] && echo "{}" > "$PLAYER_MESSAGE_TIMES_FILE"
-    [ ! -f "$PLAYER_MESSAGE_COUNTS_FILE" ] && echo "{}" > "$PLAYER_MESSAGE_COUNTS_FILE"
-    [ ! -f "$IP_CHANGE_GRACE_FILE" ] && echo "{}" > "$IP_CHANGE_GRACE_FILE"
-    [ ! -f "$IP_CHANGE_PENDING_FILE" ] && echo "{}" > "$IP_CHANGE_PENDING_FILE"
 }
 
 # Function to validate authorization
@@ -327,20 +313,13 @@ send_delayed_uncommands() {
 
 # Function to send server command silently
 send_server_command_silent() {
-    local command="$1"
-    # Sanitize the command to prevent injection
-    local safe_command=$(printf '%s' "$command" | tr -d '\000-\037')
-    screen -S "$SCREEN_SERVER" -p 0 -X stuff "$safe_command$(printf \\r)" 2>/dev/null
+    screen -S "$SCREEN_SERVER" -p 0 -X stuff "$1$(printf \\r)" 2>/dev/null
 }
 
 # Function to send server command
 send_server_command() {
-    local command="$1"
-    # Sanitize the command to prevent injection
-    local safe_command=$(printf '%s' "$command" | tr -d '\000-\037')
-    
-    if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$safe_command$(printf \\r)" 2>/dev/null; then
-        print_success "Sent message to server: $safe_command"
+    if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$1$(printf \\r)" 2>/dev/null; then
+        print_success "Sent message to server: $1"
         return 0
     else
         print_error "Could not send message to server"
@@ -391,17 +370,8 @@ get_ip_by_name() {
 start_ip_change_grace_period() {
     local player_name="$1" player_ip="$2"
     local grace_end=$(( $(date +%s) + 30 ))
-    
-    # Store grace period in file instead of array
-    local grace_data=$(read_json_file "$IP_CHANGE_GRACE_FILE")
-    grace_data=$(echo "$grace_data" | jq --arg player "$player_name" --argjson time "$grace_end" '.[$player] = $time')
-    write_json_file "$IP_CHANGE_GRACE_FILE" "$grace_data"
-    
-    # Store pending IP change
-    local pending_data=$(read_json_file "$IP_CHANGE_PENDING_FILE")
-    pending_data=$(echo "$pending_data" | jq --arg player "$player_name" --arg ip "$player_ip" '.[$player] = $ip')
-    write_json_file "$IP_CHANGE_PENDING_FILE" "$pending_data"
-    
+    ip_change_grace_periods["$player_name"]=$grace_end
+    ip_change_pending_players["$player_name"]="$player_ip"
     print_warning "Started IP change grace period for $player_name (30 seconds)"
     
     # Send warning message to player
@@ -412,20 +382,11 @@ start_ip_change_grace_period() {
     # Start grace period countdown
     (
         sleep 30
-        local current_grace_data=$(read_json_file "$IP_CHANGE_GRACE_FILE")
-        local grace_end_time=$(echo "$current_grace_data" | jq -r --arg player "$player_name" '.[$player] // 0')
-        
-        if [ "$grace_end_time" -gt 0 ] && [ $(date +%s) -ge "$grace_end_time" ]; then
+        if [ -n "${ip_change_grace_periods[$player_name]}" ]; then
             print_warning "IP change grace period expired for $player_name - kicking player"
             send_server_command "/kick $player_name"
-            
-            # Remove from grace and pending files
-            current_grace_data=$(echo "$current_grace_data" | jq --arg player "$player_name" 'del(.[$player])')
-            write_json_file "$IP_CHANGE_GRACE_FILE" "$current_grace_data"
-            
-            local current_pending_data=$(read_json_file "$IP_CHANGE_PENDING_FILE")
-            current_pending_data=$(echo "$current_pending_data" | jq --arg player "$player_name" 'del(.[$player])')
-            write_json_file "$IP_CHANGE_PENDING_FILE" "$current_pending_data"
+            unset ip_change_grace_periods["$player_name"]
+            unset ip_change_pending_players["$player_name"]
         fi
     ) &
 }
@@ -434,29 +395,14 @@ start_ip_change_grace_period() {
 is_in_grace_period() {
     local player_name="$1"
     local current_time=$(date +%s)
-    local grace_data=$(read_json_file "$IP_CHANGE_GRACE_FILE")
-    local grace_end_time=$(echo "$grace_data" | jq -r --arg player "$player_name" '.[$player] // 0')
-    
-    if [ "$grace_end_time" -gt 0 ] && [ "$grace_end_time" -gt "$current_time" ]; then
+    if [ -n "${ip_change_grace_periods[$player_name]}" ] && [ ${ip_change_grace_periods["$player_name"]} -gt $current_time ]; then
         return 0
     else
         # Clean up if grace period has expired
-        grace_data=$(echo "$grace_data" | jq --arg player "$player_name" 'del(.[$player])')
-        write_json_file "$IP_CHANGE_GRACE_FILE" "$grace_data"
-        
-        local pending_data=$(read_json_file "$IP_CHANGE_PENDING_FILE")
-        pending_data=$(echo "$pending_data" | jq --arg player "$player_name" 'del(.[$player])')
-        write_json_file "$IP_CHANGE_PENDING_FILE" "$pending_data"
-        
+        unset ip_change_grace_periods["$player_name"]
+        unset ip_change_pending_players["$player_name"]
         return 1
     fi
-}
-
-# Function to get pending IP for player
-get_pending_ip() {
-    local player_name="$1"
-    local pending_data=$(read_json_file "$IP_CHANGE_PENDING_FILE")
-    echo "$pending_data" | jq -r --arg player "$player_name" '.[$player] // ""'
 }
 
 # Function to validate IP change
@@ -483,13 +429,8 @@ validate_ip_change() {
     print_success "IP updated for $player_name: $current_ip"
     
     # End grace period
-    local grace_data=$(read_json_file "$IP_CHANGE_GRACE_FILE")
-    grace_data=$(echo "$grace_data" | jq --arg player "$player_name" 'del(.[$player])')
-    write_json_file "$IP_CHANGE_GRACE_FILE" "$grace_data"
-    
-    local pending_data=$(read_json_file "$IP_CHANGE_PENDING_FILE")
-    pending_data=$(echo "$pending_data" | jq --arg player "$player_name" 'del(.[$player])')
-    write_json_file "$IP_CHANGE_PENDING_FILE" "$pending_data"
+    unset ip_change_grace_periods["$player_name"]
+    unset ip_change_pending_players["$player_name"]
     
     # Send success message
     send_server_command "SUCCESS: $player_name, your IP has been verified and updated!"
@@ -645,27 +586,6 @@ check_username_theft() {
     return 0
 }
 
-# Function to get player message data
-get_player_message_data() {
-    local player_name="$1" data_type="$2"
-    local data_file="$PLAYER_MESSAGE_TIMES_FILE"
-    [ "$data_type" = "count" ] && data_file="$PLAYER_MESSAGE_COUNTS_FILE"
-    
-    local data=$(read_json_file "$data_file")
-    echo "$data" | jq -r --arg player "$player_name" '.[$player] // 0'
-}
-
-# Function to set player message data
-set_player_message_data() {
-    local player_name="$1" value="$2" data_type="$3"
-    local data_file="$PLAYER_MESSAGE_TIMES_FILE"
-    [ "$data_type" = "count" ] && data_file="$PLAYER_MESSAGE_COUNTS_FILE"
-    
-    local data=$(read_json_file "$data_file")
-    data=$(echo "$data" | jq --arg player "$player_name" --argjson value "$value" '.[$player] = $value')
-    write_json_file "$data_file" "$data"
-}
-
 # Function to detect spam and dangerous commands
 check_dangerous_activity() {
     local player_name="$1" message="$2" current_time=$(date +%s)
@@ -691,23 +611,29 @@ check_dangerous_activity() {
     local player_ip=$(get_ip_by_name "$player_name")
     
     # Check for spam (more than 2 messages in 1 second)
-    local last_time=$(get_player_message_data "$player_name" "time")
-    local count=$(get_player_message_data "$player_name" "count")
-    
-    if [ $((current_time - last_time)) -le 1 ]; then
-        count=$((count + 1))
-        set_player_message_data "$player_name" "$count" "count"
+    if [ -n "${player_message_times[$player_name]}" ]; then
+        local last_time=${player_message_times[$player_name]}
+        local count=${player_message_counts[$player_name]}
         
-        if [ $count -gt 2 ]; then
-            print_error "SPAM DETECTED: $player_name sent $count messages in 1 second"
-            send_server_command "/ban $player_ip"
-            send_server_command "WARNING: $player_name (IP: $player_ip) was banned for spamming"
-            return 1
+        if [ $((current_time - last_time)) -le 1 ]; then
+            count=$((count + 1))
+            player_message_counts[$player_name]=$count
+            
+            if [ $count -gt 2 ]; then
+                print_error "SPAM DETECTED: $player_name sent $count messages in 1 second"
+                send_server_command "/ban $player_ip"
+                send_server_command "WARNING: $player_name (IP: $player_ip) was banned for spamming"
+                return 1
+            fi
+        else
+            # Reset counter if more than 1 second has passed
+            player_message_counts[$player_name]=1
+            player_message_times[$player_name]=$current_time
         fi
     else
-        # Reset counter if more than 1 second has passed
-        set_player_message_data "$player_name" "1" "count"
-        set_player_message_data "$player_name" "$current_time" "time"
+        # First message from this player
+        player_message_times[$player_name]=$current_time
+        player_message_counts[$player_name]=1
     fi
     
     # Check for dangerous commands from ranked players
@@ -809,10 +735,6 @@ cleanup() {
     rm -f "${ADMIN_OFFENSES_FILE}.lock" 2>/dev/null
     rm -f "${IP_CHANGE_ATTEMPTS_FILE}.lock" 2>/dev/null
     rm -f "${PASSWORD_CHANGE_ATTEMPTS_FILE}.lock" 2>/dev/null
-    rm -f "${PLAYER_MESSAGE_TIMES_FILE}.lock" 2>/dev/null
-    rm -f "${PLAYER_MESSAGE_COUNTS_FILE}.lock" 2>/dev/null
-    rm -f "${IP_CHANGE_GRACE_FILE}.lock" 2>/dev/null
-    rm -f "${IP_CHANGE_PENDING_FILE}.lock" 2>/dev/null
     exit 0
 }
 
@@ -934,13 +856,8 @@ monitor_log() {
             fi
             
             # Clean up grace period if player disconnects
-            local grace_data=$(read_json_file "$IP_CHANGE_GRACE_FILE")
-            grace_data=$(echo "$grace_data" | jq --arg player "$player_name" 'del(.[$player])')
-            write_json_file "$IP_CHANGE_GRACE_FILE" "$grace_data"
-            
-            local pending_data=$(read_json_file "$IP_CHANGE_PENDING_FILE")
-            pending_data=$(echo "$pending_data" | jq --arg player "$player_name" 'del(.[$player])')
-            write_json_file "$IP_CHANGE_PENDING_FILE" "$pending_data"
+            unset ip_change_grace_periods["$player_name"]
+            unset ip_change_pending_players["$player_name"]
         fi
 
         # Check for chat messages and dangerous commands
@@ -961,7 +878,6 @@ monitor_log() {
             # Handle IP change and password commands
             case "$message" in
                 "!ip_psw")
-                    local player_ip=$(get_ip_by_name "$player_name")
                     handle_password_generation "$player_name" "$player_ip"
                     ;;
                 "!ip_psw_change "*)
@@ -976,7 +892,7 @@ monitor_log() {
                     if is_in_grace_period "$player_name"; then
                         if [[ "$message" =~ !ip_change\ (.+)$ ]]; then
                             local password="${BASH_REMATCH[1]}"
-                            local current_ip=$(get_pending_ip "$player_name")
+                            local current_ip="${ip_change_pending_players[$player_name]}"
                             validate_ip_change "$player_name" "$password" "$current_ip"
                         else
                             send_server_command "Usage: !ip_change YOUR_CURRENT_PASSWORD"
