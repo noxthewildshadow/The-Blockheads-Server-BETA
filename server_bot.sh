@@ -1,67 +1,16 @@
 #!/bin/bash
-
 # =============================================================================
 # THE BLOCKHEADS SERVER ECONOMY BOT WITH RANK UPDATES
 # =============================================================================
 
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-PURPLE='\033[0;35m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-# Function definitions
-print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
-print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-print_header() {
-    echo -e "${PURPLE}================================================================"
-    echo -e "$1"
-    echo -e "===============================================================${NC}"
-}
-print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
+# Load common functions
+source blockheads_common.sh
 
 # Validate jq is installed
 if ! command -v jq &> /dev/null; then
     echo -e "${RED}ERROR: jq is required but not installed. Please install jq first.${NC}"
     exit 1
 fi
-
-# Function to read JSON file with locking
-read_json_file() {
-    local file_path="$1"
-    [ ! -f "$file_path" ] && echo "{}" > "$file_path" && echo "{}" && return 0
-    flock -s 200 cat "$file_path" 200>"${file_path}.lock"
-}
-
-# Function to write JSON file with locking
-write_json_file() {
-    local file_path="$1" content="$2"
-    [ ! -f "$file_path" ] && touch "$file_path"
-    flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
-}
-
-# Function to extract real player name from ID-prefixed format
-extract_real_name() {
-    local name="$1"
-    # Remove any numeric prefix with bracket (e.g., "12345] ")
-    if [[ "$name" =~ ^[0-9]+\]\ (.+)$ ]]; then
-        echo "${BASH_REMATCH[1]}"
-    else
-        echo "$name"
-    fi
-}
-
-# Function to validate player names
-is_valid_player_name() {
-    local player_name=$(echo "$1" | xargs)
-    [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]
-}
 
 # Initialize variables
 [ $# -ge 2 ] && PORT="$2" || PORT="12153"
@@ -200,11 +149,11 @@ show_welcome_message() {
     # 30-second cooldown for welcome messages
     [ "$force_send" -eq 1 ] || [ "$last_welcome_time" -eq 0 ] || [ $((current_time - last_welcome_time)) -ge 30 ] && {
         [ "$is_new_player" = "true" ] && {
-            send_server_command "Hello $player_name! Welcome to the server. Type !help to check available commands."
+            send_server_command "$SCREEN_SERVER" "Hello $player_name! Welcome to the server. Type !help to check available commands."
         } || {
             local last_greeting_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_greeting_time // 0')
             [ $((current_time - last_greeting_time)) -ge 600 ] && {
-                send_server_command "Welcome back $player_name! Type !help to see available commands."
+                send_server_command "$SCREEN_SERVER" "Welcome back $player_name! Type !help to see available commands."
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_greeting_time = $time')
                 write_json_file "$ECONOMY_FILE" "$current_data"
             }
@@ -212,17 +161,6 @@ show_welcome_message() {
         current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_welcome_time = $time')
         write_json_file "$ECONOMY_FILE" "$current_data"
     } || print_warning "Skipping welcome for $player_name due to cooldown"
-}
-
-# Function to send server command
-send_server_command() {
-    if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$1$(printf \\r)" 2>/dev/null; then
-        print_success "Sent message to server: $1"
-        return 0
-    else
-        print_error "Could not send message to server"
-        return 1
-    fi
 }
 
 # Function to check if player has purchased an item
@@ -253,12 +191,12 @@ process_give_rank() {
     [ "$rank_type" = "mod" ] && cost=70
     
     [ "$giver_tickets" -lt "$cost" ] && {
-        send_server_command "$giver_name, you need $cost tickets to give $rank_type rank, but you only have $giver_tickets."
+        send_server_command "$SCREEN_SERVER" "$giver_name, you need $cost tickets to give $rank_type rank, but you only have $giver_tickets."
         return 1
     }
     
     ! is_valid_player_name "$target_player" && {
-        send_server_command "$giver_name, invalid player name: $target_player"
+        send_server_command "$SCREEN_SERVER" "$giver_name, invalid player name: $target_player"
         return 1
     }
     
@@ -289,8 +227,8 @@ process_give_rank() {
     
     update_player_info "$target_player" "$target_ip" "$rank_type" "$password"
     
-    send_server_command "Congratulations! $giver_name has gifted $rank_type rank to $target_player for $cost tickets."
-    send_server_command "$giver_name, your new ticket balance: $new_tickets"
+    send_server_command "$SCREEN_SERVER" "Congratulations! $giver_name has gifted $rank_type rank to $target_player for $cost tickets."
+    send_server_command "$SCREEN_SERVER" "$giver_name, your new ticket balance: $new_tickets"
     return 0
 }
 
@@ -299,17 +237,24 @@ process_message() {
     local player_name="$1" message="$2" player_ip="$3"
     ! is_valid_player_name "$player_name" && return
     
+    # Check rate limiting
+    if ! check_rate_limit "$player_name"; then
+        print_warning "Rate limit exceeded for $player_name"
+        send_server_command "$SCREEN_SERVER" "$player_name, you're sending commands too quickly. Please wait a minute."
+        return
+    fi
+    
     local current_data=$(read_json_file "$ECONOMY_FILE")
     local player_tickets=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].tickets // 0')
     player_tickets=${player_tickets:-0}
     
     case "$message" in
         "!tickets"|"ltickets")
-            send_server_command "$player_name, you have $player_tickets tickets."
+            send_server_command "$SCREEN_SERVER" "$player_name, you have $player_tickets tickets."
             ;;
         "!buy_mod")
             (has_purchased "$player_name" "mod" || is_player_in_list "$player_name" "mod") && {
-                send_server_command "$player_name, you already have MOD rank."
+                send_server_command "$SCREEN_SERVER" "$player_name, you already have MOD rank."
             } || [ "$player_tickets" -ge 50 ] && {
                 local new_tickets=$((player_tickets - 50))
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
@@ -333,12 +278,12 @@ process_message() {
                 
                 update_player_info "$player_name" "$player_ip" "mod" "$password"
                 
-                send_server_command "Congratulations $player_name! You have been promoted to MOD for 50 tickets. Remaining tickets: $new_tickets"
-            } || send_server_command "$player_name, you need $((50 - player_tickets)) more tickets to buy MOD rank."
+                send_server_command "$SCREEN_SERVER" "Congratulations $player_name! You have been promoted to MOD for 50 tickets. Remaining tickets: $new_tickets"
+            } || send_server_command "$SCREEN_SERVER" "$player_name, you need $((50 - player_tickets)) more tickets to buy MOD rank."
             ;;
         "!buy_admin")
             (has_purchased "$player_name" "admin" || is_player_in_list "$player_name" "admin") && {
-                send_server_command "$player_name, you already have ADMIN rank."
+                send_server_command "$SCREEN_SERVER" "$player_name, you already have ADMIN rank."
             } || [ "$player_tickets" -ge 100 ] && {
                 local new_tickets=$((player_tickets - 100))
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
@@ -362,29 +307,29 @@ process_message() {
                 
                 update_player_info "$player_name" "$player_ip" "admin" "$password"
                 
-                send_server_command "Congratulations $player_name! You have been promoted to ADMIN for 100 tickets. Remaining tickets: $new_tickets"
-            } || send_server_command "$player_name, you need $((100 - player_tickets)) more tickets to buy ADMIN rank."
+                send_server_command "$SCREEN_SERVER" "Congratulations $player_name! You have been promoted to ADMIN for 100 tickets. Remaining tickets: $new_tickets"
+            } || send_server_command "$SCREEN_SERVER" "$player_name, you need $((100 - player_tickets)) more tickets to buy ADMIN rank."
             ;;
         "!give_admin "*)
             [[ "$message" =~ !give_admin\ ([a-zA-Z0-9_]+) ]] && \
             process_give_rank "$player_name" "${BASH_REMATCH[1]}" "admin" || \
-            send_server_command "Usage: !give_admin PLAYER_NAME"
+            send_server_command "$SCREEN_SERVER" "Usage: !give_admin PLAYER_NAME"
             ;;
         "!give_mod "*)
             [[ "$message" =~ !give_mod\ ([a-zA-Z0-9_]+) ]] && \
             process_give_rank "$player_name" "${BASH_REMATCH[1]}" "mod" || \
-            send_server_command "Usage: !give_mod PLAYER_NAME"
+            send_server_command "$SCREEN_SERVER" "Usage: !give_mod PLAYER_NAME"
             ;;
         "!set_admin"|"!set_mod")
-            send_server_command "$player_name, these commands are only available to server console operators."
+            send_server_command "$SCREEN_SERVER" "$player_name, these commands are only available to server console operators."
             ;;
         "!help")
-            send_server_command "Available commands:"
-            send_server_command "!tickets - Check your tickets"
-            send_server_command "!buy_mod - Buy MOD rank for 50 tickets"
-            send_server_command "!buy_admin - Buy ADMIN rank for 100 tickets"
-            send_server_command "!give_mod PLAYER - Gift MOD rank (70 tickets)"
-            send_server_command "!give_admin PLAYER - Gift ADMIN rank (140 tickets)"
+            send_server_command "$SCREEN_SERVER" "Available commands:"
+            send_server_command "$SCREEN_SERVER" "!tickets - Check your tickets"
+            send_server_command "$SCREEN_SERVER" "!buy_mod - Buy MOD rank for 50 tickets"
+            send_server_command "$SCREEN_SERVER" "!buy_admin - Buy ADMIN rank for 100 tickets"
+            send_server_command "$SCREEN_SERVER" "!give_mod PLAYER - Gift MOD rank (70 tickets)"
+            send_server_command "$SCREEN_SERVER" "!give_admin PLAYER - Gift ADMIN rank (140 tickets)"
             ;;
     esac
 }
@@ -421,7 +366,7 @@ process_admin_command() {
         
         write_json_file "$ECONOMY_FILE" "$current_data"
         print_success "Added $tickets_to_add tickets to $player_name (Total: $new_tickets)"
-        send_server_command "$player_name received $tickets_to_add tickets from admin! Total: $new_tickets"
+        send_server_command "$SCREEN_SERVER" "$player_name received $tickets_to_add tickets from admin! Total: $new_tickets"
     elif [[ "$command" =~ ^!set_mod\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
         ! is_valid_player_name "$player_name" && print_error "Invalid player name: $player_name" && return 1
@@ -441,7 +386,7 @@ process_admin_command() {
         
         update_player_info "$player_name" "$player_ip" "mod" "$password"
         
-        send_server_command "$player_name has been set as MOD by server console!"
+        send_server_command "$SCREEN_SERVER" "$player_name has been set as MOD by server console!"
     elif [[ "$command" =~ ^!set_admin\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
         ! is_valid_player_name "$player_name" && print_error "Invalid player name: $player_name" && return 1
@@ -461,7 +406,7 @@ process_admin_command() {
         
         update_player_info "$player_name" "$player_ip" "admin" "$password"
         
-        send_server_command "$player_name has been set as ADMIN by server console!"
+        send_server_command "$SCREEN_SERVER" "$player_name has been set as ADMIN by server console!"
     else
         print_error "Unknown admin command: $command"
     fi
