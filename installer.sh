@@ -5,8 +5,32 @@ set -e
 # THE BLOCKHEADS LINUX SERVER INSTALLER - OPTIMIZED VERSION
 # =============================================================================
 
-# Load common functions
-source blockheads_common.sh
+# Color codes for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+ORANGE='\033[0;33m'
+PURPLE='\033[0;35m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# Function definitions
+print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
+print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+print_header() {
+    echo -e "${PURPLE}================================================================"
+    echo -e "$1"
+    echo -e "===============================================================${NC}"
+}
+print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
+
+# Wget options for faster downloads
+WGET_OPTIONS="--timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --read-timeout=30 -q"
 
 # Check if running as root
 [ "$EUID" -ne 0 ] && print_error "This script requires root privileges." && exit 1
@@ -173,6 +197,9 @@ for script in "${SCRIPTS[@]}"; do
         exit 1
     fi
 done
+
+# Now load the common functions
+source blockheads_common.sh
 
 print_step "[3/8] Downloading server archive..."
 DOWNLOAD_SUCCESS=0
