@@ -1,70 +1,27 @@
 #!/bin/bash
-
 # =============================================================================
 # THE BLOCKHEADS SERVER MANAGER
 # =============================================================================
 
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
-ORANGE='\033[0;33m'
-PURPLE='\033[0;35m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-# Function definitions
-print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
-print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-print_header() {
-    echo -e "${PURPLE}================================================================"
-    echo -e "$1"
-    echo -e "===============================================================${NC}"
-}
-print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
+# Load common functions
+source blockheads_common.sh
 
 # Server binary and default port
 SERVER_BINARY="./blockheads_server171"
 DEFAULT_PORT=12153
 
-# Function to check if screen session exists
-screen_session_exists() {
-    screen -list 2>/dev/null | grep -q "$1"
-}
-
-# Function to show usage
-show_usage() {
-    print_header "THE BLOCKHEADS SERVER MANAGER"
-    print_status "Usage: $0 [command]"
-    echo ""
-    print_status "Available commands:"
-    echo -e "  ${GREEN}start${NC} [WORLD_NAME] [PORT] - Start server, bot and anticheat"
-    echo -e "  ${RED}stop${NC} [PORT]                - Stop server, bot and anticheat"
-    echo -e "  ${CYAN}status${NC} [PORT]              - Show server status"
-    echo -e "  ${YELLOW}list${NC}                     - List all running servers"
-    echo -e "  ${YELLOW}help${NC}                      - Show this help"
-    echo ""
-    print_status "Examples:"
-    echo -e "  ${GREEN}$0 start MyWorld 12153${NC}"
-    echo -e "  ${GREEN}$0 start MyWorld${NC}        (uses default port 12153)"
-    echo -e "  ${RED}$0 stop${NC}                   (stops all servers)"
-    echo -e "  ${RED}$0 stop 12153${NC}            (stops server on port 12153)"
-    echo -e "  ${CYAN}$0 status${NC}                (shows status of all servers)"
-    echo -e "  ${CYAN}$0 status 12153${NC}         (shows status of server on port 12153)"
-    echo -e "  ${YELLOW}$0 list${NC}                 (lists all running servers)"
-    echo ""
-    print_warning "First create a world: ./blockheads_server171 -n"
-    print_warning "After creating the world, press CTRL+C to exit"
-}
-
-# Function to check if port is in use
-is_port_in_use() {
-    lsof -Pi ":$1" -sTCP:LISTEN -t >/dev/null
+# Function to check if world exists
+check_world_exists() {
+    local world_id="$1"
+    local saves_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
+    [ -d "$saves_dir/$world_id" ] || {
+        print_error "World '$world_id' does not exist in: $saves_dir/"
+        echo ""
+        print_warning "To create a world: ${GREEN}./blockheads_server171 -n${NC}"
+        print_warning "After creating the world, press ${YELLOW}CTRL+C${NC} to exit"
+        return 1
+    }
+    return 0
 }
 
 # Function to free port
@@ -84,20 +41,6 @@ free_port() {
     
     sleep 2
     ! is_port_in_use "$port"
-}
-
-# Function to check if world exists
-check_world_exists() {
-    local world_id="$1"
-    local saves_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
-    [ -d "$saves_dir/$world_id" ] || {
-        print_error "World '$world_id' does not exist in: $saves_dir/"
-        echo ""
-        print_warning "To create a world: ${GREEN}./blockheads_server171 -n${NC}"
-        print_warning "After creating the world, press ${YELLOW}CTRL+C${NC} to exit"
-        return 1
-    }
-    return 0
 }
 
 # Function to start server
@@ -376,6 +319,31 @@ show_status() {
     fi
     
     print_header "END OF STATUS"
+}
+
+# Function to show usage
+show_usage() {
+    print_header "THE BLOCKHEADS SERVER MANAGER"
+    print_status "Usage: $0 [command]"
+    echo ""
+    print_status "Available commands:"
+    echo -e "  ${GREEN}start${NC} [WORLD_NAME] [PORT] - Start server, bot and anticheat"
+    echo -e "  ${RED}stop${NC} [PORT]                - Stop server, bot and anticheat"
+    echo -e "  ${CYAN}status${NC} [PORT]              - Show server status"
+    echo -e "  ${YELLOW}list${NC}                     - List all running servers"
+    echo -e "  ${YELLOW}help${NC}                      - Show this help"
+    echo ""
+    print_status "Examples:"
+    echo -e "  ${GREEN}$0 start MyWorld 12153${NC}"
+    echo -e "  ${GREEN}$0 start MyWorld${NC}        (uses default port 12153)"
+    echo -e "  ${RED}$0 stop${NC}                   (stops all servers)"
+    echo -e "  ${RED}$0 stop 12153${NC}            (stops server on port 12153)"
+    echo -e "  ${CYAN}$0 status${NC}                (shows status of all servers)"
+    echo -e "  ${CYAN}$0 status 12153${NC}         (shows status of server on port 12153)"
+    echo -e "  ${YELLOW}$0 list${NC}                 (lists all running servers)"
+    echo ""
+    print_warning "First create a world: ./blockheads_server171 -n"
+    print_warning "After creating the world, press CTRL+C to exit"
 }
 
 # Main execution
