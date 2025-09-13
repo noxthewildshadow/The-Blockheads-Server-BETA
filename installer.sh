@@ -60,13 +60,13 @@ declare -a PACKAGES_DEBIAN=(
     'git' 'cmake' 'ninja-build' 'clang' 'systemtap-sdt-dev' 'libbsd-dev' 'linux-libc-dev'
     'curl' 'tar' 'grep' 'mawk' 'patchelf' 'libgnustep-base-dev' 'libobjc4'
     'libgnutls28-dev' 'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev'
-    'zlib1g' 'libicu-dev' 'libicu-dev' 'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof' 'flock'
+    'zlib1g' 'libicu-dev' 'libicu-dev' 'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof'
 )
 
 declare -a PACKAGES_ARCH=(
     'base-devel' 'git' 'cmake' 'ninja' 'clang' 'systemtap' 'libbsd' 'curl' 'tar' 'grep'
     'gawk' 'patchelf' 'gnustep-base' 'gcc-libs' 'gnutls' 'libgcrypt' 'libxml2' 'libffi'
-    'libnsl' 'zlib' 'icu' 'libdispatch' 'wget' 'jq' 'screen' 'lsof' 'util-linux'
+    'libnsl' 'zlib' 'icu' 'libdispatch' 'wget' 'jq' 'screen' 'lsof'
 )
 
 print_header "THE BLOCKHEADS LINUX SERVER INSTALLER"
@@ -77,6 +77,17 @@ find_library() {
     LIBRARY=$(ldconfig -p | grep -F "$SEARCH" -m 1 | awk '{print $NF}' | head -1)
     [ -z "$LIBRARY" ] && return 1
     printf '%s' "$LIBRARY"
+}
+
+# Function to check if flock is available
+check_flock() {
+    if command -v flock >/dev/null 2>&1; then
+        return 0
+    else
+        print_warning "flock not found. Locking mechanisms will be disabled."
+        print_warning "Some security features may not work properly."
+        return 1
+    fi
 }
 
 # Function to build libdispatch from source
@@ -155,6 +166,9 @@ install_packages() {
             ;;
     esac
     
+    # Check if flock was installed
+    check_flock
+    
     return 0
 }
 
@@ -187,10 +201,13 @@ if ! install_packages; then
         exit 1
     fi
     
-    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common flock >/dev/null 2>&1; then
+    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common >/dev/null 2>&1; then
         print_error "Failed to install essential packages"
         exit 1
     fi
+    
+    # Check if flock was installed in fallback mode
+    check_flock
 fi
 
 print_step "[2/8] Downloading helper scripts from GitHub..."
