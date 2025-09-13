@@ -36,28 +36,14 @@ fi
 read_json_file() {
     local file_path="$1"
     [ ! -f "$file_path" ] && echo "{}" > "$file_path" && echo "{}" && return 0
-    
-    # Use a lock file to prevent concurrent access
-    local lock_file="${file_path}.lock"
-    exec 200>"$lock_file"
-    flock -s 200
-    cat "$file_path"
-    flock -u 200
-    exec 200>&-
+    flock -s 200 cat "$file_path" 200>"${file_path}.lock"
 }
 
 # Function to write JSON file with locking
 write_json_file() {
     local file_path="$1" content="$2"
     [ ! -f "$file_path" ] && touch "$file_path"
-    
-    # Use a lock file to prevent concurrent access
-    local lock_file="${file_path}.lock"
-    exec 200>"$lock_file"
-    flock -x 200
-    echo "$content" > "$file_path"
-    flock -u 200
-    exec 200>&-
+    flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
 }
 
 # Function to extract real player name from ID-prefixed format
@@ -74,8 +60,7 @@ extract_real_name() {
 # Function to validate player names
 is_valid_player_name() {
     local player_name=$(echo "$1" | xargs)
-    # Allow letters, numbers, underscores, and some special characters but not dangerous ones
-    [[ "$player_name" =~ ^[a-zA-Z0-9_\-]+$ ]] && [[ ! "$player_name" =~ [\\/\$\(\)\;\\\`\*\"\'\<\>\&\|] ]]
+    [[ "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]
 }
 
 # Initialize variables
@@ -231,12 +216,8 @@ show_welcome_message() {
 
 # Function to send server command
 send_server_command() {
-    local message="$1"
-    # Sanitize the message to prevent command injection
-    local safe_message=$(printf '%s' "$message" | tr -d '\000-\037')
-    
-    if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$safe_message$(printf \\r)" 2>/dev/null; then
-        print_success "Sent message to server: $safe_message"
+    if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$1$(printf \\r)" 2>/dev/null; then
+        print_success "Sent message to server: $1"
         return 0
     else
         print_error "Could not send message to server"
@@ -404,7 +385,6 @@ process_message() {
             send_server_command "!buy_admin - Buy ADMIN rank for 100 tickets"
             send_server_command "!give_mod PLAYER - Gift MOD rank (70 tickets)"
             send_server_command "!give_admin PLAYER - Gift ADMIN rank (140 tickets)"
-            send_server_command "!help - Show this help message"
             ;;
     esac
 }
