@@ -5,32 +5,8 @@ set -e
 # THE BLOCKHEADS LINUX SERVER INSTALLER - OPTIMIZED VERSION
 # =============================================================================
 
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
-ORANGE='\033[0;33m'
-PURPLE='\033[0;35m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-# Function definitions
-print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
-print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-print_header() {
-    echo -e "${PURPLE}================================================================"
-    echo -e "$1"
-    echo -e "===============================================================${NC}"
-}
-print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
-
-# Wget options for faster downloads
-WGET_OPTIONS="--timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --read-timeout=30 -q"
+# Load common functions
+source blockheads_common.sh
 
 # Check if running as root
 [ "$EUID" -ne 0 ] && print_error "This script requires root privileges." && exit 1
@@ -52,6 +28,7 @@ SCRIPTS=(
     "server_manager.sh"
     "server_bot.sh"
     "anticheat_secure.sh"
+    "blockheads_common.sh"
 )
 
 # Package lists for different distributions
@@ -59,24 +36,16 @@ declare -a PACKAGES_DEBIAN=(
     'git' 'cmake' 'ninja-build' 'clang' 'systemtap-sdt-dev' 'libbsd-dev' 'linux-libc-dev'
     'curl' 'tar' 'grep' 'mawk' 'patchelf' 'libgnustep-base-dev' 'libobjc4'
     'libgnutls28-dev' 'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev'
-    'zlib1g' 'libicu-dev' 'libicu-dev' 'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof'
+    'zlib1g' 'libicu-dev' 'libicu-dev' 'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof' 'flock'
 )
 
 declare -a PACKAGES_ARCH=(
     'base-devel' 'git' 'cmake' 'ninja' 'clang' 'systemtap' 'libbsd' 'curl' 'tar' 'grep'
     'gawk' 'patchelf' 'gnustep-base' 'gcc-libs' 'gnutls' 'libgcrypt' 'libxml2' 'libffi'
-    'libnsl' 'zlib' 'icu' 'libdispatch' 'wget' 'jq' 'screen' 'lsof'
+    'libnsl' 'zlib' 'icu' 'libdispatch' 'wget' 'jq' 'screen' 'lsof' 'util-linux'
 )
 
 print_header "THE BLOCKHEADS LINUX SERVER INSTALLER"
-
-# Function to find library
-find_library() {
-    SEARCH=$1
-    LIBRARY=$(ldconfig -p | grep -F "$SEARCH" -m 1 | awk '{print $NF}' | head -1)
-    [ -z "$LIBRARY" ] && return 1
-    printf '%s' "$LIBRARY"
-}
 
 # Function to build libdispatch from source
 build_libdispatch() {
@@ -188,7 +157,7 @@ if ! install_packages; then
         exit 1
     fi
     
-    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common; then
+    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common flock; then
         print_error "Failed to install essential packages"
         exit 1
     fi
@@ -277,8 +246,8 @@ echo -e "\n"
 print_success "Compatibility patches applied"
 
 print_step "[6/8] Set ownership and permissions"
-chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh anticheat_secure.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
-chmod 755 server_manager.sh server_bot.sh anticheat_secure.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
+chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
+chmod 755 server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
 
 print_step "[7/8] Create economy data file"
 sudo -u "$ORIGINAL_USER" bash -c 'echo "{\"players\": {}, \"transactions\": []}" > economy_data.json' || true
