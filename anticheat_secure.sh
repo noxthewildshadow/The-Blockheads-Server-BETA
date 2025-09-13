@@ -1,29 +1,10 @@
 #!/bin/bash
-
 # =============================================================================
 # THE BLOCKHEADS ANTICHEAT SECURITY SYSTEM WITH IP VERIFICATION
 # =============================================================================
 
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-PURPLE='\033[0;35m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-# Function definitions
-print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
-print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-print_header() {
-    echo -e "${PURPLE}================================================================"
-    echo -e "$1"
-    echo -e "===============================================================${NC}"
-}
+# Load common functions
+source blockheads_common.sh
 
 # Validate jq is installed
 if ! command -v jq &> /dev/null; then
@@ -55,132 +36,6 @@ declare -A admin_command_count
 declare -A ip_change_grace_periods
 declare -A ip_change_pending_players
 
-# Function to extract real player name from ID-prefixed format
-extract_real_name() {
-    local name="$1"
-    # Remove any numeric prefix with bracket (e.g., "12345] ")
-    if [[ "$name" =~ ^[0-9]+\]\ (.+)$ ]]; then
-        echo "${BASH_REMATCH[1]}"
-    else
-        echo "$name"
-    fi
-}
-
-# Function to generate random alphanumeric password
-generate_random_password() {
-    local length=7
-    tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$length"
-}
-
-# Function to read JSON file with locking
-read_json_file() {
-    local file_path="$1"
-    [ ! -f "$file_path" ] && echo "{}" > "$file_path" && echo "{}" && return 0
-    flock -s 200 cat "$file_path" 200>"${file_path}.lock"
-}
-
-# Function to write JSON file with locking
-write_json_file() {
-    local file_path="$1" content="$2"
-    [ ! -f "$file_path" ] && touch "$file_path"
-    flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
-}
-
-# Function to record IP change attempt
-record_ip_change_attempt() {
-    local player_name="$1" current_time=$(date +%s)
-    local attempts_data=$(read_json_file "$IP_CHANGE_ATTEMPTS_FILE" 2>/dev/null || echo '{}')
-    local current_attempts=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.attempts // 0')
-    local last_attempt_time=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.last_attempt // 0')
-    
-    # Reset counter if more than 1 hour has passed
-    [ $((current_time - last_attempt_time)) -gt 3600 ] && current_attempts=0
-    
-    current_attempts=$((current_attempts + 1))
-    attempts_data=$(echo "$attempts_data" | jq --arg player "$player_name" \
-        --argjson attempts "$current_attempts" --argjson time "$current_time" \
-        '.[$player] = {"attempts": $attempts, "last_attempt": $time}')
-    
-    write_json_file "$IP_CHANGE_ATTEMPTS_FILE" "$attempts_data"
-    return $current_attempts
-}
-
-# Function to record password change attempt
-record_password_change_attempt() {
-    local player_name="$1" current_time=$(date +%s)
-    local attempts_data=$(read_json_file "$PASSWORD_CHANGE_ATTEMPTS_FILE" 2>/dev/null || echo '{}')
-    local current_attempts=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.attempts // 0')
-    local last_attempt_time=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.last_attempt // 0')
-    
-    # Reset counter if more than 1 hour has passed
-    [ $((current_time - last_attempt_time)) -gt 3600 ] && current_attempts=0
-    
-    current_attempts=$((current_attempts + 1))
-    attempts_data=$(echo "$attempts_data" | jq --arg player "$player_name" \
-        --argjson attempts "$current_attempts" --argjson time "$current_time" \
-        '.[$player] = {"attempts": $attempts, "last_attempt": $time}')
-    
-    write_json_file "$PASSWORD_CHANGE_ATTEMPTS_FILE" "$attempts_data"
-    return $current_attempts
-}
-
-# Function to check for illegal characters in player names
-has_illegal_characters() {
-    local name="$1"
-    # Check for backslashes, symbols, spaces and other illegal characters
-    if [[ "$name" =~ [\\/\$\(\)\;\\\`\*\"\'\<\>\&\|\s] ]]; then
-        return 0  # Has illegal characters
-    fi
-    return 1  # No illegal characters
-}
-
-# Function to validate player names
-is_valid_player_name() {
-    local player_name="$1"
-    player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    [[ -z "$player_name" ]] && return 1
-    
-    # Check for illegal characters first
-    if has_illegal_characters "$player_name"; then
-        return 1
-    fi
-    
-    # Then check if it matches the valid pattern
-    if [[ "$player_name" =~ ^[A-Za-z0-9_]{1,16}$ ]]; then
-        return 0
-    else
-        return 1
-    fi
-}
-
-# Function to handle invalid player names
-handle_invalid_player_name() {
-    local player_name="$1" player_ip="$2" player_hash="$3"
-    local clean_name=$(echo "$player_name" | sed 's/\\/\\\\/g; s/"/\\"/g; s/'\''/\\'\''/g')
-    print_warning "INVALID PLAYER NAME: '$clean_name' (IP: $player_ip, Hash: $player_hash)"
-    send_server_command "WARNING: Invalid player name '$clean_name'! You will be banned for 5 seconds."
-    print_warning "Banning player with invalid name: '$clean_name' (IP: $player_ip)"
-    
-    # Special handling for names with backslashes
-    local safe_name=$(echo "$player_name" | sed 's/\\/\\\\/g')
-    
-    if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
-        send_server_command "/ban $player_ip"
-        # Kick the player after banning
-        send_server_command "/kick $safe_name"
-        (
-            sleep 5
-            send_server_command "/unban $player_ip"
-            print_success "Unbanned IP: $player_ip"
-        ) &
-    else
-        # Fallback: ban by name if IP is not available
-        send_server_command "/ban $safe_name"
-        send_server_command "/kick $safe_name"
-    fi
-    return 0
-}
-
 # Function to initialize authorization files
 initialize_authorization_files() {
     [ ! -f "$AUTHORIZED_ADMINS_FILE" ] && touch "$AUTHORIZED_ADMINS_FILE"
@@ -199,7 +54,7 @@ validate_authorization() {
         admin=$(echo "$admin" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         [[ -z "$admin" || "$admin" =~ ^# || "$admin" =~ "Usernames in this file" ]] && continue
         if ! grep -q -i "^$admin$" "$AUTHORIZED_ADMINS_FILE"; then
-            send_server_command "/unadmin $admin"
+            send_server_command "$SCREEN_SERVER" "/unadmin $admin"
             remove_from_list_file "$admin" "admin"
             # Update player rank in players.log
             update_player_rank "$admin" "NONE"
@@ -210,7 +65,7 @@ validate_authorization() {
         mod=$(echo "$mod" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         [[ -z "$mod" || "$mod" =~ ^# || "$mod" =~ "Usernames in this file" ]] && continue
         if ! grep -q -i "^$mod$" "$AUTHORIZED_MODS_FILE"; then
-            send_server_command "/unmod $mod"
+            send_server_command "$SCREEN_SERVER" "/unmod $mod"
             remove_from_list_file "$mod" "mod"
             # Update player rank in players.log
             update_player_rank "$mod" "NONE"
@@ -304,27 +159,11 @@ get_player_info() {
 send_delayed_uncommands() {
     local target_player="$1" command_type="$2"
     (
-        sleep 2; send_server_command_silent "/un${command_type} $target_player"
-        sleep 2; send_server_command_silent "/un${command_type} $target_player"
-        sleep 1; send_server_command_silent "/un${command_type} $target_player"
+        sleep 2; screen -S "$SCREEN_SERVER" -p 0 -X stuff "/un${command_type} $target_player$(printf \\r)" 2>/dev/null
+        sleep 2; screen -S "$SCREEN_SERVER" -p 0 -X stuff "/un${command_type} $target_player$(printf \\r)" 2>/dev/null
+        sleep 1; screen -S "$SCREEN_SERVER" -p 0 -X stuff "/un${command_type} $target_player$(printf \\r)" 2>/dev/null
         remove_from_list_file "$target_player" "$command_type"
     ) &
-}
-
-# Function to send server command silently
-send_server_command_silent() {
-    screen -S "$SCREEN_SERVER" -p 0 -X stuff "$1$(printf \\r)" 2>/dev/null
-}
-
-# Function to send server command
-send_server_command() {
-    if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$1$(printf \\r)" 2>/dev/null; then
-        print_success "Sent message to server: $1"
-        return 0
-    else
-        print_error "Could not send message to server"
-        return 1
-    fi
 }
 
 # Function to check if player is in list
@@ -375,16 +214,16 @@ start_ip_change_grace_period() {
     print_warning "Started IP change grace period for $player_name (30 seconds)"
     
     # Send warning message to player
-    send_server_command "WARNING: $player_name, your IP has changed from the registered one!"
-    send_server_command "You have 30 seconds to verify your identity with: !ip_change YOUR_CURRENT_PASSWORD"
-    send_server_command "If you don't verify, you will be kicked from the server."
+    send_server_command "$SCREEN_SERVER" "WARNING: $player_name, your IP has changed from the registered one!"
+    send_server_command "$SCREEN_SERVER" "You have 30 seconds to verify your identity with: !ip_change YOUR_CURRENT_PASSWORD"
+    send_server_command "$SCREEN_SERVER" "If you don't verify, you will be kicked from the server."
     
     # Start grace period countdown
     (
         sleep 30
         if [ -n "${ip_change_grace_periods[$player_name]}" ]; then
             print_warning "IP change grace period expired for $player_name - kicking player"
-            send_server_command "/kick $player_name"
+            send_server_command "$SCREEN_SERVER" "/kick $player_name"
             unset ip_change_grace_periods["$player_name"]
             unset ip_change_pending_players["$player_name"]
         fi
@@ -433,12 +272,12 @@ validate_ip_change() {
     unset ip_change_pending_players["$player_name"]
     
     # Send success message
-    send_server_command "SUCCESS: $player_name, your IP has been verified and updated!"
+    send_server_command "$SCREEN_SERVER" "SUCCESS: $player_name, your IP has been verified and updated!"
     
     # Clear chat after 5 seconds to hide password
     (
         sleep 5
-        send_server_command_silent "/clear"
+        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null
         print_success "Chat cleared after IP change verification"
     ) &
     
@@ -465,14 +304,14 @@ handle_password_generation() {
     fi
     
     # Send password to player
-    send_server_command "$player_name, your new password is: $new_password"
-    send_server_command "Please save this password securely. You will need it if your IP changes."
-    send_server_command "The chat will be cleared in 25 seconds to protect your password."
+    send_server_command "$SCREEN_SERVER" "$player_name, your new password is: $new_password"
+    send_server_command "$SCREEN_SERVER" "Please save this password securely. You will need it if your IP changes."
+    send_server_command "$SCREEN_SERVER" "The chat will be cleared in 25 seconds to protect your password."
     
     # Schedule chat clearance
     (
         sleep 25
-        send_server_command_silent "/clear"
+        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null
         print_success "Chat cleared for password protection"
     ) &
     
@@ -486,7 +325,7 @@ handle_password_change() {
     
     if [ -z "$player_info" ]; then
         print_error "Player $player_name not found in registry"
-        send_server_command "$player_name, you don't have a password set. Use !ip_psw to generate one."
+        send_server_command "$SCREEN_SERVER" "$player_name, you don't have a password set. Use !ip_psw to generate one."
         return 1
     fi
     
@@ -496,17 +335,29 @@ handle_password_change() {
     
     if [ "$registered_password" != "$old_password" ]; then
         print_error "Invalid old password for $player_name"
-        send_server_command "$player_name, the old password is incorrect."
+        send_server_command "$SCREEN_SERVER" "$player_name, the old password is incorrect."
         return 1
     fi
     
     # Check password change attempts
-    record_password_change_attempt "$player_name"
-    local attempt_count=$?
+    local current_time=$(date +%s)
+    local attempts_data=$(read_json_file "$PASSWORD_CHANGE_ATTEMPTS_FILE" 2>/dev/null || echo '{}')
+    local current_attempts=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.attempts // 0')
+    local last_attempt_time=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.last_attempt // 0')
     
-    if [ $attempt_count -gt 3 ]; then
+    # Reset counter if more than 1 hour has passed
+    [ $((current_time - last_attempt_time)) -gt 3600 ] && current_attempts=0
+    
+    current_attempts=$((current_attempts + 1))
+    attempts_data=$(echo "$attempts_data" | jq --arg player "$player_name" \
+        --argjson attempts "$current_attempts" --argjson time "$current_time" \
+        '.[$player] = {"attempts": $attempts, "last_attempt": $time}')
+    
+    write_json_file "$PASSWORD_CHANGE_ATTEMPTS_FILE" "$attempts_data"
+    
+    if [ $current_attempts -gt 3 ]; then
         print_error "Password change limit exceeded for $player_name"
-        send_server_command "$player_name, you've exceeded the password change limit (3 times per hour)."
+        send_server_command "$SCREEN_SERVER" "$player_name, you've exceeded the password change limit (3 times per hour)."
         return 1
     fi
     
@@ -515,14 +366,14 @@ handle_password_change() {
     update_player_info "$player_name" "$registered_ip" "$registered_rank" "$new_password"
     
     # Send new password to player
-    send_server_command "$player_name, your new password is: $new_password"
-    send_server_command "Please save this password securely. You will need it if your IP changes."
-    send_server_command "The chat will be cleared in 25 seconds to protect your password."
+    send_server_command "$SCREEN_SERVER" "$player_name, your new password is: $new_password"
+    send_server_command "$SCREEN_SERVER" "Please save this password securely. You will need it if your IP changes."
+    send_server_command "$SCREEN_SERVER" "The chat will be cleared in 25 seconds to protect your password."
     
     # Schedule chat clearance
     (
         sleep 25
-        send_server_command_silent "/clear"
+        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null
         print_success "Chat cleared for password protection"
     ) &
     
@@ -552,8 +403,8 @@ check_username_theft() {
                 print_warning "IP changed for $player_name but no password set (old IP: $registered_ip, new IP: $player_ip)"
                 (
                     sleep 5
-                    send_server_command "WARNING: $player_name, your IP has changed but you don't have a password set."
-                    send_server_command "Use !ip_psw to generate a password, or you may lose access to your account."
+                    send_server_command "$SCREEN_SERVER" "WARNING: $player_name, your IP has changed but you don't have a password set."
+                    send_server_command "$SCREEN_SERVER" "Use !ip_psw to generate a password, or you may lose access to your account."
                 ) &
                 # Update IP in registry
                 update_player_info "$player_name" "$player_ip" "$registered_rank" "$registered_password"
@@ -578,8 +429,8 @@ check_username_theft() {
         # Remind player to set password after 5 seconds
         (
             sleep 5
-            send_server_command "WARNING: $player_name, you don't have a password set for IP verification."
-            send_server_command "Use !ip_psw to generate a password, or you may lose access to your account if your IP changes."
+            send_server_command "$SCREEN_SERVER" "WARNING: $player_name, you don't have a password set for IP verification."
+            send_server_command "$SCREEN_SERVER" "Use !ip_psw to generate a password, or you may lose access to your account if your IP changes."
         ) &
     fi
     
@@ -601,7 +452,7 @@ check_dangerous_activity() {
         for cmd in $restricted_commands; do
             if [[ "$message" == "$cmd"* ]]; then
                 print_error "RESTRICTED COMMAND: $player_name attempted to use $cmd during IP change grace period"
-                send_server_command "WARNING: $player_name, sensitive commands are restricted during IP verification."
+                send_server_command "$SCREEN_SERVER" "WARNING: $player_name, sensitive commands are restricted during IP verification."
                 return 1
             fi
         done
@@ -621,8 +472,8 @@ check_dangerous_activity() {
             
             if [ $count -gt 2 ]; then
                 print_error "SPAM DETECTED: $player_name sent $count messages in 1 second"
-                send_server_command "/ban $player_ip"
-                send_server_command "WARNING: $player_name (IP: $player_ip) was banned for spamming"
+                send_server_command "$SCREEN_SERVER" "/ban $player_ip"
+                send_server_command "$SCREEN_SERVER" "WARNING: $player_name (IP: $player_ip) was banned for spamming"
                 return 1
             fi
         else
@@ -649,11 +500,11 @@ check_dangerous_activity() {
                 local offense_count=$?
                 
                 if [ $offense_count -ge 2 ]; then
-                    send_server_command "/ban $player_ip"
-                    send_server_command "WARNING: $player_name (IP: $player_ip) was banned for attempting dangerous commands"
+                    send_server_command "$SCREEN_SERVER" "/ban $player_ip"
+                    send_server_command "$SCREEN_SERVER" "WARNING: $player_name (IP: $player_ip) was banned for attempting dangerous commands"
                     return 1
                 else
-                    send_server_command "WARNING: $player_name, dangerous commands are restricted!"
+                    send_server_command "$SCREEN_SERVER" "WARNING: $player_name, dangerous commands are restricted!"
                     return 0
                 fi
             fi
@@ -670,12 +521,12 @@ handle_unauthorized_command() {
     
     if is_player_in_list "$player_name" "admin"; then
         print_error "UNAUTHORIZED COMMAND: Admin $player_name attempted to use $command on $target_player"
-        send_server_command "WARNING: Admin $player_name attempted unauthorized rank assignment!"
+        send_server_command "$SCREEN_SERVER" "WARNING: Admin $player_name attempted unauthorized rank assignment!"
         local command_type=""
         [ "$command" = "/admin" ] && command_type="admin"
         [ "$command" = "/mod" ] && command_type="mod"
         if [ -n "$command_type" ]; then
-            send_server_command_silent "/un${command_type} $target_player"
+            screen -S "$SCREEN_SERVER" -p 0 -X stuff "/un${command_type} $target_player$(printf \\r)" 2>/dev/null
             remove_from_list_file "$target_player" "$command_type"
             send_delayed_uncommands "$target_player" "$command_type"
             # Update player rank in players.log
@@ -684,32 +535,32 @@ handle_unauthorized_command() {
         record_admin_offense "$player_name"
         local offense_count=$?
         if [ "$offense_count" -eq 1 ]; then
-            send_server_command "$player_name, this is your first warning! Only the server console can assign ranks."
+            send_server_command "$SCREEN_SERVER" "$player_name, this is your first warning! Only the server console can assign ranks."
         elif [ "$offense_count" -eq 2 ]; then
-            send_server_command "$player_name, this is your second warning! One more and you will be demoted to mod."
+            send_server_command "$SCREEN_SERVER" "$player_name, this is your second warning! One more and you will be demoted to mod."
         elif [ "$offense_count" -ge 3 ]; then
             print_warning "THIRD OFFENSE: Admin $player_name is being demoted to mod"
             # Remove from admin files
             remove_from_list_file "$player_name" "admin"
-            send_server_command_silent "/unadmin $player_name"
+            screen -S "$SCREEN_SERVER" -p 0 -X stuff "/unadmin $player_name$(printf \\r)" 2>/dev/null
             # Add to mod files
             echo "$player_name" >> "$AUTHORIZED_MODS_FILE"
-            send_server_command "/mod $player_name"
+            send_server_command "$SCREEN_SERVER" "/mod $player_name"
             # Update players.log
             update_player_rank "$player_name" "mod"
             clear_admin_offenses "$player_name"
         fi
     else
         print_warning "Non-admin player $player_name attempted to use $command on $target_player"
-        send_server_command "$player_name, you don't have permission to assign ranks."
+        send_server_command "$SCREEN_SERVER" "$player_name, you don't have permission to assign ranks."
         if [ "$command" = "/admin" ]; then
-            send_server_command_silent "/unadmin $target_player"
+            screen -S "$SCREEN_SERVER" -p 0 -X stuff "/unadmin $target_player$(printf \\r)" 2>/dev/null
             remove_from_list_file "$target_player" "admin"
             send_delayed_uncommands "$target_player" "admin"
             # Update player rank in players.log
             update_player_rank "$target_player" "NONE"
         elif [ "$command" = "/mod" ]; then
-            send_server_command_silent "/unmod $target_player"
+            screen -S "$SCREEN_SERVER" -p 0 -X stuff "/unmod $target_player$(printf \\r)" 2>/dev/null
             remove_from_list_file "$target_player" "mod"
             send_delayed_uncommands "$target_player" "mod"
             # Update player rank in players.log
@@ -784,13 +635,48 @@ monitor_log() {
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             # Check for illegal characters first
-            if has_illegal_characters "$player_name"; then
-                handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
+            if [[ "$player_name" =~ [\\/\$\(\)\;\\\`\*\"\'\<\>\&\|\s] ]]; then
+                print_warning "INVALID PLAYER NAME: '$player_name' (IP: $player_ip, Hash: $player_hash)"
+                send_server_command "$SCREEN_SERVER" "WARNING: Invalid player name '$player_name'! You will be banned for 5 seconds."
+                print_warning "Banning player with invalid name: '$player_name' (IP: $player_ip)"
+                
+                # Special handling for names with backslashes
+                local safe_name=$(echo "$player_name" | sed 's/\\/\\\\/g')
+                
+                if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
+                    send_server_command "$SCREEN_SERVER" "/ban $player_ip"
+                    # Kick the player after banning
+                    send_server_command "$SCREEN_SERVER" "/kick $safe_name"
+                    (
+                        sleep 5
+                        send_server_command "$SCREEN_SERVER" "/unban $player_ip"
+                        print_success "Unbanned IP: $player_ip"
+                    ) &
+                else
+                    # Fallback: ban by name if IP is not available
+                    send_server_command "$SCREEN_SERVER" "/ban $safe_name"
+                    send_server_command "$SCREEN_SERVER" "/kick $safe_name"
+                fi
                 continue
             fi
             
             if ! is_valid_player_name "$player_name"; then
-                handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
+                print_warning "INVALID PLAYER NAME: '$player_name' (IP: $player_ip, Hash: $player_hash)"
+                send_server_command "$SCREEN_SERVER" "WARNING: Invalid player name '$player_name'! You will be banned for 5 seconds."
+                print_warning "Banning player with invalid name: '$player_name' (IP: $player_ip)"
+                
+                if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
+                    send_server_command "$SCREEN_SERVER" "/ban $player_ip"
+                    send_server_command "$SCREEN_SERVER" "/kick $player_name"
+                    (
+                        sleep 5
+                        send_server_command "$SCREEN_SERVER" "/unban $player_ip"
+                        print_success "Unbanned IP: $player_ip"
+                    ) &
+                else
+                    send_server_command "$SCREEN_SERVER" "/ban $player_name"
+                    send_server_command "$SCREEN_SERVER" "/kick $player_name"
+                fi
                 continue
             fi
             
@@ -810,14 +696,24 @@ monitor_log() {
             target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             # Check for illegal characters in command user
-            if has_illegal_characters "$command_user"; then
+            if [[ "$command_user" =~ [\\/\$\(\)\;\\\`\*\"\'\<\>\&\|\s] ]]; then
                 local ipu=$(get_ip_by_name "$command_user")
-                handle_invalid_player_name "$command_user" "$ipu" ""
+                print_warning "INVALID PLAYER NAME: '$command_user' (IP: $ipu)"
+                send_server_command "$SCREEN_SERVER" "WARNING: Invalid player name '$command_user'! You will be banned for 5 seconds."
+                print_warning "Banning player with invalid name: '$command_user' (IP: $ipu)"
+                
+                if [ -n "$ipu" ] && [ "$ipu" != "unknown" ]; then
+                    send_server_command "$SCREEN_SERVER" "/ban $ipu"
+                    send_server_command "$SCREEN_SERVER" "/kick $command_user"
+                else
+                    send_server_command "$SCREEN_SERVER" "/ban $command_user"
+                    send_server_command "$SCREEN_SERVER" "/kick $command_user"
+                fi
                 continue
             fi
             
             # Check for illegal characters in target player
-            if has_illegal_characters "$target_player"; then
+            if [[ "$target_player" =~ [\\/\$\(\)\;\\\`\*\"\'\<\>\&\|\s] ]]; then
                 print_error "Admin $command_user attempted to assign rank to invalid player: $target_player"
                 handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
                 continue
@@ -825,7 +721,17 @@ monitor_log() {
             
             if ! is_valid_player_name "$command_user"; then
                 local ipu2=$(get_ip_by_name "$command_user")
-                handle_invalid_player_name "$command_user" "$ipu2" ""
+                print_warning "INVALID PLAYER NAME: '$command_user' (IP: $ipu2)"
+                send_server_command "$SCREEN_SERVER" "WARNING: Invalid player name '$command_user'! You will be banned for 5 seconds."
+                print_warning "Banning player with invalid name: '$command_user' (IP: $ipu2)"
+                
+                if [ -n "$ipu2" ] && [ "$ipu2" != "unknown" ]; then
+                    send_server_command "$SCREEN_SERVER" "/ban $ipu2"
+                    send_server_command "$SCREEN_SERVER" "/kick $command_user"
+                else
+                    send_server_command "$SCREEN_SERVER" "/ban $command_user"
+                    send_server_command "$SCREEN_SERVER" "/kick $command_user"
+                fi
                 continue
             fi
             
@@ -844,7 +750,7 @@ monitor_log() {
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             # Check for illegal characters
-            if has_illegal_characters "$player_name"; then
+            if [[ "$player_name" =~ [\\/\$\(\)\;\\\`\*\"\'\<\>\&\|\s] ]]; then
                 print_warning "Player with invalid name disconnected: $player_name"
                 continue
             fi
@@ -867,7 +773,7 @@ monitor_log() {
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             # Check for illegal characters
-            if has_illegal_characters "$player_name"; then
+            if [[ "$player_name" =~ [\\/\$\(\)\;\\\`\*\"\'\<\>\&\|\s] ]]; then
                 continue
             fi
             
@@ -885,7 +791,7 @@ monitor_log() {
                         local old_password="${BASH_REMATCH[1]}"
                         handle_password_change "$player_name" "$old_password"
                     else
-                        send_server_command "Usage: !ip_psw_change OLD_PASSWORD"
+                        send_server_command "$SCREEN_SERVER" "Usage: !ip_psw_change OLD_PASSWORD"
                     fi
                     ;;
                 "!ip_change "*)
@@ -895,10 +801,10 @@ monitor_log() {
                             local current_ip="${ip_change_pending_players[$player_name]}"
                             validate_ip_change "$player_name" "$password" "$current_ip"
                         else
-                            send_server_command "Usage: !ip_change YOUR_CURRENT_PASSWORD"
+                            send_server_command "$SCREEN_SERVER" "Usage: !ip_change YOUR_CURRENT_PASSWORD"
                         fi
                     else
-                        send_server_command "$player_name, you don't have a pending IP change verification."
+                        send_server_command "$SCREEN_SERVER" "$player_name, you don't have a pending IP change verification."
                     fi
                     ;;
                 *)
