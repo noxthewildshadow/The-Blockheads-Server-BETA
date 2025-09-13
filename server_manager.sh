@@ -64,27 +64,15 @@ show_usage() {
 
 # Function to check if port is in use
 is_port_in_use() {
-    if command -v lsof >/dev/null 2>&1; then
-        lsof -Pi ":$1" -sTCP:LISTEN -t >/dev/null
-    else
-        # Fallback using netstat if lsof is not available
-        netstat -tuln 2>/dev/null | grep -q ":$1 "
-    fi
+    lsof -Pi ":$1" -sTCP:LISTEN -t >/dev/null
 }
 
 # Function to free port
 free_port() {
     local port="$1"
     print_warning "Freeing port $port..."
-    
-    if command -v lsof >/dev/null 2>&1; then
-        local pids=$(lsof -ti ":$port")
-        [ -n "$pids" ] && kill -9 $pids 2>/dev/null
-    else
-        # Fallback using netstat and awk if lsof is not available
-        local pids=$(netstat -tulnp 2>/dev/null | awk -v port=":$port" '$4 ~ port {split($7, a, "/"); print a[1]}')
-        [ -n "$pids" ] && kill -9 $pids 2>/dev/null
-    fi
+    local pids=$(lsof -ti ":$port")
+    [ -n "$pids" ] && kill -9 $pids 2>/dev/null
     
     local screen_server="blockheads_server_$port"
     local screen_bot="blockheads_bot_$port"
@@ -245,24 +233,22 @@ stop_server() {
     if [ -z "$port" ]; then
         print_step "Stopping all servers, bots and anticheat..."
         
-        # Use safer pattern matching for pkill
-        pkill -f "$SERVER_BINARY" 2>/dev/null || true
-        
-        for server_session in $(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | awk '{print $1}'); do
+        for server_session in $(screen -list | grep "blockheads_server_" | awk -F. '{print $1}'); do
             screen -S "$server_session" -X quit 2>/dev/null
             print_success "Stopped server: $server_session"
         done
         
-        for bot_session in $(screen -list | grep "blockheads_bot_" | awk -F. '{print $1}' | awk '{print $1}'); do
+        for bot_session in $(screen -list | grep "blockheads_bot_" | awk -F. '{print $1}'); do
             screen -S "$bot_session" -X quit 2>/dev/null
             print_success "Stopped bot: $bot_session"
         done
         
-        for anticheat_session in $(screen -list | grep "blockheads_anticheat_" | awk -F. '{print $1}' | awk '{print $1}'); do
+        for anticheat_session in $(screen -list | grep "blockheads_anticheat_" | awk -F. '{print $1}'); do
             screen -S "$anticheat_session" -X quit 2>/dev/null
             print_success "Stopped anticheat: $anticheat_session"
         done
         
+        pkill -f "$SERVER_BINARY" 2>/dev/null || true
         print_success "Cleanup completed for all servers."
     else
         print_step "Stopping server, bot and anticheat on port $port..."
@@ -270,9 +256,6 @@ stop_server() {
         local screen_server="blockheads_server_$port"
         local screen_bot="blockheads_bot_$port"
         local screen_anticheat="blockheads_anticheat_$port"
-        
-        # Use safer pattern matching for pkill
-        pkill -f "$SERVER_BINARY.*$port" 2>/dev/null || true
         
         if screen_session_exists "$screen_server"; then
             screen -S "$screen_server" -X quit 2>/dev/null
@@ -295,6 +278,7 @@ stop_server() {
             print_warning "Anticheat was not running on port $port."
         fi
         
+        pkill -f "$SERVER_BINARY.*$port" 2>/dev/null || true
         print_success "Cleanup completed for port $port."
     fi
 }
@@ -303,7 +287,7 @@ stop_server() {
 list_servers() {
     print_header "LIST OF RUNNING SERVERS"
     
-    local servers=$(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | awk '{print $1}' | sed 's/blockheads_server_/ - Port: /')
+    local servers=$(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | sed 's/blockheads_server_/ - Port: /')
     
     if [ -z "$servers" ]; then
         print_warning "No servers are currently running."
@@ -324,7 +308,7 @@ show_status() {
     if [ -z "$port" ]; then
         print_header "THE BLOCKHEADS SERVER STATUS - ALL SERVERS"
         
-        local servers=$(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | awk '{print $1}' | sed 's/blockheads_server_//')
+        local servers=$(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | sed 's/blockheads_server_//')
         
         if [ -z "$servers" ]; then
             print_error "No servers are currently running."
