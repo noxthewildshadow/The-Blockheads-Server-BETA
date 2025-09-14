@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# BLOCKHEADS COMMON FUNCTIONS LIBRARY - OPTIMIZED
+# BLOCKHEADS COMMON FUNCTIONS LIBRARY
 # =============================================================================
 
 # Color codes for output
@@ -26,6 +26,9 @@ print_header() {
     echo -e "===============================================================${NC}"
 }
 print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
+
+# Wget options for faster downloads
+WGET_OPTIONS="--timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --read-timeout=30 -q"
 
 # Function to validate player names
 is_valid_player_name() {
@@ -142,61 +145,4 @@ find_library() {
     LIBRARY=$(ldconfig -p | grep -F "$SEARCH" -m 1 | awk '{print $NF}' | head -1)
     [ -z "$LIBRARY" ] && return 1
     printf '%s' "$LIBRARY"
-}
-
-# Function to get player info from players.log
-get_player_info() {
-    local player_name="$1" players_log="$2"
-    if [ -f "$players_log" ]; then
-        while IFS='|' read -r name ip rank password; do
-            if [ "$name" = "$player_name" ]; then
-                echo "$ip|$rank|$password"
-                return 0
-            fi
-        done < <(grep -i "^$player_name|" "$players_log")
-    fi
-    echo ""
-}
-
-# Function to update player info in players.log
-update_player_info() {
-    local player_name="$1" player_ip="$2" player_rank="$3" player_password="$4" players_log="$5"
-    if [ -f "$players_log" ]; then
-        # Remove existing entry
-        sed -i "/^$player_name|/Id" "$players_log"
-        # Add new entry
-        echo "$player_name|$player_ip|$player_rank|$player_password" >> "$players_log"
-        print_success "Updated player info in registry: $player_name -> IP: $player_ip, Rank: $player_rank, Password: $player_password"
-    fi
-}
-
-# Function to check if player is in list
-is_player_in_list() {
-    local player_name="$1" list_type="$2" log_dir="$3"
-    local list_file="$log_dir/${list_type}list.txt"
-    [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"
-}
-
-# Function to get player rank
-get_player_rank() {
-    local player_name="$1" log_dir="$2"
-    if is_player_in_list "$player_name" "admin" "$log_dir"; then
-        echo "admin"
-    elif is_player_in_list "$player_name" "mod" "$log_dir"; then
-        echo "mod"
-    else
-        echo "NONE"
-    fi
-}
-
-# Function to remove from list file
-remove_from_list_file() {
-    local player_name="$1" list_type="$2" log_dir="$3"
-    local list_file="$log_dir/${list_type}list.txt"
-    [ ! -f "$list_file" ] && return 1
-    if grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"; then
-        sed -i "/^$player_name$/Id" "$list_file"
-        return 0
-    fi
-    return 1
 }
