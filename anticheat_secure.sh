@@ -48,7 +48,7 @@ initialize_authorization_files() {
     [ ! -f "$AUTHORIZED_MODS_FILE" ] && touch "$AUTHORIZED_MODS_FILE"
     [ ! -f "$PLAYERS_LOG" ] && touch "$PLAYERS_LOG"
     [ ! -f "$IP_CHANGE_ATTEMPTS_FILE" ] && echo "{}" > "$IP_CHANGE_ATTEMPTS_FILE"
-    [ ! -f "$PASSWORD_CHANGE_ATTEMPTS_FILE" ] && echo "{}" > "$PASSWORD_CHANGE_ATTEMPts_FILE"
+    [ ! -f "$PASSWORD_CHANGE_ATTEMPTS_FILE" ] && echo "{}" > "$PASSWORD_CHANGE_ATTEMPTS_FILE"
 }
 
 # Function to validate authorization
@@ -437,8 +437,11 @@ check_username_theft() {
                     ip_mismatch_announced["$player_name"]=1
                     (
                         sleep 5
-                        send_server_command "$SCREEN_SERVER" "WARNING: $player_name, your IP has changed but you don't have a password set."
-                        send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account."
+                        # Check if player is still connected before sending message
+                        if is_player_connected "$player_name"; then
+                            send_server_command "$SCREEN_SERVER" "WARNING: $player_name, your IP has changed but you don't have a password set."
+                            send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account."
+                        fi
                     ) &
                 fi
                 # Update IP in registry
@@ -447,7 +450,14 @@ check_username_theft() {
                 # Password set - start grace period (only if not already started)
                 if [[ -z "${ip_change_grace_periods[$player_name]}" ]]; then
                     print_warning "IP changed for $player_name (old IP: $registered_ip, new IP: $player_ip)"
-                    start_ip_change_grace_period "$player_name" "$player_ip"
+                    # Start grace period after 5 seconds
+                    (
+                        sleep 5
+                        # Check if player is still connected before starting grace period
+                        if is_player_connected "$player_name"; then
+                            start_ip_change_grace_period "$player_name" "$player_ip"
+                        fi
+                    ) &
                 fi
             fi
         else
@@ -468,13 +478,31 @@ check_username_theft() {
             ip_mismatch_announced["$player_name"]=1
             (
                 sleep 5
-                send_server_command "$SCREEN_SERVER" "WARNING: $player_name, you don't have a password set for IP verification."
-                send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account if your IP changes."
+                # Check if player is still connected before sending message
+                if is_player_connected "$player_name"; then
+                    send_server_command "$SCREEN_SERVER" "WARNING: $player_name, you don't have a password set for IP verification."
+                    send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account if your IP changes."
+                fi
             ) &
         fi
     fi
     
     return 0
+}
+
+# Function to check if a player is currently connected
+is_player_connected() {
+    local player_name="$1"
+    # Check if player is in the current player list
+    if screen -S "$SCREEN_SERVER" -p 0 -X stuff "/list$(printf \\r)" 2>/dev/null; then
+        # Give the server a moment to process the command
+        sleep 0.5
+        # Check the log for the player name in the list
+        if tail -n 10 "$LOG_FILE" | grep -q "$player_name"; then
+            return 0
+        fi
+    fi
+    return 1
 }
 
 # Function to detect spam and dangerous commands
