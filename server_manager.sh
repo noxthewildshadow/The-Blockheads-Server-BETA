@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# THE BLOCKHEADS SERVER MANAGER
+# THE BLOCKHEADS SERVER MANAGER - OPTIMIZED
 # =============================================================================
 
 # Load common functions
