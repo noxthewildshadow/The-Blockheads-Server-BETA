@@ -36,6 +36,9 @@ declare -A admin_command_count
 declare -A ip_change_grace_periods
 declare -A ip_change_pending_players
 
+# Track IP mismatch announcements to prevent duplicates
+declare -A ip_mismatch_announced
+
 # Function to initialize authorization files
 initialize_authorization_files() {
     [ ! -f "$AUTHORIZED_ADMINS_FILE" ] && touch "$AUTHORIZED_ADMINS_FILE"
@@ -267,18 +270,17 @@ validate_ip_change() {
     update_player_info "$player_name" "$current_ip" "$registered_rank" "$registered_password"
     print_success "IP updated for $player_name: $current_ip"
     
-    # End grace period
+    # End grace period and cancel kick
     unset ip_change_grace_periods["$player_name"]
     unset ip_change_pending_players["$player_name"]
     
-    # Send success message
-    send_server_command "$SCREEN_SERVER" "SUCCESS: $player_name, your IP has been verified and updated!"
+    # Clear chat immediately
+    screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null
     
-    # Clear chat after 5 seconds to hide password
+    # Send success message after 2 seconds
     (
-        sleep 5
-        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null
-        print_success "Chat cleared after IP change verification"
+        sleep 2
+        send_server_command "$SCREEN_SERVER" "SUCCESS: $player_name, your IP has been verified and updated!"
     ) &
     
     return 0
@@ -289,9 +291,13 @@ handle_password_creation() {
     local player_name="$1" password="$2" confirm_password="$3" player_ip="$4"
     local player_info=$(get_player_info "$player_name")
 
-    # Función local para programar clear
-    schedule_clear() {
-        ( sleep 2; screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null ) &
+    # Función local para programar clear y mensaje
+    schedule_clear_and_message() {
+        local message="$1"
+        # Clear chat immediately
+        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null
+        # Send success message after 2 seconds
+        ( sleep 2; send_server_command "$SCREEN_SERVER" "$message" ) &
     }
 
     # Si el jugador ya existe en el registro, verificar si ya tiene contraseña
@@ -301,7 +307,7 @@ handle_password_creation() {
             print_warning "Player $player_name already has a password set."
             send_server_command "$SCREEN_SERVER" "$player_name, you already have a password set."
             send_server_command "$SCREEN_SERVER" "If you want to change it, use: !ip_psw_change OLD_PASSWORD NEW_PASSWORD"
-            schedule_clear
+            schedule_clear_and_message "$player_name, password already exists."
             return 1
         fi
     fi
@@ -309,13 +315,13 @@ handle_password_creation() {
     # Validar contraseña
     if [ ${#password} -lt 6 ]; then
         send_server_command "$SCREEN_SERVER" "$player_name, password must be at least 6 characters."
-        schedule_clear
+        schedule_clear_and_message "$player_name, password too short."
         return 1
     fi
 
     if [ "$password" != "$confirm_password" ]; then
         send_server_command "$SCREEN_SERVER" "$player_name, passwords do not match."
-        schedule_clear
+        schedule_clear_and_message "$player_name, passwords don't match."
         return 1
     fi
 
@@ -329,8 +335,7 @@ handle_password_creation() {
         update_player_info "$player_name" "$player_ip" "$rank" "$password"
     fi
 
-    send_server_command "$SCREEN_SERVER" "$player_name, your IP password has been set successfully."
-    schedule_clear
+    schedule_clear_and_message "$player_name, your IP password has been set successfully."
     return 0
 }
 
@@ -338,6 +343,15 @@ handle_password_creation() {
 handle_password_change() {
     local player_name="$1" old_password="$2" new_password="$3"
     local player_info=$(get_player_info "$player_name")
+    
+    # Función local para programar clear y mensaje
+    schedule_clear_and_message() {
+        local message="$1"
+        # Clear chat immediately
+        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null
+        # Send success message after 2 seconds
+        ( sleep 2; send_server_command "$SCREEN_SERVER" "$message" ) &
+    }
     
     if [ -z "$player_info" ]; then
         print_error "Player $player_name not found in registry"
@@ -381,16 +395,8 @@ handle_password_change() {
     # Actualizar contraseña
     update_player_info "$player_name" "$registered_ip" "$registered_rank" "$new_password"
     
-    # Enviar mensaje de éxito
-    send_server_command "$SCREEN_SERVER" "$player_name, your password has been changed successfully."
-    send_server_command "$SCREEN_SERVER" "The chat will be cleared in 10 seconds to protect your password."
-    
-    # Programar limpieza del chat
-    (
-        sleep 10
-        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null
-        print_success "Chat cleared for password protection"
-    ) &
+    # Usar la función de programación para clear y mensaje
+    schedule_clear_and_message "$player_name, your password has been changed successfully."
     
     return 0
 }
@@ -416,17 +422,23 @@ check_username_theft() {
             if [ "$registered_password" = "NONE" ]; then
                 # No password set - remind player to set one after 5 seconds
                 print_warning "IP changed for $player_name but no password set (old IP: $registered_ip, new IP: $player_ip)"
-                (
-                    sleep 5
-                    send_server_command "$SCREEN_SERVER" "WARNING: $player_name, your IP has changed but you don't have a password set."
-                    send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account."
-                ) &
+                # Only show announcement once per player connection
+                if [[ -z "${ip_mismatch_announced[$player_name]}" ]]; then
+                    ip_mismatch_announced["$player_name"]=1
+                    (
+                        sleep 5
+                        send_server_command "$SCREEN_SERVER" "WARNING: $player_name, your IP has changed but you don't have a password set."
+                        send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account."
+                    ) &
+                fi
                 # Update IP in registry
                 update_player_info "$player_name" "$player_ip" "$registered_rank" "$registered_password"
             else
-                # Password set - start grace period
-                print_warning "IP changed for $player_name (old IP: $registered_ip, new IP: $player_ip)"
-                start_ip_change_grace_period "$player_name" "$player_ip"
+                # Password set - start grace period (only if not already started)
+                if [[ -z "${ip_change_grace_periods[$player_name]}" ]]; then
+                    print_warning "IP changed for $player_name (old IP: $registered_ip, new IP: $player_ip)"
+                    start_ip_change_grace_period "$player_name" "$player_ip"
+                fi
             fi
         else
             # IP matches - update rank if needed
@@ -441,12 +453,15 @@ check_username_theft() {
         update_player_info "$player_name" "$player_ip" "$rank" "NONE"
         print_success "Added new player to registry: $player_name ($player_ip) with rank: $rank"
         
-        # Remind player to set password after 5 seconds
-        (
-            sleep 5
-            send_server_command "$SCREEN_SERVER" "WARNING: $player_name, you don't have a password set for IP verification."
-            send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account if your IP changes."
-        ) &
+        # Remind player to set password after 5 seconds (only once)
+        if [[ -z "${ip_mismatch_announced[$player_name]}" ]]; then
+            ip_mismatch_announced["$player_name"]=1
+            (
+                sleep 5
+                send_server_command "$SCREEN_SERVER" "WARNING: $player_name, you don't have a password set for IP verification."
+                send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account if your IP changes."
+            ) &
+        fi
     fi
     
     return 0
@@ -776,9 +791,10 @@ monitor_log() {
                 print_warning "Player with invalid name disconnected: $player_name"
             fi
             
-            # Clean up grace period if player disconnects
+            # Clean up grace period and announcement tracking if player disconnects
             unset ip_change_grace_periods["$player_name"]
             unset ip_change_pending_players["$player_name"]
+            unset ip_mismatch_announced["$player_name"]
         fi
 
         # Check for chat messages and dangerous commands
