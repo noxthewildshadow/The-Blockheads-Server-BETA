@@ -269,6 +269,7 @@ validate_ip_change() {
     
     if [ "$registered_password" != "$password" ]; then
         print_error "Invalid password for IP change: $player_name"
+        send_server_command "$SCREEN_SERVER" "$player_name, the password you provided is incorrect."
         return 1
     fi
     
@@ -450,6 +451,9 @@ check_username_theft() {
                 # Password set - start grace period (only if not already started)
                 if [[ -z "${ip_change_grace_periods[$player_name]}" ]]; then
                     print_warning "IP changed for $player_name (old IP: $registered_ip, new IP: $player_ip)"
+                    # --- CORRECCIÓN: marcamos como "pending" inmediatamente para evitar la ventana
+                    # donde el usuario ve el aviso pero no existe la entrada pendiente todavía.
+                    ip_change_pending_players["$player_name"]="$player_ip"
                     # Start grace period after 5 seconds
                     (
                         sleep 5
@@ -881,20 +885,17 @@ monitor_log() {
                     fi
                     ;;
                 "!ip_change "*)
-                    # CORRECCIÓN: Verificar correctamente si el jugador tiene un cambio de IP pendiente
-                    if [[ -n "${ip_change_pending_players[$player_name]}" ]] || is_in_grace_period "$player_name"; then
-                        if [[ "$message" =~ !ip_change\ (.+)$ ]]; then
-                            local password="${BASH_REMATCH[1]}"
+                    if [[ "$message" =~ !ip_change\ (.+)$ ]]; then
+                        local password="${BASH_REMATCH[1]}"
+                        # Accept verification if either within grace period or pending entry exists
+                        if is_in_grace_period "$player_name" || [ -n "${ip_change_pending_players[$player_name]}" ]; then
                             local current_ip="${ip_change_pending_players[$player_name]}"
-                            if [ -z "$current_ip" ]; then
-                                current_ip=$(get_ip_by_name "$player_name")
-                            fi
                             validate_ip_change "$player_name" "$password" "$current_ip"
                         else
-                            send_server_command "$SCREEN_SERVER" "Usage: !ip_change YOUR_CURRENT_PASSWORD"
+                            send_server_command "$SCREEN_SERVER" "$player_name, you don't have a pending IP change verification."
                         fi
                     else
-                        send_server_command "$SCREEN_SERVER" "$player_name, you don't have a pending IP change verification."
+                        send_server_command "$SCREEN_SERVER" "Usage: !ip_change YOUR_CURRENT_PASSWORD"
                     fi
                     ;;
                 *)
