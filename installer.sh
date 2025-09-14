@@ -5,32 +5,8 @@ set -e
 # THE BLOCKHEADS LINUX SERVER INSTALLER - OPTIMIZED VERSION
 # =============================================================================
 
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
-ORANGE='\033[0;33m'
-PURPLE='\033[0;35m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-# Function definitions
-print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
-print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-print_header() {
-    echo -e "${PURPLE}================================================================"
-    echo -e "$1"
-    echo -e "===============================================================${NC}"
-}
-print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
-
-# Wget options for silent downloads
-WGET_OPTIONS="--timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --read-timeout=30 -q"
+# Load common functions
+source blockheads_common.sh
 
 # Check if running as root
 [ "$EUID" -ne 0 ] && print_error "This script requires root privileges." && exit 1
@@ -70,25 +46,6 @@ declare -a PACKAGES_ARCH=(
 )
 
 print_header "THE BLOCKHEADS LINUX SERVER INSTALLER"
-
-# Function to find library
-find_library() {
-    SEARCH=$1
-    LIBRARY=$(ldconfig -p | grep -F "$SEARCH" -m 1 | awk '{print $NF}' | head -1)
-    [ -z "$LIBRARY" ] && return 1
-    printf '%s' "$LIBRARY"
-}
-
-# Function to check if flock is available
-check_flock() {
-    if command -v flock >/dev/null 2>&1; then
-        return 0
-    else
-        print_warning "flock not found. Locking mechanisms will be disabled."
-        print_warning "Some security features may not work properly."
-        return 1
-    fi
-}
 
 # Function to build libdispatch from source
 build_libdispatch() {
