@@ -1,14 +1,10 @@
 #!/bin/bash
 # =============================================================================
 # THE BLOCKHEADS ANTICHEAT SECURITY SYSTEM WITH IP VERIFICATION
-# (Correciones: normalizacion de nombres, arreglo get_ip_by_name, debug)
 # =============================================================================
 
 # Load common functions
 source blockheads_common.sh
-
-# DEBUG: pon 1 para logs extra (temporal)
-DEBUG=0
 
 # Validate jq is installed
 if ! command -v jq &> /dev/null; then
@@ -36,7 +32,7 @@ declare -A player_message_counts
 declare -A admin_last_command_time
 declare -A admin_command_count
 
-# Track IP change grace periods (keys canonicalizados)
+# Track IP change grace periods
 declare -A ip_change_grace_periods
 declare -A ip_change_pending_players
 
@@ -45,20 +41,6 @@ declare -A ip_mismatch_announced
 
 # Track grace period timer PIDs to cancel them on verification
 declare -A grace_period_pids
-
-# Helper: canonicaliza nombre (trim + lowercase) -> clave interna
-canonical_name() {
-    local n="$1"
-    # trim spaces
-    n="$(echo "$n" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    # lowercase (portable)
-    echo "$n" | tr '[:upper:]' '[:lower:]'
-}
-
-# Debug helper
-debug_log() {
-    [ "$DEBUG" -eq 1 ] && print_status "[DEBUG] $1"
-}
 
 # Function to initialize authorization files
 initialize_authorization_files() {
@@ -80,6 +62,7 @@ validate_authorization() {
         if ! grep -q -i "^$admin$" "$AUTHORIZED_ADMINS_FILE"; then
             send_server_command "$SCREEN_SERVER" "/unadmin $admin"
             remove_from_list_file "$admin" "admin"
+            # Update player rank in players.log
             update_player_rank "$admin" "NONE"
         fi
     done < <(grep -v "^[[:space:]]*#" "$admin_list" 2>/dev/null || true)
@@ -90,6 +73,7 @@ validate_authorization() {
         if ! grep -q -i "^$mod$" "$AUTHORIZED_MODS_FILE"; then
             send_server_command "$SCREEN_SERVER" "/unmod $mod"
             remove_from_list_file "$mod" "mod"
+            # Update player rank in players.log
             update_player_rank "$mod" "NONE"
         fi
     done < <(grep -v "^[[:space:]]*#" "$mod_list" 2>/dev/null || true)
@@ -207,7 +191,7 @@ get_player_rank() {
     fi
 }
 
-# Function to get IP by name (arreglo gsub bug)
+# Function to get IP by name
 get_ip_by_name() {
     local name="$1"
     if [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then
@@ -220,56 +204,56 @@ get_ip_by_name() {
         sub(/.*Player Connected[[:space:]]*/, "", part)
         gsub(/^[ \t]+|[ \t]+$/, "", part)
         ip=$2
-        gsub(/^[ \t]+|[ \t]+$/, "", ip)
+        gsub(/^[ \t]+|[ \pt]+$/, "", ip)
         if (part == pname) { last_ip=ip }
     }
     END { if (last_ip) print last_ip; else print "unknown" }
     ' "$LOG_FILE"
 }
 
-# Function to start IP change grace period (usa clave canonicalizada)
+# Function to start IP change grace period
 start_ip_change_grace_period() {
     local player_name="$1" player_ip="$2"
-    local key
-    key="$(canonical_name "$player_name")"
     local grace_end=$(( $(date +%s) + 30 ))
-    ip_change_grace_periods["$key"]=$grace_end
-    ip_change_pending_players["$key"]="$player_ip"
+    ip_change_grace_periods["$player_name"]=$grace_end
+    ip_change_pending_players["$player_name"]="$player_ip"
     print_warning "Started IP change grace period for $player_name (30 seconds)"
-    
-    # Send warning message to player
-    send_server_command "$SCREEN_SERVER" "WARNING: $player_name, your IP has changed from the registered one!"
-    send_server_command "$SCREEN_SERVER" "You have 30 seconds to verify your identity with: !ip_change YOUR_CURRENT_PASSWORD"
-    send_server_command "$SCREEN_SERVER" "If you don't verify, you will be kicked from the server."
     
     # Start grace period countdown and store PID
     (
         sleep 30
-        # verificamos si la entrada sigue
-        if [ -n "${ip_change_grace_periods[$key]}" ]; then
+        if [ -n "${ip_change_grace_periods[$player_name]}" ]; then
             print_warning "IP change grace period expired for $player_name - kicking player"
             send_server_command "$SCREEN_SERVER" "/kick $player_name"
-            unset ip_change_grace_periods["$key"]
-            unset ip_change_pending_players["$key"]
-            unset grace_period_pids["$key"]
+            unset ip_change_grace_periods["$player_name"]
+            unset ip_change_pending_players["$player_name"]
+            unset grace_period_pids["$player_name"]
         fi
     ) &
-    grace_period_pids["$key"]=$!
+    grace_period_pids["$player_name"]=$!
+    
+    # Send warning message to player after 5 seconds
+    (
+        sleep 5
+        if is_player_connected "$player_name" && is_in_grace_period "$player_name"; then
+            send_server_command "$SCREEN_SERVER" "WARNING: $player_name, your IP has changed from the registered one!"
+            send_server_command "$SCREEN_SERVER" "You have 30 seconds to verify your identity with: !ip_change YOUR_CURRENT_PASSWORD"
+            send_server_command "$SCREEN_SERVER" "If you don't verify, you will be kicked from the server."
+        fi
+    ) &
 }
 
 # Function to check if player is in IP change grace period
 is_in_grace_period() {
     local player_name="$1"
-    local key
-    key="$(canonical_name "$player_name")"
     local current_time=$(date +%s)
-    if [ -n "${ip_change_grace_periods[$key]}" ] && [ ${ip_change_grace_periods["$key"]} -gt $current_time ]; then
+    if [ -n "${ip_change_grace_periods[$player_name]}" ] && [ ${ip_change_grace_periods["$player_name"]} -gt $current_time ]; then
         return 0
     else
         # Clean up if grace period has expired
-        unset ip_change_grace_periods["$key"]
-        unset ip_change_pending_players["$key"]
-        unset grace_period_pids["$key"]
+        unset ip_change_grace_periods["$player_name"]
+        unset ip_change_pending_players["$player_name"]
+        unset grace_period_pids["$player_name"]
         return 1
     fi
 }
@@ -277,13 +261,10 @@ is_in_grace_period() {
 # Function to validate IP change
 validate_ip_change() {
     local player_name="$1" password="$2" current_ip="$3"
-    local key
-    key="$(canonical_name "$player_name")"
     local player_info=$(get_player_info "$player_name")
     
     if [ -z "$player_info" ]; then
         print_error "Player $player_name not found in registry"
-        send_server_command "$SCREEN_SERVER" "$player_name, you are not registered."
         return 1
     fi
     
@@ -293,7 +274,6 @@ validate_ip_change() {
     
     if [ "$registered_password" != "$password" ]; then
         print_error "Invalid password for IP change: $player_name"
-        send_server_command "$SCREEN_SERVER" "$player_name, the password you provided is incorrect."
         return 1
     fi
     
@@ -302,12 +282,12 @@ validate_ip_change() {
     print_success "IP updated for $player_name: $current_ip"
     
     # End grace period and cancel kick by killing the timer process
-    if [ -n "${grace_period_pids[$key]}" ]; then
-        kill "${grace_period_pids[$key]}" 2>/dev/null
-        unset grace_period_pids["$key"]
+    if [ -n "${grace_period_pids[$player_name]}" ]; then
+        kill "${grace_period_pids[$player_name]}" 2>/dev/null
+        unset grace_period_pids["$player_name"]
     fi
-    unset ip_change_grace_periods["$key"]
-    unset ip_change_pending_players["$key"]
+    unset ip_change_grace_periods["$player_name"]
+    unset ip_change_pending_players["$player_name"]
     
     # Clear chat immediately
     screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null
@@ -439,8 +419,6 @@ handle_password_change() {
 # Function to check for username theft with IP verification
 check_username_theft() {
     local player_name="$1" player_ip="$2"
-    local key
-    key="$(canonical_name "$player_name")"
     
     # Skip if player name is invalid
     ! is_valid_player_name "$player_name" && return 0
@@ -459,10 +437,12 @@ check_username_theft() {
             if [ "$registered_password" = "NONE" ]; then
                 # No password set - remind player to set one after 5 seconds (only once)
                 print_warning "IP changed for $player_name but no password set (old IP: $registered_ip, new IP: $player_ip)"
-                if [[ -z "${ip_mismatch_announced[$key]}" ]]; then
-                    ip_mismatch_announced["$key"]=1
+                # Only show announcement once per player connection
+                if [[ -z "${ip_mismatch_announced[$player_name]}" ]]; then
+                    ip_mismatch_announced["$player_name"]=1
                     (
                         sleep 5
+                        # Check if player is still connected before sending message
                         if is_player_connected "$player_name"; then
                             send_server_command "$SCREEN_SERVER" "WARNING: $player_name, your IP has changed but you don't have a password set."
                             send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account."
@@ -473,18 +453,10 @@ check_username_theft() {
                 update_player_info "$player_name" "$player_ip" "$registered_rank" "$registered_password"
             else
                 # Password set - start grace period (only if not already started)
-                if [[ -z "${ip_change_grace_periods[$key]}" ]]; then
+                if [[ -z "${ip_change_grace_periods[$player_name]}" ]]; then
                     print_warning "IP changed for $player_name (old IP: $registered_ip, new IP: $player_ip)"
-                    # MARCAR como pending inmediatamente (con clave canonicalizada)
-                    ip_change_pending_players["$key"]="$player_ip"
-                    debug_log "Marked pending for $key -> $player_ip"
-                    # Start grace period after 5 seconds
-                    (
-                        sleep 5
-                        if is_player_connected "$player_name"; then
-                            start_ip_change_grace_period "$player_name" "$player_ip"
-                        fi
-                    ) &
+                    # Start grace period immediately
+                    start_ip_change_grace_period "$player_name" "$player_ip"
                 fi
             fi
         else
@@ -501,10 +473,11 @@ check_username_theft() {
         print_success "Added new player to registry: $player_name ($player_ip) with rank: $rank"
         
         # Remind player to set password after 5 seconds (only once)
-        if [[ -z "${ip_mismatch_announced[$key]}" ]]; then
-            ip_mismatch_announced["$key"]=1
+        if [[ -z "${ip_mismatch_announced[$player_name]}" ]]; then
+            ip_mismatch_announced["$player_name"]=1
             (
                 sleep 5
+                # Check if player is still connected before sending message
                 if is_player_connected "$player_name"; then
                     send_server_command "$SCREEN_SERVER" "WARNING: $player_name, you don't have a password set for IP verification."
                     send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account if your IP changes."
@@ -524,7 +497,7 @@ is_player_connected() {
         # Give the server a moment to process the command
         sleep 0.5
         # Check the log for the player name in the list
-        if tail -n 50 "$LOG_FILE" | grep -q "$player_name"; then
+        if tail -n 10 "$LOG_FILE" | grep -q "$player_name"; then
             return 0
         fi
     fi
@@ -540,6 +513,7 @@ check_dangerous_activity() {
     
     # Check if player is in grace period - restrict sensitive commands
     if is_in_grace_period "$player_name"; then
+        # List of restricted commands during grace period
         local restricted_commands="!give_admin !give_mod !buy_admin !buy_mod /stop /admin /mod /clear /clear-blacklist /clear-adminlist /clear-modlist /clear-whitelist"
         
         for cmd in $restricted_commands; do
@@ -583,6 +557,7 @@ check_dangerous_activity() {
     # Check for dangerous commands from ranked players
     local rank=$(get_player_rank "$player_name")
     if [ "$rank" != "NONE" ]; then
+        # List of dangerous commands
         local dangerous_commands="/stop /shutdown /restart /banall /kickall /op /deop /save-off"
         
         for cmd in $dangerous_commands; do
@@ -621,6 +596,7 @@ handle_unauthorized_command() {
             screen -S "$SCREEN_SERVER" -p 0 -X stuff "/un${command_type} $target_player$(printf \\r)" 2>/dev/null
             remove_from_list_file "$target_player" "$command_type"
             send_delayed_uncommands "$target_player" "$command_type"
+            # Update player rank in players.log
             update_player_rank "$target_player" "NONE"
         fi
         record_admin_offense "$player_name"
@@ -631,10 +607,13 @@ handle_unauthorized_command() {
             send_server_command "$SCREEN_SERVER" "$player_name, this is your second warning! One more and you will be demoted to mod."
         elif [ "$offense_count" -ge 3 ]; then
             print_warning "THIRD OFFENSE: Admin $player_name is being demoted to mod"
+            # Remove from admin files
             remove_from_list_file "$player_name" "admin"
             screen -S "$SCREEN_SERVER" -p 0 -X stuff "/unadmin $player_name$(printf \\r)" 2>/dev/null
+            # Add to mod files
             echo "$player_name" >> "$AUTHORIZED_MODS_FILE"
             send_server_command "$SCREEN_SERVER" "/mod $player_name"
+            # Update players.log
             update_player_rank "$player_name" "mod"
             clear_admin_offenses "$player_name"
         fi
@@ -645,11 +624,13 @@ handle_unauthorized_command() {
             screen -S "$SCREEN_SERVER" -p 0 -X stuff "/unadmin $target_player$(printf \\r)" 2>/dev/null
             remove_from_list_file "$target_player" "admin"
             send_delayed_uncommands "$target_player" "admin"
+            # Update player rank in players.log
             update_player_rank "$target_player" "NONE"
         elif [ "$command" = "/mod" ]; then
             screen -S "$SCREEN_SERVER" -p 0 -X stuff "/unmod $target_player$(printf \\r)" 2>/dev/null
             remove_from_list_file "$target_player" "mod"
             send_delayed_uncommands "$target_player" "mod"
+            # Update player rank in players.log
             update_player_rank "$target_player" "NONE"
         fi
     fi
@@ -852,14 +833,12 @@ monitor_log() {
             fi
             
             # Clean up grace period and announcement tracking if player disconnects
-            local key
-            key="$(canonical_name "$player_name")"
-            unset ip_change_grace_periods["$key"]
-            unset ip_change_pending_players["$key"]
-            unset ip_mismatch_announced["$key"]
-            if [ -n "${grace_period_pids[$key]}" ]; then
-                kill "${grace_period_pids[$key]}" 2>/dev/null
-                unset grace_period_pids["$key"]
+            unset ip_change_grace_periods["$player_name"]
+            unset ip_change_pending_players["$player_name"]
+            unset ip_mismatch_announced["$player_name"]
+            if [ -n "${grace_period_pids[$player_name]}" ]; then
+                kill "${grace_period_pids[$player_name]}" 2>/dev/null
+                unset grace_period_pids["$player_name"]
             fi
         fi
 
@@ -901,32 +880,16 @@ monitor_log() {
                     fi
                     ;;
                 "!ip_change "*)
-                    if [[ "$message" =~ !ip_change\ (.+)$ ]]; then
-                        local password="${BASH_REMATCH[1]}"
-                        local key
-                        key="$(canonical_name "$player_name")"
-                        # Accept verification if either within grace period or pending entry exists
-                        if is_in_grace_period "$player_name" || [ -n "${ip_change_pending_players[$key]}" ]; then
-                            local current_ip="${ip_change_pending_players[$key]}"
-                            # debug log
-                            debug_log "Attempting validate_ip_change for key=$key current_ip=$current_ip"
+                    if is_in_grace_period "$player_name"; then
+                        if [[ "$message" =~ !ip_change\ (.+)$ ]]; then
+                            local password="${BASH_REMATCH[1]}"
+                            local current_ip="${ip_change_pending_players[$player_name]}"
                             validate_ip_change "$player_name" "$password" "$current_ip"
                         else
-                            # debug info for why failed
-                            debug_log "No pending or grace for key=$key. Pending keys snapshot:"
-                            # dump pending keys for debug
-                            if [ "$DEBUG" -eq 1 ]; then
-                                for k in "${!ip_change_pending_players[@]}"; do
-                                    debug_log "PENDING: $k -> ${ip_change_pending_players[$k]}"
-                                done
-                                for k in "${!ip_change_grace_periods[@]}"; do
-                                    debug_log "GRACE: $k -> ${ip_change_grace_periods[$k]}"
-                                done
-                            fi
-                            send_server_command "$SCREEN_SERVER" "$player_name, you don't have a pending IP change verification."
+                            send_server_command "$SCREEN_SERVER" "Usage: !ip_change YOUR_CURRENT_PASSWORD"
                         fi
                     else
-                        send_server_command "$SCREEN_SERVER" "Usage: !ip_change YOUR_CURRENT_PASSWORD"
+                        send_server_command "$SCREEN_SERVER" "$player_name, you don't have a pending IP change verification."
                     fi
                     ;;
                 *)
