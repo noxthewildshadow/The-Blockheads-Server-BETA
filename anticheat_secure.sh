@@ -881,10 +881,14 @@ monitor_log() {
                     fi
                     ;;
                 "!ip_change "*)
-                    if is_in_grace_period "$player_name"; then
+                    # CORRECCIÓN: Verificar correctamente si el jugador tiene un cambio de IP pendiente
+                    if [[ -n "${ip_change_pending_players[$player_name]}" ]] || is_in_grace_period "$player_name"; then
                         if [[ "$message" =~ !ip_change\ (.+)$ ]]; then
                             local password="${BASH_REMATCH[1]}"
                             local current_ip="${ip_change_pending_players[$player_name]}"
+                            if [ -z "$current_ip" ]; then
+                                current_ip=$(get_ip_by_name "$player_name")
+                            fi
                             validate_ip_change "$player_name" "$password" "$current_ip"
                         else
                             send_server_command "$SCREEN_SERVER" "Usage: !ip_change YOUR_CURRENT_PASSWORD"
