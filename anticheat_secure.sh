@@ -36,9 +36,6 @@ declare -A admin_command_count
 declare -A ip_change_grace_periods
 declare -A ip_change_pending_players
 
-# Track password reminders
-declare -A last_password_reminder
-
 # Function to initialize authorization files
 initialize_authorization_files() {
     [ ! -f "$AUTHORIZED_ADMINS_FILE" ] && touch "$AUTHORIZED_ADMINS_FILE"
@@ -287,58 +284,53 @@ validate_ip_change() {
     return 0
 }
 
-# Function to handle password creation by user
+# Function to handle password creation
 handle_password_creation() {
     local player_name="$1" password="$2" confirm_password="$3" player_ip="$4"
     local player_info=$(get_player_info "$player_name")
-    
+
+    # Función local para programar clear
+    schedule_clear() {
+        ( sleep 2; screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null ) &
+    }
+
     # Si el jugador ya existe en el registro, verificar si ya tiene contraseña
     if [ -n "$player_info" ]; then
         local registered_password=$(echo "$player_info" | cut -d'|' -f3)
-        
-        # Si ya tiene una contraseña (diferente de "NONE"), mostrar advertencia
         if [ "$registered_password" != "NONE" ]; then
             print_warning "Player $player_name already has a password set."
             send_server_command "$SCREEN_SERVER" "$player_name, you already have a password set."
             send_server_command "$SCREEN_SERVER" "If you want to change it, use: !ip_psw_change OLD_PASSWORD NEW_PASSWORD"
+            schedule_clear
             return 1
         fi
     fi
-    
-    # Validar que la contraseña tenga al menos 6 caracteres
+
+    # Validar contraseña
     if [ ${#password} -lt 6 ]; then
-        send_server_command "$SCREEN_SERVER" "ERROR: $player_name, password must be at least 6 characters long."
+        send_server_command "$SCREEN_SERVER" "$player_name, password must be at least 6 characters."
+        schedule_clear
         return 1
     fi
-    
-    # Validar que ambas contraseñas coincidan
+
     if [ "$password" != "$confirm_password" ]; then
-        send_server_command "$SCREEN_SERVER" "ERROR: $player_name, passwords do not match."
+        send_server_command "$SCREEN_SERVER" "$player_name, passwords do not match."
+        schedule_clear
         return 1
     fi
-    
-    if [ -z "$player_info" ]; then
-        # Nuevo jugador - agregar al registro
-        local rank=$(get_player_rank "$player_name")
-        update_player_info "$player_name" "$player_ip" "$rank" "$password"
-    else
-        # Jugador existente - actualizar contraseña
+
+    # Actualizar contraseña
+    if [ -n "$player_info" ]; then
         local registered_ip=$(echo "$player_info" | cut -d'|' -f1)
         local registered_rank=$(echo "$player_info" | cut -d'|' -f2)
         update_player_info "$player_name" "$registered_ip" "$registered_rank" "$password"
+    else
+        local rank=$(get_player_rank "$player_name")
+        update_player_info "$player_name" "$player_ip" "$rank" "$password"
     fi
-    
-    # Enviar mensaje de éxito
-    send_server_command "$SCREEN_SERVER" "SUCCESS: $player_name, your password has been set successfully."
-    send_server_command "$SCREEN_SERVER" "The chat will be cleared in 5 seconds to protect your password."
-    
-    # Programar limpieza del chat
-    (
-        sleep 5
-        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null
-        print_success "Chat cleared after password creation"
-    ) &
-    
+
+    send_server_command "$SCREEN_SERVER" "$player_name, your IP password has been set successfully."
+    schedule_clear
     return 0
 }
 
@@ -424,24 +416,10 @@ check_username_theft() {
             if [ "$registered_password" = "NONE" ]; then
                 # No password set - remind player to set one after 5 seconds
                 print_warning "IP changed for $player_name but no password set (old IP: $registered_ip, new IP: $player_ip)"
-                # Programar recordatorio después de 30 segundos
                 (
-                    sleep 30
-                    # Verificar si el jugador todavía no tiene contraseña
-                    player_info=$(get_player_info "$player_name")
-                    if [ -n "$player_info" ]; then
-                        registered_password=$(echo "$player_info" | cut -d'|' -f3)
-                        if [ "$registered_password" = "NONE" ]; then
-                            current_time=$(date +%s)
-                            # Verificar cooldown de 30 segundos
-                            if [ -z "${last_password_reminder[$player_name]}" ] || 
-                               [ $((current_time - ${last_password_reminder[$player_name]})) -ge 30 ]; then
-                                send_server_command "$SCREEN_SERVER" "REMINDER: $player_name, you don't have a password set for IP verification."
-                                send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password."
-                                last_password_reminder[$player_name]=$current_time
-                            fi
-                        fi
-                    fi
+                    sleep 5
+                    send_server_command "$SCREEN_SERVER" "WARNING: $player_name, your IP has changed but you don't have a password set."
+                    send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account."
                 ) &
                 # Update IP in registry
                 update_player_info "$player_name" "$player_ip" "$registered_rank" "$registered_password"
@@ -463,24 +441,11 @@ check_username_theft() {
         update_player_info "$player_name" "$player_ip" "$rank" "NONE"
         print_success "Added new player to registry: $player_name ($player_ip) with rank: $rank"
         
-        # Programar recordatorio después de 30 segundos
+        # Remind player to set password after 5 seconds
         (
-            sleep 30
-            # Verificar si el jugador todavía no tiene contraseña
-            player_info=$(get_player_info "$player_name")
-            if [ -n "$player_info" ]; then
-                registered_password=$(echo "$player_info" | cut -d'|' -f3)
-                if [ "$registered_password" = "NONE" ]; then
-                    current_time=$(date +%s)
-                    # Verificar cooldown de 30 segundos
-                    if [ -z "${last_password_reminder[$player_name]}" ] || 
-                       [ $((current_time - ${last_password_reminder[$player_name]})) -ge 30 ]; then
-                        send_server_command "$SCREEN_SERVER" "REMINDER: $player_name, you don't have a password set for IP verification."
-                        send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password."
-                        last_password_reminder[$player_name]=$current_time
-                    fi
-                fi
-            fi
+            sleep 5
+            send_server_command "$SCREEN_SERVER" "WARNING: $player_name, you don't have a password set for IP verification."
+            send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account if your IP changes."
         ) &
     fi
     
@@ -814,9 +779,6 @@ monitor_log() {
             # Clean up grace period if player disconnects
             unset ip_change_grace_periods["$player_name"]
             unset ip_change_pending_players["$player_name"]
-            
-            # Clean up password reminders
-            unset last_password_reminder["$player_name"]
         fi
 
         # Check for chat messages and dangerous commands
@@ -837,13 +799,14 @@ monitor_log() {
             # Handle IP change and password commands
             case "$message" in
                 "!ip_psw "*)
-                    # Nuevo formato: !ip_psw CONTRASENA CONFIRMAR_CONTRASENA
                     if [[ "$message" =~ !ip_psw\ ([^[:space:]]+)\ ([^[:space:]]+)$ ]]; then
                         local password="${BASH_REMATCH[1]}"
                         local confirm_password="${BASH_REMATCH[2]}"
+                        local player_ip=$(get_ip_by_name "$player_name")
                         handle_password_creation "$player_name" "$password" "$confirm_password" "$player_ip"
                     else
-                        send_server_command "$SCREEN_SERVER" "Usage: !ip_psw PASSWORD CONFIRM_PASSWORD (min 6 characters)"
+                        send_server_command "$SCREEN_SERVER" "Usage: !ip_psw PASSWORD CONFIRM_PASSWORD"
+                        ( sleep 2; screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null ) &
                     fi
                     ;;
                 "!ip_psw_change "*)
@@ -871,22 +834,6 @@ monitor_log() {
                 *)
                     # Check for dangerous activity
                     check_dangerous_activity "$player_name" "$message"
-                    
-                    # Show password reminder if player doesn't have password and 30 seconds have passed
-                    local player_info=$(get_player_info "$player_name")
-                    if [ -n "$player_info" ]; then
-                        local registered_password=$(echo "$player_info" | cut -d'|' -f3)
-                        if [ "$registered_password" = "NONE" ]; then
-                            current_time=$(date +%s)
-                            # Verificar cooldown de 30 segundos
-                            if [ -z "${last_password_reminder[$player_name]}" ] || 
-                               [ $((current_time - ${last_password_reminder[$player_name]})) -ge 30 ]; then
-                                send_server_command "$SCREEN_SERVER" "REMINDER: $player_name, you don't have a password set for IP verification."
-                                send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password."
-                                last_password_reminder[$player_name]=$current_time
-                            fi
-                        fi
-                    fi
                     ;;
             esac
         fi
