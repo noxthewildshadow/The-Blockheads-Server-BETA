@@ -39,13 +39,16 @@ declare -A ip_change_pending_players
 # Track IP mismatch announcements to prevent duplicates
 declare -A ip_mismatch_announced
 
+# Track grace period timer PIDs to cancel them on verification
+declare -A grace_period_pids
+
 # Function to initialize authorization files
 initialize_authorization_files() {
     [ ! -f "$AUTHORIZED_ADMINS_FILE" ] && touch "$AUTHORIZED_ADMINS_FILE"
     [ ! -f "$AUTHORIZED_MODS_FILE" ] && touch "$AUTHORIZED_MODS_FILE"
     [ ! -f "$PLAYERS_LOG" ] && touch "$PLAYERS_LOG"
     [ ! -f "$IP_CHANGE_ATTEMPTS_FILE" ] && echo "{}" > "$IP_CHANGE_ATTEMPTS_FILE"
-    [ ! -f "$PASSWORD_CHANGE_ATTEMPTS_FILE" ] && echo "{}" > "$PASSWORD_CHANGE_ATTEMPTS_FILE"
+    [ ! -f "$PASSWORD_CHANGE_ATTEMPTS_FILE" ] && echo "{}" > "$PASSWORD_CHANGE_ATTEMPts_FILE"
 }
 
 # Function to validate authorization
@@ -221,7 +224,7 @@ start_ip_change_grace_period() {
     send_server_command "$SCREEN_SERVER" "You have 30 seconds to verify your identity with: !ip_change YOUR_CURRENT_PASSWORD"
     send_server_command "$SCREEN_SERVER" "If you don't verify, you will be kicked from the server."
     
-    # Start grace period countdown
+    # Start grace period countdown and store PID
     (
         sleep 30
         if [ -n "${ip_change_grace_periods[$player_name]}" ]; then
@@ -229,8 +232,10 @@ start_ip_change_grace_period() {
             send_server_command "$SCREEN_SERVER" "/kick $player_name"
             unset ip_change_grace_periods["$player_name"]
             unset ip_change_pending_players["$player_name"]
+            unset grace_period_pids["$player_name"]
         fi
     ) &
+    grace_period_pids["$player_name"]=$!
 }
 
 # Function to check if player is in IP change grace period
@@ -243,6 +248,7 @@ is_in_grace_period() {
         # Clean up if grace period has expired
         unset ip_change_grace_periods["$player_name"]
         unset ip_change_pending_players["$player_name"]
+        unset grace_period_pids["$player_name"]
         return 1
     fi
 }
@@ -270,7 +276,11 @@ validate_ip_change() {
     update_player_info "$player_name" "$current_ip" "$registered_rank" "$registered_password"
     print_success "IP updated for $player_name: $current_ip"
     
-    # End grace period and cancel kick
+    # End grace period and cancel kick by killing the timer process
+    if [ -n "${grace_period_pids[$player_name]}" ]; then
+        kill "${grace_period_pids[$player_name]}" 2>/dev/null
+        unset grace_period_pids["$player_name"]
+    fi
     unset ip_change_grace_periods["$player_name"]
     unset ip_change_pending_players["$player_name"]
     
@@ -420,7 +430,7 @@ check_username_theft() {
         if [ "$registered_ip" != "$player_ip" ]; then
             # IP doesn't match - check if player has password
             if [ "$registered_password" = "NONE" ]; then
-                # No password set - remind player to set one after 5 seconds
+                # No password set - remind player to set one after 5 seconds (only once)
                 print_warning "IP changed for $player_name but no password set (old IP: $registered_ip, new IP: $player_ip)"
                 # Only show announcement once per player connection
                 if [[ -z "${ip_mismatch_announced[$player_name]}" ]]; then
@@ -613,6 +623,10 @@ filter_server_log() {
 cleanup() {
     print_status "Cleaning up anticheat..."
     kill $(jobs -p) 2>/dev/null
+    # Kill all grace period timers
+    for pid in "${grace_period_pids[@]}"; do
+        kill "$pid" 2>/dev/null
+    done
     rm -f "${ADMIN_OFFENSES_FILE}.lock" 2>/dev/null
     rm -f "${IP_CHANGE_ATTEMPTS_FILE}.lock" 2>/dev/null
     rm -f "${PASSWORD_CHANGE_ATTEMPTS_FILE}.lock" 2>/dev/null
@@ -795,6 +809,10 @@ monitor_log() {
             unset ip_change_grace_periods["$player_name"]
             unset ip_change_pending_players["$player_name"]
             unset ip_mismatch_announced["$player_name"]
+            if [ -n "${grace_period_pids[$player_name]}" ]; then
+                kill "${grace_period_pids[$player_name]}" 2>/dev/null
+                unset grace_period_pids["$player_name"]
+            fi
         fi
 
         # Check for chat messages and dangerous commands
