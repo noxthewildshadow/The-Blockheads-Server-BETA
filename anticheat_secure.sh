@@ -288,27 +288,40 @@ validate_ip_change() {
 handle_password_generation() {
     local player_name="$1" player_ip="$2"
     local player_info=$(get_player_info "$player_name")
-    local player_rank=$(get_player_rank "$player_name")
     
-    # Generate random password
+    # Si el jugador ya existe en el registro, verificar si ya tiene contraseña
+    if [ -n "$player_info" ]; then
+        local registered_password=$(echo "$player_info" | cut -d'|' -f3)
+        
+        # Si ya tiene una contraseña (diferente de "NONE"), mostrar advertencia
+        if [ "$registered_password" != "NONE" ]; then
+            print_warning "Player $player_name already has a password set."
+            send_server_command "$SCREEN_SERVER" "$player_name, you already have a password set."
+            send_server_command "$SCREEN_SERVER" "If you want to change it, use: !ip_psw_change OLD_PASSWORD NEW_PASSWORD"
+            return 1
+        fi
+    fi
+    
+    # Generar nueva contraseña
     local new_password=$(generate_random_password)
     
     if [ -z "$player_info" ]; then
-        # New player - add to players.log
-        update_player_info "$player_name" "$player_ip" "$player_rank" "$new_password"
+        # Nuevo jugador - agregar al registro
+        local rank=$(get_player_rank "$player_name")
+        update_player_info "$player_name" "$player_ip" "$rank" "$new_password"
     else
-        # Existing player - update password
+        # Jugador existente - actualizar contraseña
         local registered_ip=$(echo "$player_info" | cut -d'|' -f1)
         local registered_rank=$(echo "$player_info" | cut -d'|' -f2)
         update_player_info "$player_name" "$registered_ip" "$registered_rank" "$new_password"
     fi
     
-    # Send password to player
+    # Enviar contraseña al jugador
     send_server_command "$SCREEN_SERVER" "$player_name, your new password is: $new_password"
     send_server_command "$SCREEN_SERVER" "Please save this password securely. You will need it if your IP changes."
     send_server_command "$SCREEN_SERVER" "The chat will be cleared in 25 seconds to protect your password."
     
-    # Schedule chat clearance
+    # Programar limpieza del chat
     (
         sleep 25
         screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null
@@ -320,7 +333,7 @@ handle_password_generation() {
 
 # Function to handle password change
 handle_password_change() {
-    local player_name="$1" old_password="$2"
+    local player_name="$1" old_password="$2" new_password="$3"
     local player_info=$(get_player_info "$player_name")
     
     if [ -z "$player_info" ]; then
@@ -333,19 +346,20 @@ handle_password_change() {
     local registered_rank=$(echo "$player_info" | cut -d'|' -f2)
     local registered_password=$(echo "$player_info" | cut -d'|' -f3)
     
+    # Verificar que la contraseña anterior coincida
     if [ "$registered_password" != "$old_password" ]; then
         print_error "Invalid old password for $player_name"
         send_server_command "$SCREEN_SERVER" "$player_name, the old password is incorrect."
         return 1
     fi
     
-    # Check password change attempts
+    # Verificar intentos de cambio de contraseña
     local current_time=$(date +%s)
     local attempts_data=$(read_json_file "$PASSWORD_CHANGE_ATTEMPTS_FILE" 2>/dev/null || echo '{}')
     local current_attempts=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.attempts // 0')
     local last_attempt_time=$(echo "$attempts_data" | jq -r --arg player "$player_name" '.[$player]?.last_attempt // 0')
     
-    # Reset counter if more than 1 hour has passed
+    # Reiniciar contador si ha pasado más de 1 hora
     [ $((current_time - last_attempt_time)) -gt 3600 ] && current_attempts=0
     
     current_attempts=$((current_attempts + 1))
@@ -361,18 +375,16 @@ handle_password_change() {
         return 1
     fi
     
-    # Generate new password
-    local new_password=$(generate_random_password)
+    # Actualizar contraseña
     update_player_info "$player_name" "$registered_ip" "$registered_rank" "$new_password"
     
-    # Send new password to player
-    send_server_command "$SCREEN_SERVER" "$player_name, your new password is: $new_password"
-    send_server_command "$SCREEN_SERVER" "Please save this password securely. You will need it if your IP changes."
-    send_server_command "$SCREEN_SERVER" "The chat will be cleared in 25 seconds to protect your password."
+    # Enviar mensaje de éxito
+    send_server_command "$SCREEN_SERVER" "$player_name, your password has been changed successfully."
+    send_server_command "$SCREEN_SERVER" "The chat will be cleared in 10 seconds to protect your password."
     
-    # Schedule chat clearance
+    # Programar limpieza del chat
     (
-        sleep 25
+        sleep 10
         screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null
         print_success "Chat cleared for password protection"
     ) &
@@ -787,11 +799,12 @@ monitor_log() {
                     handle_password_generation "$player_name" "$player_ip"
                     ;;
                 "!ip_psw_change "*)
-                    if [[ "$message" =~ !ip_psw_change\ (.+)$ ]]; then
+                    if [[ "$message" =~ !ip_psw_change\ ([^[:space:]]+)\ ([^[:space:]]+)$ ]]; then
                         local old_password="${BASH_REMATCH[1]}"
-                        handle_password_change "$player_name" "$old_password"
+                        local new_password="${BASH_REMATCH[2]}"
+                        handle_password_change "$player_name" "$old_password" "$new_password"
                     else
-                        send_server_command "$SCREEN_SERVER" "Usage: !ip_psw_change OLD_PASSWORD"
+                        send_server_command "$SCREEN_SERVER" "Usage: !ip_psw_change OLD_PASSWORD NEW_PASSWORD"
                     fi
                     ;;
                 "!ip_change "*)
