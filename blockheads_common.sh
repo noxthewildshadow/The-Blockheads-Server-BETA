@@ -51,14 +51,30 @@ extract_real_name() {
 read_json_file() {
     local file_path="$1"
     [ ! -f "$file_path" ] && echo "{}" > "$file_path" && echo "{}" && return 0
+    
+    # Create backup before reading
+    local backup_file="${file_path}.bak.$(date +%s)"
+    cp "$file_path" "$backup_file" 2>/dev/null || true
+    
+    # Read with locking
     flock -s 200 cat "$file_path" 200>"${file_path}.lock"
 }
 
-# Function to write JSON file with locking
+# Function to write JSON file with locking and atomic replace
 write_json_file() {
     local file_path="$1" content="$2"
     [ ! -f "$file_path" ] && touch "$file_path"
-    flock -x 200 echo "$content" > "$file_path" 200>"${file_path}.lock"
+    
+    # Create backup
+    local backup_file="${file_path}.bak.$(date +%s)"
+    cp "$file_path" "$backfile_file" 2>/dev/null || true
+    
+    # Write with locking and atomic replace
+    flock -x 200 echo "$content" > "${file_path}.tmp" 200>"${file_path}.lock"
+    mv "${file_path}.tmp" "$file_path"
+    
+    # Remove old backups (keep last 5)
+    ls -t "${file_path}.bak."* 2>/dev/null | tail -n +6 | xargs rm -f --
 }
 
 # Function to send server command
@@ -145,4 +161,217 @@ find_library() {
     LIBRARY=$(ldconfig -p | grep -F "$SEARCH" -m 1 | awk '{print $NF}' | head -1)
     [ -z "$LIBRARY" ] && return 1
     printf '%s' "$LIBRARY"
+}
+
+# =============================================================================
+# DATA.JSON MANAGEMENT FUNCTIONS
+# =============================================================================
+
+# Function to initialize data.json
+initialize_data_json() {
+    local data_file="$1"
+    [ ! -f "$data_file" ] && echo '{"players": {}, "transactions": []}' > "$data_file"
+    sync_list_files "$data_file" "$(dirname "$data_file")"
+}
+
+# Function to sync list files from data.json
+sync_list_files() {
+    local data_file="$1"
+    local log_dir="$2"
+    
+    [ ! -f "$data_file" ] && return
+
+    # Sync adminlist
+    jq -r '.players | to_entries[] | select(.value.rank == "admin") | .key' "$data_file" > "$log_dir/adminlist.txt" 2>/dev/null || true
+    
+    # Sync modlist
+    jq -r '.players | to_entries[] | select(.value.rank == "mod") | .key' "$data_file" > "$log_dir/modlist.txt" 2>/dev/null || true
+    
+    # Sync blacklist
+    jq -r '.players | to_entries[] | select(.value.blacklisted == "TRUE") | .key' "$data_file" > "$log_dir/blacklist.txt" 2>/dev/null || true
+    
+    # Sync whitelist
+    jq -r '.players | to_entries[] | select(.value.whitelisted == "TRUE") | .key' "$data_file" > "$log_dir/whitelist.txt" 2>/dev/null || true
+}
+
+# Function to update player data in data.json
+update_player_data() {
+    local data_file="$1"
+    local player="$2"
+    local field="$3"
+    local value="$4"
+    
+    local current_data=$(read_json_file "$data_file")
+    current_data=$(echo "$current_data" | jq --arg player "$player" --arg field "$field" --arg value "$value" '
+        .players[$player][$field] = $value
+    ')
+    write_json_file "$data_file" "$current_data"
+    sync_list_files "$data_file" "$(dirname "$data_file")"
+}
+
+# Function to get player data from data.json
+get_player_data() {
+    local data_file="$1"
+    local player="$2"
+    local field="$3"
+    
+    read_json_file "$data_file" | jq -r --arg player "$player" --arg field "$field" '
+        .players[$player][$field] // "NONE"
+    '
+}
+
+# Function to update player info in data.json
+update_player_info() {
+    local data_file="$1"
+    local player_name="$2"
+    local player_ip="$3"
+    local player_rank="$4"
+    local player_password="$5"
+    
+    local current_data=$(read_json_file "$data_file")
+    local player_exists=$(echo "$current_data" | jq --arg player "$player_name" '.players | has($player)')
+    
+    if [ "$player_exists" = "false" ]; then
+        current_data=$(echo "$current_data" | jq --arg player "$player_name" \
+            --arg ip "$player_ip" --arg rank "$player_rank" --arg password "$player_password" '
+            .players[$player] = {
+                "ip": $ip,
+                "password": $password,
+                "rank": $rank,
+                "blacklisted": "NONE",
+                "whitelisted": "NONE",
+                "economy": {
+                    "tickets": 0,
+                    "last_login": 0,
+                    "last_welcome_time": 0,
+                    "last_help_time": 0,
+                    "last_greeting_time": 0,
+                    "purchases": []
+                },
+                "ip_change_attempts": {"count": 0, "last_attempt": 0},
+                "password_change_attempts": {"count": 0, "last_attempt": 0},
+                "admin_offenses": {"count": 0, "last_offense": 0}
+            }
+        ')
+    else
+        current_data=$(echo "$current_data" | jq --arg player "$player_name" \
+            --arg ip "$player_ip" --arg rank "$player_rank" --arg password "$player_password" '
+            .players[$player].ip = $ip |
+            .players[$player].rank = $rank |
+            .players[$player].password = $password
+        ')
+    fi
+    
+    write_json_file "$data_file" "$current_data"
+    sync_list_files "$data_file" "$(dirname "$data_file")"
+}
+
+# Function to get player info from data.json
+get_player_info() {
+    local data_file="$1"
+    local player_name="$2"
+    
+    local ip=$(get_player_data "$data_file" "$player_name" "ip")
+    local rank=$(get_player_data "$data_file" "$player_name" "rank")
+    local password=$(get_player_data "$data_file" "$player_name" "password")
+    
+    if [ "$ip" != "NONE" ]; then
+        echo "$ip|$rank|$password"
+        return 0
+    fi
+    
+    echo ""
+}
+
+# Function to check if player is in list using data.json
+is_player_in_list() {
+    local data_file="$1"
+    local player_name="$2"
+    local list_type="$3"
+    
+    local value=$(get_player_data "$data_file" "$player_name" "$list_type")
+    [ "$value" = "TRUE" ] && return 0
+    
+    # For backward compatibility with rank lists
+    if [ "$list_type" = "admin" ] || [ "$list_type" = "mod" ]; then
+        local rank=$(get_player_data "$data_file" "$player_name" "rank")
+        [ "$rank" = "$list_type" ] && return 0
+    fi
+    
+    return 1
+}
+
+# Function to record admin offense
+record_admin_offense() {
+    local data_file="$1"
+    local admin_name="$2"
+    local current_time=$(date +%s)
+    
+    local current_offenses=$(get_player_data "$data_file" "$admin_name" "admin_offenses.count")
+    local last_offense_time=$(get_player_data "$data_file" "$admin_name" "admin_offenses.last_offense")
+    
+    [ "$current_offenses" = "NONE" ] && current_offenses=0
+    [ "$last_offense_time" = "NONE" ] && last_offense_time=0
+    
+    [ $((current_time - last_offense_time)) -gt 300 ] && current_offenses=0
+    current_offenses=$((current_offenses + 1))
+    
+    update_player_data "$data_file" "$admin_name" "admin_offenses.count" "$current_offenses"
+    update_player_data "$data_file" "$admin_name" "admin_offenses.last_offense" "$current_time"
+    
+    print_warning "Recorded offense #$current_offenses for admin $admin_name"
+    return $current_offenses
+}
+
+# Function to clear admin offenses
+clear_admin_offenses() {
+    local data_file="$1"
+    local admin_name="$2"
+    
+    update_player_data "$data_file" "$admin_name" "admin_offenses.count" "0"
+    update_player_data "$data_file" "$admin_name" "admin_offenses.last_offense" "0"
+}
+
+# Function to record IP change attempt
+record_ip_change_attempt() {
+    local data_file="$1"
+    local player_name="$2"
+    local current_time=$(date +%s)
+    
+    local current_attempts=$(get_player_data "$data_file" "$player_name" "ip_change_attempts.count")
+    local last_attempt_time=$(get_player_data "$data_file" "$player_name" "ip_change_attempts.last_attempt")
+    
+    [ "$current_attempts" = "NONE" ] && current_attempts=0
+    [ "$last_attempt_time" = "NONE" ] && last_attempt_time=0
+    
+    [ $((current_time - last_attempt_time)) -gt 3600 ] && current_attempts=0
+    
+    current_attempts=$((current_attempts + 1))
+    
+    update_player_data "$data_file" "$player_name" "ip_change_attempts.count" "$current_attempts"
+    update_player_data "$data_file" "$player_name" "ip_change_attempts.last_attempt" "$current_time"
+    
+    return $current_attempts
+}
+
+# Function to record password change attempt
+record_password_change_attempt() {
+    local data_file="$1"
+    local player_name="$2"
+    local current_time=$(date +%s)
+    
+    local current_attempts=$(get_player_data "$data_file" "$player_name" "password_change_attempts.count")
+    local last_attempt_time=$(get_player_data "$data_file" "$player_name" "password_change_attempts.last_attempt")
+    
+    [ "$current_attempts" = "NONE" ] && current_attempts=0
+    [ "$last_attempt_time" = "NONE" ] && last_attempt_time=0
+    
+    [ $((current_time - last_attempt_time)) -gt 3600 ] && current_attempts=0
+    
+    current_attempts=$((current_attempts + 1))
+    
+    update_player_data "$data_file" "$player_name" "password_change_attempts.count" "$current_attempts"
+    update_player_data "$data_file" "$player_name" "password_change_attempts.last_attempt" "$current_time"
+    
+    return $current_attempts
 }
