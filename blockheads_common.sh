@@ -52,10 +52,6 @@ read_json_file() {
     local file_path="$1"
     [ ! -f "$file_path" ] && echo "{}" > "$file_path" && echo "{}" && return 0
     
-    # Create backup before reading
-    local backup_file="${file_path}.bak.$(date +%s)"
-    cp "$file_path" "$backup_file" 2>/dev/null || true
-    
     # Read with locking
     flock -s 200 cat "$file_path" 200>"${file_path}.lock"
 }
@@ -65,15 +61,15 @@ write_json_file() {
     local file_path="$1" content="$2"
     [ ! -f "$file_path" ] && touch "$file_path"
     
-    # Create backup
+    # Create backup (limit to 5 most recent)
     local backup_file="${file_path}.bak.$(date +%s)"
-    cp "$file_path" "$backfile_file" 2>/dev/null || true
+    cp "$file_path" "$backup_file" 2>/dev/null || true
     
     # Write with locking and atomic replace
     flock -x 200 echo "$content" > "${file_path}.tmp" 200>"${file_path}.lock"
     mv "${file_path}.tmp" "$file_path"
     
-    # Remove old backups (keep last 5)
+    # Remove old backups (keep last 5 only)
     ls -t "${file_path}.bak."* 2>/dev/null | tail -n +6 | xargs rm -f --
 }
 
