@@ -15,63 +15,23 @@ fi
 # Initialize variables
 [ $# -ge 2 ] && PORT="$2" || PORT="12153"
 LOG_DIR=$(dirname "$1")
-ECONOMY_FILE="$LOG_DIR/economy_data_$PORT.json"
+DATA_FILE="$LOG_DIR/data.json"
 SCREEN_SERVER="blockheads_server_$PORT"
-AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
-AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
-PLAYERS_LOG="$LOG_DIR/players.log"
 
 # Function to initialize economy
 initialize_economy() {
-    [ ! -f "$ECONOMY_FILE" ] && echo '{"players": {}, "transactions": []}' > "$ECONOMY_FILE"
+    initialize_data_json "$DATA_FILE"
 }
 
-# Function to check if player is in list
+# Function to check if player is in list using data.json
 is_player_in_list() {
     local player_name="$1" list_type="$2"
-    local list_file="$LOG_DIR/${list_type}list.txt"
-    [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"
+    is_player_in_list "$DATA_FILE" "$player_name" "$list_type"
 }
 
-# Function to update player info in players.log
-update_player_info() {
-    local player_name="$1" player_ip="$2" player_rank="$3" player_password="$4"
-    if [ -f "$PLAYERS_LOG" ]; then
-        # Remove existing entry
-        sed -i "/^$player_name|/Id" "$PLAYERS_LOG"
-        # Add new entry
-        echo "$player_name|$player_ip|$player_rank|$player_password" >> "$PLAYERS_LOG"
-        print_success "Updated player info in registry: $player_name -> IP: $player_ip, Rank: $player_rank, Password: $player_password"
-    fi
-}
-
-# Function to get player info from players.log
-get_player_info() {
-    local player_name="$1"
-    if [ -f "$PLAYERS_LOG" ]; then
-        while IFS='|' read -r name ip rank password; do
-            if [ "$name" = "$player_name" ]; then
-                echo "$ip|$rank|$password"
-                return 0
-            fi
-        done < <(grep -i "^$player_name|" "$PLAYERS_LOG")
-    fi
-    echo ""
-}
-
-# Function to update player rank in players.log
-update_player_rank() {
-    local player_name="$1" new_rank="$2"
-    local player_info=$(get_player_info "$player_name")
-    
-    if [ -n "$player_info" ]; then
-        local registered_ip=$(echo "$player_info" | cut -d'|' -f1)
-        local registered_password=$(echo "$player_info" | cut -d'|' -f3)
-        update_player_info "$player_name" "$registered_ip" "$new_rank" "$registered_password"
-        print_success "Updated player rank in registry: $player_name -> $new_rank"
-    else
-        print_error "Player $player_name not found in registry. Cannot update rank."
-    fi
+# Function to get player rank
+get_player_rank() {
+    get_player_data "$DATA_FILE" "$player_name" "rank"
 }
 
 # Function to add player if new
@@ -79,19 +39,11 @@ add_player_if_new() {
     local player_name="$1" player_ip="$2"
     ! is_valid_player_name "$player_name" && return 1
     
-    local current_data=$(read_json_file "$ECONOMY_FILE")
+    local current_data=$(read_json_file "$DATA_FILE")
     local player_exists=$(echo "$current_data" | jq --arg player "$player_name" '.players | has($player)')
     
     [ "$player_exists" = "false" ] && {
-        current_data=$(echo "$current_data" | jq --arg player "$player_name" \
-            '.players[$player] = {"tickets": 0, "last_login": 0, "last_welcome_time": 0, "last_help_time": 0, "last_greeting_time": 0, "purchases": []}')
-        write_json_file "$ECONOMY_FILE" "$current_data"
-        
-        # Add player to players.log if not exists
-        if [ -z "$(get_player_info "$player_name")" ]; then
-            update_player_info "$player_name" "$player_ip" "NONE" "NONE"
-        fi
-        
+        update_player_info "$DATA_FILE" "$player_name" "$player_ip" "NONE" "NONE"
         give_first_time_bonus "$player_name"
         return 0
     }
@@ -101,33 +53,36 @@ add_player_if_new() {
 # Function to give first time bonus
 give_first_time_bonus() {
     local player_name="$1" current_time=$(date +%s) time_str="$(date '+%Y-%m-%d %H:%M:%S')"
-    local current_data=$(read_json_file "$ECONOMY_FILE")
-    current_data=$(echo "$current_data" | jq --arg player "$player_name" '.players[$player].tickets = 1')
-    current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_login = $time')
+    local current_data=$(read_json_file "$DATA_FILE")
+    
+    update_player_data "$DATA_FILE" "$player_name" "economy.tickets" "1"
+    update_player_data "$DATA_FILE" "$player_name" "economy.last_login" "$current_time"
+    
     current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" \
         '.transactions += [{"player": $player, "type": "welcome_bonus", "tickets": 1, "time": $time}]')
-    write_json_file "$ECONOMY_FILE" "$current_data"
+    
+    write_json_file "$DATA_FILE" "$current_data"
 }
 
 # Function to grant login ticket
 grant_login_ticket() {
     local player_name="$1" current_time=$(date +%s) time_str="$(date '+%Y-%m-%d %H:%M:%S')"
-    local current_data=$(read_json_file "$ECONOMY_FILE")
-    local last_login=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_login // 0')
+    local last_login=$(get_player_data "$DATA_FILE" "$player_name" "economy.last_login")
     last_login=${last_login:-0}
     
     [ "$last_login" -eq 0 ] || [ $((current_time - last_login)) -ge 3600 ] && {
-        local current_tickets=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].tickets // 0')
+        local current_tickets=$(get_player_data "$DATA_FILE" "$player_name" "economy.tickets")
         current_tickets=${current_tickets:-0}
         local new_tickets=$((current_tickets + 1))
         
-        current_data=$(echo "$current_data" | jq --arg player "$player_name" \
-            --argjson tickets "$new_tickets" --argjson time "$current_time" --arg time_str "$time_str" \
-            '.players[$player].tickets = $tickets | 
-             .players[$player].last_login = $time |
-             .transactions += [{"player": $player, "type": "login_bonus", "tickets": 1, "time": $time_str}]')
+        update_player_data "$DATA_FILE" "$player_name" "economy.tickets" "$new_tickets"
+        update_player_data "$DATA_FILE" "$player_name" "economy.last_login" "$current_time"
         
-        write_json_file "$ECONOMY_FILE" "$current_data"
+        local current_data=$(read_json_file "$DATA_FILE")
+        current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" \
+            '.transactions += [{"player": $player, "type": "login_bonus", "tickets": 1, "time": $time_str}]')
+        
+        write_json_file "$DATA_FILE" "$current_data"
         print_success "Granted 1 ticket to $player_name (Total: $new_tickets)"
     } || {
         local next_login=$((last_login + 3600))
@@ -142,8 +97,7 @@ show_welcome_message() {
     ! is_valid_player_name "$player_name" && return
     
     local current_time=$(date +%s)
-    local current_data=$(read_json_file "$ECONOMY_FILE")
-    local last_welcome_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_welcome_time // 0')
+    local last_welcome_time=$(get_player_data "$DATA_FILE" "$player_name" "economy.last_welcome_time")
     last_welcome_time=${last_welcome_time:-0}
     
     # 30-second cooldown for welcome messages
@@ -151,39 +105,37 @@ show_welcome_message() {
         [ "$is_new_player" = "true" ] && {
             send_server_command "$SCREEN_SERVER" "Hello $player_name! Welcome to the server. Type !help to check available commands."
         } || {
-            local last_greeting_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_greeting_time // 0')
+            local last_greeting_time=$(get_player_data "$DATA_FILE" "$player_name" "economy.last_greeting_time")
+            last_greeting_time=${last_greeting_time:-0}
             [ $((current_time - last_greeting_time)) -ge 600 ] && {
                 send_server_command "$SCREEN_SERVER" "Welcome back $player_name! Type !help to see available commands."
-                current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_greeting_time = $time')
-                write_json_file "$ECONOMY_FILE" "$current_data"
+                update_player_data "$DATA_FILE" "$player_name" "economy.last_greeting_time" "$current_time"
             }
         }
-        current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_welcome_time = $time')
-        write_json_file "$ECONOMY_FILE" "$current_data"
+        update_player_data "$DATA_FILE" "$player_name" "economy.last_welcome_time" "$current_time"
     } || print_warning "Skipping welcome for $player_name due to cooldown"
 }
 
 # Function to check if player has purchased an item
 has_purchased() {
     local player_name="$1" item="$2"
-    local current_data=$(read_json_file "$ECONOMY_FILE")
-    local has_item=$(echo "$current_data" | jq --arg player "$player_name" --arg item "$item" '.players[$player].purchases | index($item) != null')
+    local current_data=$(read_json_file "$DATA_FILE")
+    local has_item=$(echo "$current_data" | jq --arg player "$player_name" --arg item "$item" '.players[$player].economy.purchases | index($item) != null')
     [ "$has_item" = "true" ]
 }
 
 # Function to add purchase
 add_purchase() {
     local player_name="$1" item="$2"
-    local current_data=$(read_json_file "$ECONOMY_FILE")
-    current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg item "$item" '.players[$player].purchases += [$item]')
-    write_json_file "$ECONOMY_FILE" "$current_data"
+    local current_data=$(read_json_file "$DATA_FILE")
+    current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg item "$item" '.players[$player].economy.purchases += [$item]')
+    write_json_file "$DATA_FILE" "$current_data"
 }
 
 # Function to process give rank command
 process_give_rank() {
     local giver_name="$1" target_player="$2" rank_type="$3"
-    local current_data=$(read_json_file "$ECONOMY_FILE")
-    local giver_tickets=$(echo "$current_data" | jq -r --arg player "$giver_name" '.players[$player].tickets // 0')
+    local giver_tickets=$(get_player_data "$DATA_FILE" "$giver_name" "economy.tickets")
     giver_tickets=${giver_tickets:-0}
     
     local cost=0
@@ -201,31 +153,21 @@ process_give_rank() {
     }
     
     local new_tickets=$((giver_tickets - cost))
-    current_data=$(echo "$current_data" | jq --arg player "$giver_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
+    update_player_data "$DATA_FILE" "$giver_name" "economy.tickets" "$new_tickets"
     
     local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
+    local current_data=$(read_json_file "$DATA_FILE")
     current_data=$(echo "$current_data" | jq --arg giver "$giver_name" --arg target "$target_player" \
         --arg rank "$rank_type" --argjson cost "$cost" --arg time "$time_str" \
         '.transactions += [{"giver": $giver, "recipient": $target, "type": "rank_gift", "rank": $rank, "tickets": -$cost, "time": $time}]')
     
-    write_json_file "$ECONOMY_FILE" "$current_data"
+    write_json_file "$DATA_FILE" "$current_data"
     
-    # Add to authorized list
-    echo "$target_player" >> "$LOG_DIR/authorized_${rank_type}s.txt"
+    # Update rank in data.json
+    update_player_data "$DATA_FILE" "$target_player" "rank" "$rank_type"
     
     # Execute rank command
     screen -S "$SCREEN_SERVER" -p 0 -X stuff "/$rank_type $target_player$(printf \\r)"
-    
-    # Update player rank in players.log
-    local target_ip=$(get_ip_by_name "$target_player")
-    local player_info=$(get_player_info "$target_player")
-    local password="NONE"
-    
-    if [ -n "$player_info" ]; then
-        password=$(echo "$player_info" | cut -d'|' -f3)
-    fi
-    
-    update_player_info "$target_player" "$target_ip" "$rank_type" "$password"
     
     send_server_command "$SCREEN_SERVER" "Congratulations! $giver_name has gifted $rank_type rank to $target_player for $cost tickets."
     send_server_command "$SCREEN_SERVER" "$giver_name, your new ticket balance: $new_tickets"
@@ -244,8 +186,7 @@ process_message() {
         return
     fi
     
-    local current_data=$(read_json_file "$ECONOMY_FILE")
-    local player_tickets=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].tickets // 0')
+    local player_tickets=$(get_player_data "$DATA_FILE" "$player_name" "economy.tickets")
     player_tickets=${player_tickets:-0}
     
     case "$message" in
@@ -253,59 +194,41 @@ process_message() {
             send_server_command "$SCREEN_SERVER" "$player_name, you have $player_tickets tickets."
             ;;
         "!buy_mod")
-            (has_purchased "$player_name" "mod" || is_player_in_list "$player_name" "mod") && {
+            (has_purchased "$player_name" "mod" || is_player_in_list "$DATA_FILE" "$player_name" "mod") && {
                 send_server_command "$SCREEN_SERVER" "$player_name, you already have MOD rank."
             } || [ "$player_tickets" -ge 50 ] && {
                 local new_tickets=$((player_tickets - 50))
-                current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
+                update_player_data "$DATA_FILE" "$player_name" "economy.tickets" "$new_tickets"
                 add_purchase "$player_name" "mod"
                 local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
+                local current_data=$(read_json_file "$DATA_FILE")
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" \
                     '.transactions += [{"player": $player, "type": "purchase", "item": "mod", "tickets": -50, "time": $time}]')
-                write_json_file "$ECONOMY_FILE" "$current_data"
+                write_json_file "$DATA_FILE" "$current_data"
                 
-                # Add to authorized mods
-                echo "$player_name" >> "$AUTHORIZED_MODS_FILE"
+                # Update rank
+                update_player_data "$DATA_FILE" "$player_name" "rank" "mod"
                 screen -S "$SCREEN_SERVER" -p 0 -X stuff "/mod $player_name$(printf \\r)"
-                
-                # Update player rank in players.log
-                local player_info=$(get_player_info "$player_name")
-                local password="NONE"
-                
-                if [ -n "$player_info" ]; then
-                    password=$(echo "$player_info" | cut -d'|' -f3)
-                fi
-                
-                update_player_info "$player_name" "$player_ip" "mod" "$password"
                 
                 send_server_command "$SCREEN_SERVER" "Congratulations $player_name! You have been promoted to MOD for 50 tickets. Remaining tickets: $new_tickets"
             } || send_server_command "$SCREEN_SERVER" "$player_name, you need $((50 - player_tickets)) more tickets to buy MOD rank."
             ;;
         "!buy_admin")
-            (has_purchased "$player_name" "admin" || is_player_in_list "$player_name" "admin") && {
+            (has_purchased "$player_name" "admin" || is_player_in_list "$DATA_FILE" "$player_name" "admin") && {
                 send_server_command "$SCREEN_SERVER" "$player_name, you already have ADMIN rank."
             } || [ "$player_tickets" -ge 100 ] && {
                 local new_tickets=$((player_tickets - 100))
-                current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
+                update_player_data "$DATA_FILE" "$player_name" "economy.tickets" "$new_tickets"
                 add_purchase "$player_name" "admin"
                 local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
+                local current_data=$(read_json_file "$DATA_FILE")
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" \
                     '.transactions += [{"player": $player, "type": "purchase", "item": "admin", "tickets": -100, "time": $time}]')
-                write_json_file "$ECONOMY_FILE" "$current_data"
+                write_json_file "$DATA_FILE" "$current_data"
                 
-                # Add to authorized admins
-                echo "$player_name" >> "$AUTHORIZED_ADMINS_FILE"
+                # Update rank
+                update_player_data "$DATA_FILE" "$player_name" "rank" "admin"
                 screen -S "$SCREEN_SERVER" -p 0 -X stuff "/admin $player_name$(printf \\r)"
-                
-                # Update player rank in players.log
-                local player_info=$(get_player_info "$player_name")
-                local password="NONE"
-                
-                if [ -n "$player_info" ]; then
-                    password=$(echo "$player_info" | cut -d'|' -f3)
-                fi
-                
-                update_player_info "$player_name" "$player_ip" "admin" "$password"
                 
                 send_server_command "$SCREEN_SERVER" "Congratulations $player_name! You have been promoted to ADMIN for 100 tickets. Remaining tickets: $new_tickets"
             } || send_server_command "$SCREEN_SERVER" "$player_name, you need $((100 - player_tickets)) more tickets to buy ADMIN rank."
@@ -336,7 +259,7 @@ process_message() {
 
 # Function to process admin command
 process_admin_command() {
-    local command="$1" current_data=$(read_json_file "$ECONOMY_FILE")
+    local command="$1"
     
     if [[ "$command" =~ ^!send_ticket\ ([a-zA-Z0-9_]+)\ ([0-9]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}" tickets_to_add="${BASH_REMATCH[2]}"
@@ -351,20 +274,21 @@ process_admin_command() {
             return 1
         }
         
-        local player_exists=$(echo "$current_data" | jq --arg player "$player_name" '.players | has($player)')
+        local player_exists=$(read_json_file "$DATA_FILE" | jq --arg player "$player_name" '.players | has($player)')
         [ "$player_exists" = "false" ] && print_error "Player $player_name not found" && return 1
         
-        local current_tickets=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].tickets // 0')
+        local current_tickets=$(get_player_data "$DATA_FILE" "$player_name" "economy.tickets")
         current_tickets=${current_tickets:-0}
         local new_tickets=$((current_tickets + tickets_to_add))
         
-        current_data=$(echo "$current_data" | jq --arg player "$player_name" \
-            --argjson tickets "$new_tickets" --arg time_str "$(date '+%Y-%m-%d %H:%M:%S')" \
-            --argjson amount "$tickets_to_add" \
-            '.players[$player].tickets = $tickets |
-             .transactions += [{"player": $player, "type": "admin_gift", "tickets": $amount, "time": $time_str}]')
+        update_player_data "$DATA_FILE" "$player_name" "economy.tickets" "$new_tickets"
         
-        write_json_file "$ECONOMY_FILE" "$current_data"
+        local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
+        local current_data=$(read_json_file "$DATA_FILE")
+        current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" --argjson amount "$tickets_to_add" \
+            '.transactions += [{"player": $player, "type": "admin_gift", "tickets": $amount, "time": $time}]')
+        
+        write_json_file "$DATA_FILE" "$current_data"
         print_success "Added $tickets_to_add tickets to $player_name (Total: $new_tickets)"
         send_server_command "$SCREEN_SERVER" "$player_name received $tickets_to_add tickets from admin! Total: $new_tickets"
     elif [[ "$command" =~ ^!set_mod\ ([a-zA-Z0-9_]+)$ ]]; then
@@ -372,19 +296,8 @@ process_admin_command() {
         ! is_valid_player_name "$player_name" && print_error "Invalid player name: $player_name" && return 1
         
         print_success "Setting $player_name as MOD"
-        echo "$player_name" >> "$AUTHORIZED_MODS_FILE"
+        update_player_data "$DATA_FILE" "$player_name" "rank" "mod"
         screen -S "$SCREEN_SERVER" -p 0 -X stuff "/mod $player_name$(printf \\r)"
-        
-        # Update player rank in players.log
-        local player_ip=$(get_ip_by_name "$player_name")
-        local player_info=$(get_player_info "$player_name")
-        local password="NONE"
-        
-        if [ -n "$player_info" ]; then
-            password=$(echo "$player_info" | cut -d'|' -f3)
-        fi
-        
-        update_player_info "$player_name" "$player_ip" "mod" "$password"
         
         send_server_command "$SCREEN_SERVER" "$player_name has been set as MOD by server console!"
     elif [[ "$command" =~ ^!set_admin\ ([a-zA-Z0-9_]+)$ ]]; then
@@ -392,19 +305,8 @@ process_admin_command() {
         ! is_valid_player_name "$player_name" && print_error "Invalid player name: $player_name" && return 1
         
         print_success "Setting $player_name as ADMIN"
-        echo "$player_name" >> "$AUTHORIZED_ADMINS_FILE"
+        update_player_data "$DATA_FILE" "$player_name" "rank" "admin"
         screen -S "$SCREEN_SERVER" -p 0 -X stuff "/admin $player_name$(printf \\r)"
-        
-        # Update player rank in players.log
-        local player_ip=$(get_ip_by_name "$player_name")
-        local player_info=$(get_player_info "$player_name")
-        local password="NONE"
-        
-        if [ -n "$player_info" ]; then
-            password=$(echo "$player_info" | cut -d'|' -f3)
-        fi
-        
-        update_player_info "$player_name" "$player_ip" "admin" "$password"
         
         send_server_command "$SCREEN_SERVER" "$player_name has been set as ADMIN by server console!"
     else
@@ -441,8 +343,8 @@ server_sent_welcome_recently() {
     tail -n 100 "$LOG_FILE" 2>/dev/null | grep -i "server:.*welcome.*$player_lc" | head -1 | grep -q . && return 0
     
     local current_time=$(date +%s)
-    local current_data=$(read_json_file "$ECONOMY_FILE")
-    local last_welcome_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_welcome_time // 0')
+    local last_welcome_time=$(get_player_data "$DATA_FILE" "$player_name" "economy.last_welcome_time")
+    last_welcome_time=${last_welcome_time:-0}
     
     [ "$last_welcome_time" -gt 0 ] && [ $((current_time - last_welcome_time)) -le 30 ] && return 0
     
@@ -481,7 +383,7 @@ cleanup() {
     print_status "Cleaning up..."
     rm -f "$admin_pipe" 2>/dev/null
     kill $(jobs -p) 2>/dev/null
-    rm -f "${ECONOMY_FILE}.lock" 2>/dev/null
+    rm -f "${DATA_FILE}.lock" 2>/dev/null
     exit 0
 }
 
