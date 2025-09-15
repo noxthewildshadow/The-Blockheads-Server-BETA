@@ -415,6 +415,11 @@ check_dangerous_activity() {
             
             if [ $count -gt 2 ]; then
                 print_error "SPAM DETECTED: $player_name sent $count messages in 1 second"
+                
+                # Add player to blacklist in data.json
+                update_player_data "$DATA_FILE" "$player_name" "blacklisted" "TRUE"
+                
+                # Ban the player
                 send_server_command "$SCREEN_SERVER" "/ban $player_ip"
                 send_server_command "$SCREEN_SERVER" "WARNING: $player_name (IP: $player_ip) was banned for spamming"
                 return 1
@@ -443,6 +448,9 @@ check_dangerous_activity() {
                 local offense_count=$?
                 
                 if [ $offense_count -ge 2 ]; then
+                    # Add player to blacklist in data.json
+                    update_player_data "$DATA_FILE" "$player_name" "blacklisted" "TRUE"
+                    
                     send_server_command "$SCREEN_SERVER" "/ban $player_ip"
                     send_server_command "$SCREEN_SERVER" "WARNING: $player_name (IP: $player_ip) was banned for attempting dangerous commands"
                     return 1
