@@ -42,6 +42,20 @@ declare -A ip_mismatch_announced
 # Track grace period timer PIDs to cancel them on verification
 declare -A grace_period_pids
 
+# Function to schedule clear and multiple messages
+schedule_clear_and_messages() {
+    local messages=("$@")
+    # Clear chat immediately
+    screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null
+    # Send messages after 2 seconds
+    (
+        sleep 2
+        for msg in "${messages[@]}"; do
+            send_server_command "$SCREEN_SERVER" "$msg"
+        done
+    ) &
+}
+
 # Function to initialize authorization files
 initialize_authorization_files() {
     [ ! -f "$AUTHORIZED_ADMINS_FILE" ] && touch "$AUTHORIZED_ADMINS_FILE"
@@ -265,6 +279,7 @@ validate_ip_change() {
     
     if [ -z "$player_info" ]; then
         print_error "Player $player_name not found in registry"
+        schedule_clear_and_messages "ERROR: $player_name, you are not registered in the system." "Use !ip_psw to set a password first." "Example: !ip_psw mypassword123 mypassword123"
         return 1
     fi
     
@@ -274,6 +289,7 @@ validate_ip_change() {
     
     if [ "$registered_password" != "$password" ]; then
         print_error "Invalid password for IP change: $player_name"
+        schedule_clear_and_messages "ERROR: $player_name, the password is incorrect." "Usage: !ip_change YOUR_CURRENT_PASSWORD"
         return 1
     fi
     
@@ -289,14 +305,8 @@ validate_ip_change() {
     unset ip_change_grace_periods["$player_name"]
     unset ip_change_pending_players["$player_name"]
     
-    # Clear chat immediately
-    screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null
-    
-    # Send success message after 2 seconds
-    (
-        sleep 2
-        send_server_command "$SCREEN_SERVER" "SUCCESS: $player_name, your IP has been verified and updated!"
-    ) &
+    # Send success message
+    schedule_clear_and_messages "SUCCESS: $player_name, your IP has been verified and updated!" "Your new IP address is: $current_ip"
     
     return 0
 }
@@ -306,37 +316,24 @@ handle_password_creation() {
     local player_name="$1" password="$2" confirm_password="$3" player_ip="$4"
     local player_info=$(get_player_info "$player_name")
 
-    # Función local para programar clear y mensaje
-    schedule_clear_and_message() {
-        local message="$1"
-        # Clear chat immediately
-        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null
-        # Send success message after 2 seconds
-        ( sleep 2; send_server_command "$SCREEN_SERVER" "$message" ) &
-    }
-
     # Si el jugador ya existe en el registro, verificar si ya tiene contraseña
     if [ -n "$player_info" ]; then
         local registered_password=$(echo "$player_info" | cut -d'|' -f3)
         if [ "$registered_password" != "NONE" ]; then
             print_warning "Player $player_name already has a password set."
-            send_server_command "$SCREEN_SERVER" "$player_name, you already have a password set."
-            send_server_command "$SCREEN_SERVER" "If you want to change it, use: !ip_psw_change OLD_PASSWORD NEW_PASSWORD"
-            schedule_clear_and_message "$player_name, password already exists."
+            schedule_clear_and_messages "ERROR: $player_name, you already have a password set." "If you want to change it, use: !ip_psw_change OLD_PASSWORD NEW_PASSWORD"
             return 1
         fi
     fi
 
     # Validar contraseña
     if [ ${#password} -lt 6 ]; then
-        send_server_command "$SCREEN_SERVER" "$player_name, password must be at least 6 characters."
-        schedule_clear_and_message "$player_name, password too short."
+        schedule_clear_and_messages "ERROR: $player_name, password must be at least 6 characters." "Example: !ip_psw mypassword123 mypassword123"
         return 1
     fi
 
     if [ "$password" != "$confirm_password" ]; then
-        send_server_command "$SCREEN_SERVER" "$player_name, passwords do not match."
-        schedule_clear_and_message "$player_name, passwords don't match."
+        schedule_clear_and_messages "ERROR: $player_name, passwords do not match." "You must enter the same password twice to confirm it." "Example: !ip_psw mypassword123 mypassword123"
         return 1
     fi
 
@@ -350,7 +347,7 @@ handle_password_creation() {
         update_player_info "$player_name" "$player_ip" "$rank" "$password"
     fi
 
-    schedule_clear_and_message "$player_name, your IP password has been set successfully."
+    schedule_clear_and_messages "SUCCESS: $player_name, your IP password has been set successfully." "You can now use !ip_change YOUR_PASSWORD if your IP changes."
     return 0
 }
 
@@ -359,18 +356,9 @@ handle_password_change() {
     local player_name="$1" old_password="$2" new_password="$3"
     local player_info=$(get_player_info "$player_name")
     
-    # Función local para programar clear y mensaje
-    schedule_clear_and_message() {
-        local message="$1"
-        # Clear chat immediately
-        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null
-        # Send success message after 2 seconds
-        ( sleep 2; send_server_command "$SCREEN_SERVER" "$message" ) &
-    }
-    
     if [ -z "$player_info" ]; then
         print_error "Player $player_name not found in registry"
-        send_server_command "$SCREEN_SERVER" "$player_name, you don't have a password set. Use !ip_psw to generate one."
+        schedule_clear_and_messages "ERROR: $player_name, you don't have a password set." "Use !ip_psw to generate one first." "Example: !ip_psw mypassword123 mypassword123"
         return 1
     fi
     
@@ -381,7 +369,7 @@ handle_password_change() {
     # Verificar que la contraseña anterior coincida
     if [ "$registered_password" != "$old_password" ]; then
         print_error "Invalid old password for $player_name"
-        send_server_command "$SCREEN_SERVER" "$player_name, the old password is incorrect."
+        schedule_clear_and_messages "ERROR: $player_name, the old password is incorrect." "Usage: !ip_psw_change OLD_PASSWORD NEW_PASSWORD"
         return 1
     fi
     
@@ -403,15 +391,20 @@ handle_password_change() {
     
     if [ $current_attempts -gt 3 ]; then
         print_error "Password change limit exceeded for $player_name"
-        send_server_command "$SCREEN_SERVER" "$player_name, you've exceeded the password change limit (3 times per hour)."
+        schedule_clear_and_messages "ERROR: $player_name, you've exceeded the password change limit (3 times per hour)." "Please wait before trying again."
+        return 1
+    fi
+    
+    # Validar nueva contraseña
+    if [ ${#new_password} -lt 6 ]; then
+        schedule_clear_and_messages "ERROR: $player_name, new password must be at least 6 characters." "Example: !ip_psw_change oldpass newpassword123"
         return 1
     fi
     
     # Actualizar contraseña
     update_player_info "$player_name" "$registered_ip" "$registered_rank" "$new_password"
     
-    # Usar la función de programación para clear y mensaje
-    schedule_clear_and_message "$player_name, your password has been changed successfully."
+    schedule_clear_and_messages "SUCCESS: $player_name, your password has been changed successfully." "You can now use !ip_change NEW_PASSWORD if your IP changes."
     
     return 0
 }
@@ -446,6 +439,7 @@ check_username_theft() {
                         if is_player_connected "$player_name"; then
                             send_server_command "$SCREEN_SERVER" "WARNING: $player_name, your IP has changed but you don't have a password set."
                             send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account."
+                            send_server_command "$SCREEN_SERVER" "Example: !ip_psw mypassword123 mypassword123"
                         fi
                     ) &
                 fi
@@ -481,6 +475,7 @@ check_username_theft() {
                 if is_player_connected "$player_name"; then
                     send_server_command "$SCREEN_SERVER" "WARNING: $player_name, you don't have a password set for IP verification."
                     send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account if your IP changes."
+                    send_server_command "$SCREEN_SERVER" "Example: !ip_psw mypassword123 mypassword123"
                 fi
             ) &
         fi
@@ -866,8 +861,7 @@ monitor_log() {
                         local player_ip=$(get_ip_by_name "$player_name")
                         handle_password_creation "$player_name" "$password" "$confirm_password" "$player_ip"
                     else
-                        send_server_command "$SCREEN_SERVER" "Usage: !ip_psw PASSWORD CONFIRM_PASSWORD"
-                        ( sleep 2; screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null ) &
+                        schedule_clear_and_messages "ERROR: Invalid format for !ip_psw command." "Usage: !ip_psw PASSWORD CONFIRM_PASSWORD" "Example: !ip_psw mypassword123 mypassword123"
                     fi
                     ;;
                 "!ip_psw_change "*)
@@ -876,7 +870,7 @@ monitor_log() {
                         local new_password="${BASH_REMATCH[2]}"
                         handle_password_change "$player_name" "$old_password" "$new_password"
                     else
-                        send_server_command "$SCREEN_SERVER" "Usage: !ip_psw_change OLD_PASSWORD NEW_PASSWORD"
+                        schedule_clear_and_messages "ERROR: Invalid format for !ip_psw_change command." "Usage: !ip_psw_change OLD_PASSWORD NEW_PASSWORD" "Example: !ip_psw_change oldpass newpassword123"
                     fi
                     ;;
                 "!ip_change "*)
@@ -886,10 +880,10 @@ monitor_log() {
                             local current_ip="${ip_change_pending_players[$player_name]}"
                             validate_ip_change "$player_name" "$password" "$current_ip"
                         else
-                            send_server_command "$SCREEN_SERVER" "Usage: !ip_change YOUR_CURRENT_PASSWORD"
+                            schedule_clear_and_messages "ERROR: Invalid format for !ip_change command." "Usage: !ip_change YOUR_CURRENT_PASSWORD" "Example: !ip_change mypassword123"
                         fi
                     else
-                        send_server_command "$SCREEN_SERVER" "$player_name, you don't have a pending IP change verification."
+                        schedule_clear_and_messages "ERROR: $player_name, you don't have a pending IP change verification." "This command is only available when your IP has changed and you need to verify your identity."
                     fi
                     ;;
                 *)
