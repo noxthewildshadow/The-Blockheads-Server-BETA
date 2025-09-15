@@ -31,6 +31,7 @@ is_player_in_list() {
 
 # Function to get player rank
 get_player_rank() {
+    local player_name="$1"
     get_player_data "$DATA_FILE" "$player_name" "rank"
 }
 
