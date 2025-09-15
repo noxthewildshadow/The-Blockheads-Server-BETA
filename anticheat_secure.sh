@@ -42,6 +42,27 @@ declare -A ip_mismatch_announced
 # Track grace period timer PIDs to cancel them on verification
 declare -A grace_period_pids
 
+# Function to check if a player name is valid (only letters, numbers, and underscores)
+is_valid_player_name() {
+    local name="$1"
+    # Check for empty name
+    if [[ -z "$name" ]]; then
+        return 1
+    fi
+    
+    # Check for spaces at beginning or end
+    if [[ "$name" =~ ^[[:space:]]+ ]] || [[ "$name" =~ [[:space:]]+$ ]]; then
+        return 1
+    fi
+    
+    # Check for invalid characters (only allow letters, numbers, and underscores)
+    if [[ "$name" =~ [^a-zA-Z0-9_] ]]; then
+        return 1
+    fi
+    
+    return 0
+}
+
 # Function to schedule clear and multiple messages
 schedule_clear_and_messages() {
     local messages=("$@")
@@ -119,7 +140,7 @@ clear_admin_offenses() {
     local admin_name="$1"
     local offenses_data=$(read_json_file "$ADMIN_OFFENSES_FILE" 2>/dev/null || echo '{}')
     offenses_data=$(echo "$offenses_data" | jq --arg admin "$admin_name" 'del(.[$admin])')
-    write_json_file "$ADMIN_OFFENSES_FILE" "$offenses_data"
+    write_json_file "$ADMIN_OFFENSES_FILE" "$offsets_data"
 }
 
 # Function to remove from list file
@@ -701,7 +722,7 @@ monitor_log() {
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             # Check for illegal characters first
-            if [[ "$player_name" =~ [\\/\$\(\)\;\\\`\*\"\'\<\>\&\|\s] ]]; then
+            if ! is_valid_player_name "$player_name"; then
                 print_warning "INVALID PLAYER NAME: '$player_name' (IP: $player_ip, Hash: $player_hash)"
                 send_server_command "$SCREEN_SERVER" "WARNING: Invalid player name '$player_name'! You will be banned for 5 seconds."
                 print_warning "Banning player with invalid name: '$player_name' (IP: $player_ip)"
@@ -726,26 +747,6 @@ monitor_log() {
                 continue
             fi
             
-            if ! is_valid_player_name "$player_name"; then
-                print_warning "INVALID PLAYER NAME: '$player_name' (IP: $player_ip, Hash: $player_hash)"
-                send_server_command "$SCREEN_SERVER" "WARNING: Invalid player name '$player_name'! You will be banned for 5 seconds."
-                print_warning "Banning player with invalid name: '$player_name' (IP: $player_ip)"
-                
-                if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
-                    send_server_command "$SCREEN_SERVER" "/ban $player_ip"
-                    send_server_command "$SCREEN_SERVER" "/kick $player_name"
-                    (
-                        sleep 5
-                        send_server_command "$SCREEN_SERVER" "/unban $player_ip"
-                        print_success "Unbanned IP: $player_ip"
-                    ) &
-                else
-                    send_server_command "$SCREEN_SERVER" "/ban $player_name"
-                    send_server_command "$SCREEN_SERVER" "/kick $player_name"
-                fi
-                continue
-            fi
-            
             # Check for username theft with IP verification
             if ! check_username_theft "$player_name" "$player_ip"; then
                 continue
@@ -762,7 +763,7 @@ monitor_log() {
             target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             # Check for illegal characters in command user
-            if [[ "$command_user" =~ [\\/\$\(\)\;\\\`\*\"\'\<\>\&\|\s] ]]; then
+            if ! is_valid_player_name "$command_user"; then
                 local ipu=$(get_ip_by_name "$command_user")
                 print_warning "INVALID PLAYER NAME: '$command_user' (IP: $ipu)"
                 send_server_command "$SCREEN_SERVER" "WARNING: Invalid player name '$command_user'! You will be banned for 5 seconds."
@@ -779,28 +780,6 @@ monitor_log() {
             fi
             
             # Check for illegal characters in target player
-            if [[ "$target_player" =~ [\\/\$\(\)\;\\\`\*\"\'\<\>\&\|\s] ]]; then
-                print_error "Admin $command_user attempted to assign rank to invalid player: $target_player"
-                handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
-                continue
-            fi
-            
-            if ! is_valid_player_name "$command_user"; then
-                local ipu2=$(get_ip_by_name "$command_user")
-                print_warning "INVALID PLAYER NAME: '$command_user' (IP: $ipu2)"
-                send_server_command "$SCREEN_SERVER" "WARNING: Invalid player name '$command_user'! You will be banned for 5 seconds."
-                print_warning "Banning player with invalid name: '$command_user' (IP: $ipu2)"
-                
-                if [ -n "$ipu2" ] && [ "$ipu2" != "unknown" ]; then
-                    send_server_command "$SCREEN_SERVER" "/ban $ipu2"
-                    send_server_command "$SCREEN_SERVER" "/kick $command_user"
-                else
-                    send_server_command "$SCREEN_SERVER" "/ban $command_user"
-                    send_server_command "$SCREEN_SERVER" "/kick $command_user"
-                fi
-                continue
-            fi
-            
             if ! is_valid_player_name "$target_player"; then
                 print_error "Admin $command_user attempted to assign rank to invalid player: $target_player"
                 handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
@@ -816,16 +795,12 @@ monitor_log() {
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             # Check for illegal characters
-            if [[ "$player_name" =~ [\\/\$\(\)\;\\\`\*\"\'\<\>\&\|\s] ]]; then
+            if ! is_valid_player_name "$player_name"; then
                 print_warning "Player with invalid name disconnected: $player_name"
                 continue
             fi
             
-            if is_valid_player_name "$player_name"; then
-                print_warning "Player disconnected: $player_name"
-            else
-                print_warning "Player with invalid name disconnected: $player_name"
-            fi
+            print_warning "Player disconnected: $player_name"
             
             # Clean up grace period and announcement tracking if player disconnects
             unset ip_change_grace_periods["$player_name"]
@@ -844,10 +819,6 @@ monitor_log() {
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             # Check for illegal characters
-            if [[ "$player_name" =~ [\\/\$\(\)\;\\\`\*\"\'\<\>\&\|\s] ]]; then
-                continue
-            fi
-            
             if ! is_valid_player_name "$player_name"; then
                 continue
             fi
