@@ -69,11 +69,11 @@ give_first_time_bonus() {
 grant_login_ticket() {
     local player_name="$1" current_time=$(date +%s) time_str="$(date '+%Y-%m-%d %H:%M:%S')"
     local last_login=$(get_player_data "$DATA_FILE" "$player_name" "economy.last_login")
-    last_login=${last_login:-0}
+    [ "$last_login" = "NONE" ] && last_login=0
     
     [ "$last_login" -eq 0 ] || [ $((current_time - last_login)) -ge 3600 ] && {
         local current_tickets=$(get_player_data "$DATA_FILE" "$player_name" "economy.tickets")
-        current_tickets=${current_tickets:-0}
+        [ "$current_tickets" = "NONE" ] && current_tickets=0
         local new_tickets=$((current_tickets + 1))
         
         update_player_data "$DATA_FILE" "$player_name" "economy.tickets" "$new_tickets"
@@ -99,7 +99,7 @@ show_welcome_message() {
     
     local current_time=$(date +%s)
     local last_welcome_time=$(get_player_data "$DATA_FILE" "$player_name" "economy.last_welcome_time")
-    last_welcome_time=${last_welcome_time:-0}
+    [ "$last_welcome_time" = "NONE" ] && last_welcome_time=0
     
     # 30-second cooldown for welcome messages
     [ "$force_send" -eq 1 ] || [ "$last_welcome_time" -eq 0 ] || [ $((current_time - last_welcome_time)) -ge 30 ] && {
@@ -107,7 +107,7 @@ show_welcome_message() {
             send_server_command "$SCREEN_SERVER" "Hello $player_name! Welcome to the server. Type !help to check available commands."
         } || {
             local last_greeting_time=$(get_player_data "$DATA_FILE" "$player_name" "economy.last_greeting_time")
-            last_greeting_time=${last_greeting_time:-0}
+            [ "$last_greeting_time" = "NONE" ] && last_greeting_time=0
             [ $((current_time - last_greeting_time)) -ge 600 ] && {
                 send_server_command "$SCREEN_SERVER" "Welcome back $player_name! Type !help to see available commands."
                 update_player_data "$DATA_FILE" "$player_name" "economy.last_greeting_time" "$current_time"
@@ -137,7 +137,7 @@ add_purchase() {
 process_give_rank() {
     local giver_name="$1" target_player="$2" rank_type="$3"
     local giver_tickets=$(get_player_data "$DATA_FILE" "$giver_name" "economy.tickets")
-    giver_tickets=${giver_tickets:-0}
+    [ "$giver_tickets" = "NONE" ] && giver_tickets=0
     
     local cost=0
     [ "$rank_type" = "admin" ] && cost=140
@@ -163,6 +163,7 @@ process_give_rank() {
         '.transactions += [{"giver": $giver, "recipient": $target, "type": "rank_gift", "rank": $rank, "tickets": -$cost, "time": $time}]')
     
     write_json_file "$DATA_FILE" "$current_data"
+    sync_list_files "$DATA_FILE" "$LOG_DIR"
     
     # Update rank in data.json
     update_player_data "$DATA_FILE" "$target_player" "rank" "$rank_type"
@@ -188,7 +189,7 @@ process_message() {
     fi
     
     local player_tickets=$(get_player_data "$DATA_FILE" "$player_name" "economy.tickets")
-    player_tickets=${player_tickets:-0}
+    [ "$player_tickets" = "NONE" ] && player_tickets=0
     
     case "$message" in
         "!tickets"|"ltickets")
@@ -206,6 +207,7 @@ process_message() {
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" \
                     '.transactions += [{"player": $player, "type": "purchase", "item": "mod", "tickets": -50, "time": $time}]')
                 write_json_file "$DATA_FILE" "$current_data"
+                sync_list_files "$DATA_FILE" "$LOG_DIR"
                 
                 # Update rank
                 update_player_data "$DATA_FILE" "$player_name" "rank" "mod"
@@ -226,6 +228,7 @@ process_message() {
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" \
                     '.transactions += [{"player": $player, "type": "purchase", "item": "admin", "tickets": -100, "time": $time}]')
                 write_json_file "$DATA_FILE" "$current_data"
+                sync_list_files "$DATA_FILE" "$LOG_DIR"
                 
                 # Update rank
                 update_player_data "$DATA_FILE" "$player_name" "rank" "admin"
@@ -279,7 +282,7 @@ process_admin_command() {
         [ "$player_exists" = "false" ] && print_error "Player $player_name not found" && return 1
         
         local current_tickets=$(get_player_data "$DATA_FILE" "$player_name" "economy.tickets")
-        current_tickets=${current_tickets:-0}
+        [ "$current_tickets" = "NONE" ] && current_tickets=0
         local new_tickets=$((current_tickets + tickets_to_add))
         
         update_player_data "$DATA_FILE" "$player_name" "economy.tickets" "$new_tickets"
@@ -345,7 +348,7 @@ server_sent_welcome_recently() {
     
     local current_time=$(date +%s)
     local last_welcome_time=$(get_player_data "$DATA_FILE" "$player_name" "economy.last_welcome_time")
-    last_welcome_time=${last_welcome_time:-0}
+    [ "$last_welcome_time" = "NONE" ] && last_welcome_time=0
     
     [ "$last_welcome_time" -gt 0 ] && [ $((current_time - last_welcome_time)) -le 30 ] && return 0
     
