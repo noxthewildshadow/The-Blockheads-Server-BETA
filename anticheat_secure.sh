@@ -581,6 +581,125 @@ monitor_log() {
     
     # Start monitoring the log
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read -r line; do
+        # Handle server clear commands
+        if [[ "$line" == *"SERVER: /clear-blacklist"* ]]; then
+            print_status "Detected /clear-blacklist command. Updating data.json..."
+            local current_data=$(read_json_file "$DATA_FILE")
+            # Set all blacklisted flags to NONE
+            current_data=$(echo "$current_data" | jq '.players |= map_values(if .blacklisted then .blacklisted = "NONE" else . end)')
+            write_json_file "$DATA_FILE" "$current_data"
+            print_success "Blacklist cleared in data.json"
+        fi
+
+        if [[ "$line" == *"SERVER: /clear-whitelist"* ]]; then
+            print_status "Detected /clear-whitelist command. Updating data.json..."
+            local current_data=$(read_json_file "$DATA_FILE")
+            current_data=$(echo "$current_data" | jq '.players |= map_values(if .whitelisted then .whitelisted = "NONE" else . end)')
+            write_json_file "$DATA_FILE" "$current_data"
+            print_success "Whitelist cleared in data.json"
+        fi
+
+        if [[ "$line" == *"SERVER: /clear-adminlist"* ]]; then
+            print_status "Detected /clear-adminlist command. Updating data.json..."
+            local current_data=$(read_json_file "$DATA_FILE")
+            # Set admin ranks to NONE
+            current_data=$(echo "$current_data" | jq '.players |= map_values(if .rank == "admin" then .rank = "NONE" else . end)')
+            write_json_file "$DATA_FILE" "$current_data"
+            print_success "Adminlist cleared in data.json"
+        fi
+
+        if [[ "$line" == *"SERVER: /clear-modlist"* ]]; then
+            print_status "Detected /clear-modlist command. Updating data.json..."
+            local current_data=$(read_json_file "$DATA_FILE")
+            # Set mod ranks to NONE
+            current_data=$(echo "$current_data" | jq '.players |= map_values(if .rank == "mod" then .rank = "NONE" else . end)')
+            write_json_file "$DATA_FILE" "$current_data"
+            print_success "Modlist cleared in data.json"
+        fi
+
+        # Handle server rank assignment commands
+        if [[ "$line" =~ ([^:]+):\ \/(admin|mod|unadmin|unmod)\ ([^[:space:]]+) ]]; then
+            local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target_player="${BASH_REMATCH[3]}"
+            command_user=$(extract_real_name "$command_user")
+            command_user=$(echo "$command_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            target_player=$(extract_real_name "$target_player")
+            target_player=$(echo "$target_player" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
+            # If command is from SERVER, update data.json
+            if [ "$command_user" = "SERVER" ]; then
+                case "$command_type" in
+                    "admin")
+                        update_player_data "$DATA_FILE" "$target_player" "rank" "admin"
+                        print_success "Player $target_player promoted to admin by server"
+                        ;;
+                    "mod")
+                        update_player_data "$DATA_FILE" "$target_player" "rank" "mod"
+                        print_success "Player $target_player promoted to mod by server"
+                        ;;
+                    "unadmin")
+                        update_player_data "$DATA_FILE" "$target_player" "rank" "NONE"
+                        print_success "Player $target_player demoted from admin by server"
+                        ;;
+                    "unmod")
+                        update_player_data "$DATA_FILE" "$target_player" "rank" "NONE"
+                        print_success "Player $target_player demoted from mod by server"
+                        ;;
+                esac
+            else
+                # Handle unauthorized commands
+                handle_unauthorized_command "$command_user" "/$command_type" "$target_player"
+            fi
+        fi
+
+        # Handle server ban commands
+        if [[ "$line" =~ ([^:]+):\ \/(ban|unban|whitelist|unwhitelist)\ ([^[:space:]]+) ]]; then
+            local command_user="${BASH_REMATCH[1]}" command_type="${BASH_REMATCH[2]}" target="${BASH_REMATCH[3]}"
+            command_user=$(extract_real_name "$command_user")
+            command_user=$(echo "$command_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
+            # If command is from SERVER, update data.json
+            if [ "$command_user" = "SERVER" ]; then
+                case "$command_type" in
+                    "ban")
+                        # Try to find player by IP or name
+                        if [[ "$target" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                            # Target is an IP address
+                            local player_name=$(find_player_by_ip "$target" "$DATA_FILE")
+                            if [ -n "$player_name" ]; then
+                                update_player_data "$DATA_FILE" "$player_name" "blacklisted" "TRUE"
+                                print_success "Player $player_name (IP: $target) banned by server"
+                            fi
+                        else
+                            # Target is a player name
+                            update_player_data "$DATA_FILE" "$target" "blacklisted" "TRUE"
+                            print_success "Player $target banned by server"
+                        fi
+                        ;;
+                    "unban")
+                        # Similar logic for unban
+                        if [[ "$target" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                            local player_name=$(find_player_by_ip "$target" "$DATA_FILE")
+                            if [ -n "$player_name" ]; then
+                                update_player_data "$DATA_FILE" "$player_name" "blacklisted" "NONE"
+                                print_success "Player $player_name (IP: $target) unbanned by server"
+                            fi
+                        else
+                            update_player_data "$DATA_FILE" "$target" "blacklisted" "NONE"
+                            print_success "Player $target unbanned by server"
+                        fi
+                        ;;
+                    "whitelist")
+                        update_player_data "$DATA_FILE" "$target" "whitelisted" "TRUE"
+                        print_success "Player $target whitelisted by server"
+                        ;;
+                    "unwhitelist")
+                        update_player_data "$DATA_FILE" "$target" "whitelisted" "NONE"
+                        print_success "Player $target unwhitelisted by server"
+                        ;;
+                esac
+            fi
+        fi
+
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
             player_name=$(extract_real_name "$player_name")
