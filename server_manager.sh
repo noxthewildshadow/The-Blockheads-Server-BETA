@@ -81,10 +81,6 @@ start_server() {
     print_step "Starting server - World: $world_id, Port: $port"
     echo "$world_id" > "world_id_$port.txt"
 
-    # Initialize data.json
-    local DATA_FILE="$log_dir/data.json"
-    initialize_data_json "$DATA_FILE"
-
     cat > /tmp/start_server_$$.sh << EOF
 #!/bin/bash
 cd '$PWD'
