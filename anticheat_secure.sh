@@ -586,16 +586,18 @@ monitor_log() {
             print_status "Detected /clear-blacklist command. Updating data.json..."
             local current_data=$(read_json_file "$DATA_FILE")
             # Set all blacklisted flags to NONE
-            current_data=$(echo "$current_data" | jq '.players |= map_values(if .blacklisted then .blacklisted = "NONE" else . end)')
+            current_data=$(echo "$current_data" | jq '.players |= map_values(if .blacklisted == "TRUE" then .blacklisted = "NONE" else . end)')
             write_json_file "$DATA_FILE" "$current_data"
+            sync_list_files "$DATA_FILE" "$LOG_DIR"
             print_success "Blacklist cleared in data.json"
         fi
 
         if [[ "$line" == *"SERVER: /clear-whitelist"* ]]; then
             print_status "Detected /clear-whitelist command. Updating data.json..."
             local current_data=$(read_json_file "$DATA_FILE")
-            current_data=$(echo "$current_data" | jq '.players |= map_values(if .whitelisted then .whitelisted = "NONE" else . end)')
+            current_data=$(echo "$current_data" | jq '.players |= map_values(if .whitelisted == "TRUE" then .whitelisted = "NONE" else . end)')
             write_json_file "$DATA_FILE" "$current_data"
+            sync_list_files "$DATA_FILE" "$LOG_DIR"
             print_success "Whitelist cleared in data.json"
         fi
 
@@ -605,6 +607,7 @@ monitor_log() {
             # Set admin ranks to NONE
             current_data=$(echo "$current_data" | jq '.players |= map_values(if .rank == "admin" then .rank = "NONE" else . end)')
             write_json_file "$DATA_FILE" "$current_data"
+            sync_list_files "$DATA_FILE" "$LOG_DIR"
             print_success "Adminlist cleared in data.json"
         fi
 
@@ -614,6 +617,7 @@ monitor_log() {
             # Set mod ranks to NONE
             current_data=$(echo "$current_data" | jq '.players |= map_values(if .rank == "mod" then .rank = "NONE" else . end)')
             write_json_file "$DATA_FILE" "$current_data"
+            sync_list_files "$DATA_FILE" "$LOG_DIR"
             print_success "Modlist cleared in data.json"
         fi
 
