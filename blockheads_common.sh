@@ -167,6 +167,18 @@ find_library() {
 initialize_data_json() {
     local data_file="$1"
     [ ! -f "$data_file" ] && echo '{"players": {}, "transactions": []}' > "$data_file"
+    
+    # Ensure all boolean values are strings
+    local current_data=$(read_json_file "$data_file")
+    current_data=$(echo "$current_data" | jq '
+        (.players[] | select(.blacklisted == true).blacklisted) = "TRUE" |
+        (.players[] | select(.blacklisted == false).blacklisted) = "NONE" |
+        (.players[] | select(.whitelisted == true).whitelisted) = "TRUE" |
+        (.players[] | select(.whitelisted == false).whitelisted) = "NONE" |
+        (.players[] | select(.blacklisted | type == "boolean")).blacklisted = "NONE" |
+        (.players[] | select(.whitelisted | type == "boolean")).whitelisted = "NONE"
+    ')
+    write_json_file "$data_file" "$current_data"
     sync_list_files "$data_file" "$(dirname "$data_file")"
 }
 
@@ -370,4 +382,12 @@ record_password_change_attempt() {
     update_player_data "$data_file" "$player_name" "password_change_attempts.last_attempt" "$current_time"
     
     return $current_attempts
+}
+
+# Function to find player by IP
+find_player_by_ip() {
+    local ip="$1"
+    local data_file="$2"
+    local current_data=$(read_json_file "$data_file")
+    echo "$current_data" | jq -r --arg ip "$ip" '.players | to_entries[] | select(.value.ip == $ip) | .key'
 }
