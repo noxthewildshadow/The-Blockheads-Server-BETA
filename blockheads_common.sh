@@ -47,26 +47,32 @@ extract_real_name() {
     fi
 }
 
-# Function to read JSON file with locking
+# Function to read JSON file with locking and validation
 read_json_file() {
     local file_path="$1"
-    [ ! -f "$file_path" ] && echo "{}" > "$file_path" && echo "{}" && return 0
+    [ ! -f "$file_path" ] && echo '{"players": {}, "transactions": []}' > "$file_path" && echo '{"players": {}, "transactions": []}' && return 0
     
-    # Read with locking
-    flock -s 200 cat "$file_path" 200>"${file_path}.lock"
+    # Read with locking and validate JSON
+    flock -s 200 cat "$file_path" 200>"${file_path}.lock" | jq -c . 2>/dev/null || echo '{"players": {}, "transactions": []}'
 }
 
-# Function to write JSON file with locking and atomic replace
+# Function to write JSON file with locking, atomic replace, and validation
 write_json_file() {
     local file_path="$1" content="$2"
     [ ! -f "$file_path" ] && touch "$file_path"
+    
+    # Validate JSON before writing
+    if ! echo "$content" | jq -e . >/dev/null 2>&1; then
+        print_error "Invalid JSON content, not writing to file"
+        return 1
+    fi
     
     # Create backup (limit to 5 most recent)
     local backup_file="${file_path}.bak.$(date +%s)"
     cp "$file_path" "$backup_file" 2>/dev/null || true
     
     # Write with locking and atomic replace
-    flock -x 200 echo "$content" > "${file_path}.tmp" 200>"${file_path}.lock"
+    flock -x 200 echo "$content" | jq -c . > "${file_path}.tmp" 200>"${file_path}.lock"
     mv "${file_path}.tmp" "$file_path"
     
     # Remove old backups (keep last 5 only)
@@ -168,7 +174,7 @@ initialize_data_json() {
     local data_file="$1"
     [ ! -f "$data_file" ] && echo '{"players": {}, "transactions": []}' > "$data_file"
     
-    # Ensure all boolean values are strings
+    # Ensure all boolean values are strings and fix any JSON issues
     local current_data=$(read_json_file "$data_file")
     current_data=$(echo "$current_data" | jq '
         (.players[] | select(.blacklisted == true).blacklisted) = "TRUE" |
@@ -176,7 +182,10 @@ initialize_data_json() {
         (.players[] | select(.whitelisted == true).whitelisted) = "TRUE" |
         (.players[] | select(.whitelisted == false).whitelisted) = "NONE" |
         (.players[] | select(.blacklisted | type == "boolean")).blacklisted = "NONE" |
-        (.players[] | select(.whitelisted | type == "boolean")).whitelisted = "NONE"
+        (.players[] | select(.whitelisted | type == "boolean")).whitelisted = "NONE" |
+        (.players[] | select(.rank == null)).rank = "NONE" |
+        (.players[] | select(.ip == null)).ip = "unknown" |
+        (.players[] | select(.password == null)).password = "NONE"
     ')
     write_json_file "$data_file" "$current_data"
     sync_list_files "$data_file" "$(dirname "$data_file")"
@@ -190,16 +199,16 @@ sync_list_files() {
     [ ! -f "$data_file" ] && return
 
     # Sync adminlist
-    jq -r '.players | to_entries[] | select(.value.rank == "admin") | .key' "$data_file" > "$log_dir/adminlist.txt" 2>/dev/null || true
+    jq -r '.players | to_entries[] | select(.value.rank == "admin") | .key' "$data_file" 2>/dev/null | head -c -1 > "$log_dir/adminlist.txt" 2>/dev/null || true
     
     # Sync modlist
-    jq -r '.players | to_entries[] | select(.value.rank == "mod") | .key' "$data_file" > "$log_dir/modlist.txt" 2>/dev/null || true
+    jq -r '.players | to_entries[] | select(.value.rank == "mod") | .key' "$data_file" 2>/dev/null | head -c -1 > "$log_dir/modlist.txt" 2>/dev/null || true
     
     # Sync blacklist
-    jq -r '.players | to_entries[] | select(.value.blacklisted == "TRUE") | .key' "$data_file" > "$log_dir/blacklist.txt" 2>/dev/null || true
+    jq -r '.players | to_entries[] | select(.value.blacklisted == "TRUE") | .key' "$data_file" 2>/dev/null | head -c -1 > "$log_dir/blacklist.txt" 2>/dev/null || true
     
     # Sync whitelist
-    jq -r '.players | to_entries[] | select(.value.whitelisted == "TRUE") | .key' "$data_file" > "$log_dir/whitelist.txt" 2>/dev/null || true
+    jq -r '.players | to_entries[] | select(.value.whitelisted == "TRUE") | .key' "$data_file" 2>/dev/null | head -c -1 > "$log_dir/whitelist.txt" 2>/dev/null || true
 }
 
 # Function to update player data in data.json
@@ -211,7 +220,11 @@ update_player_data() {
     
     local current_data=$(read_json_file "$data_file")
     current_data=$(echo "$current_data" | jq --arg player "$player" --arg field "$field" --arg value "$value" '
-        .players[$player][$field] = $value
+        if .players[$player] then 
+            .players[$player][$field] = $value 
+        else 
+            .players[$player] = {($field): $value} 
+        end
     ')
     write_json_file "$data_file" "$current_data"
     sync_list_files "$data_file" "$(dirname "$data_file")"
@@ -223,9 +236,16 @@ get_player_data() {
     local player="$2"
     local field="$3"
     
-    read_json_file "$data_file" | jq -r --arg player "$player" --arg field "$field" '
+    local value=$(read_json_file "$data_file" | jq -r --arg player "$player" --arg field "$field" '
         .players[$player][$field] // "NONE"
-    '
+    ')
+    
+    # Handle numeric values that might be "NONE"
+    if [[ "$field" == *"attempts"* ]] || [[ "$field" == *"count"* ]] || [[ "$field" == *"time"* ]]; then
+        [ "$value" = "NONE" ] && value=0
+    fi
+    
+    echo "$value"
 }
 
 # Function to update player info in data.json
@@ -283,7 +303,7 @@ get_player_info() {
     local rank=$(get_player_data "$data_file" "$player_name" "rank")
     local password=$(get_player_data "$data_file" "$player_name" "password")
     
-    if [ "$ip" != "NONE" ]; then
+    if [ "$ip" != "NONE" ] && [ "$ip" != "0" ] && [ -n "$ip" ]; then
         echo "$ip|$rank|$password"
         return 0
     fi
