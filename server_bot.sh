@@ -18,6 +18,22 @@ LOG_DIR=$(dirname "$1")
 DATA_FILE="$LOG_DIR/data.json"
 SCREEN_SERVER="blockheads_server_$PORT"
 
+# Function to get player rank from data.json
+get_player_rank() {
+    local player_name="$1"
+    local player_data=$(get_player_info "$player_name")
+    if [ -z "$player_data" ] || [ "$player_data" = "{}" ]; then
+        echo "NONE"
+    else
+        echo "$player_data" | jq -r '.rank // "NONE"'
+    fi
+}
+
+# Function to get player info from data.json
+get_player_info() {
+    get_user_data "$DATA_FILE" "$1"
+}
+
 # Function to initialize economy
 initialize_economy() {
     initialize_data_json "$DATA_FILE"
@@ -87,6 +103,7 @@ add_player_if_new() {
     if [ -z "$player_data" ] || [ "$player_data" = "{}" ]; then
         local rank=$(get_player_rank "$player_name")
         local updates=$(jq -n \
+            --arg user "$player_name" \
             --arg ip "$player_ip" \
             --arg rank "$rank" \
             --arg password "NONE" \
@@ -115,6 +132,7 @@ give_first_time_bonus() {
     local player_name="$1" current_time=$(date +%s) time_str="$(date '+%Y-%m-%d %H:%M:%S')"
     local player_data=$(get_player_info "$player_name")
     local current_tickets=$(echo "$player_data" | jq -r '.economy // 0')
+    current_tickets=${current_tickets:-0}
     local new_tickets=$((current_tickets + 1))
     
     local updates=$(jq -n \
@@ -181,6 +199,7 @@ show_welcome_message() {
             send_server_command "$SCREEN_SERVER" "Hello $player_name! Welcome to the server. Type !help to check available commands."
         } || {
             local last_greeting_time=$(echo "$player_data" | jq -r '.last_greeting_time // 0')
+            last_greeting_time=${last_greeting_time:-0}
             [ $((current_time - last_greeting_time)) -ge 600 ] && {
                 send_server_command "$SCREEN_SERVER" "Welcome back $player_name! Type !help to see available commands."
                 local updates=$(jq -n --argjson time "$current_time" '{last_greeting_time: $time}')
@@ -425,6 +444,7 @@ server_sent_welcome_recently() {
     local current_time=$(date +%s)
     local player_data=$(get_player_info "$player_name")
     local last_welcome_time=$(echo "$player_data" | jq -r '.last_welcome_time // 0')
+    last_welcome_time=${last_welcome_time:-0}
     
     [ "$last_welcome_time" -gt 0 ] && [ $((current_time - last_welcome_time)) -le 30 ] && return 0
     
