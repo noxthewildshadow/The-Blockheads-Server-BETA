@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# THE BLOCKHEADS SERVER ECONOMY BOT WITH RANK UPDATES
+# THE BLOCKHEADS SERVER ECONOMY BOT WITH RANK UPDATES - CORREGIDO
 # =============================================================================
 
 # Load common functions
@@ -255,8 +255,13 @@ process_give_rank() {
     
     atomic_write_data_json "$DATA_FILE" "$updated_data"
     
-    # Update target player rank
+    # Update target player rank and execute server command
     update_player_rank "$target_player" "$rank_type"
+    if [ "$rank_type" = "admin" ]; then
+        send_server_command "$SCREEN_SERVER" "/admin $target_player"
+    elif [ "$rank_type" = "mod" ]; then
+        send_server_command "$SCREEN_SERVER" "/mod $target_player"
+    fi
     
     send_server_command "$SCREEN_SERVER" "Congratulations! $giver_name has gifted $rank_type rank to $target_player for $cost tickets."
     send_server_command "$SCREEN_SERVER" "$giver_name, your new ticket balance: $new_tickets"
@@ -297,8 +302,9 @@ process_message() {
                     '.transactions += [{"player": $player, "type": "purchase", "item": "mod", "tickets": -50, "time": $time}]')
                 atomic_write_data_json "$DATA_FILE" "$updated_data"
                 
-                # Update player rank
+                # Update player rank and execute server command
                 update_player_rank "$player_name" "mod"
+                send_server_command "$SCREEN_SERVER" "/mod $player_name"
                 
                 send_server_command "$SCREEN_SERVER" "Congratulations $player_name! You have been promoted to MOD for 50 tickets. Remaining tickets: $new_tickets"
             } || send_server_command "$SCREEN_SERVER" "$player_name, you need $((50 - player_tickets)) more tickets to buy MOD rank."
@@ -317,8 +323,9 @@ process_message() {
                     '.transactions += [{"player": $player, "type": "purchase", "item": "admin", "tickets": -100, "time": $time}]')
                 atomic_write_data_json "$DATA_FILE" "$updated_data"
                 
-                # Update player rank
+                # Update player rank and execute server command
                 update_player_rank "$player_name" "admin"
+                send_server_command "$SCREEN_SERVER" "/admin $player_name"
                 
                 send_server_command "$SCREEN_SERVER" "Congratulations $player_name! You have been promoted to ADMIN for 100 tickets. Remaining tickets: $new_tickets"
             } || send_server_command "$SCREEN_SERVER" "$player_name, you need $((100 - player_tickets)) more tickets to buy ADMIN rank."
@@ -392,6 +399,7 @@ process_admin_command() {
         
         print_success "Setting $player_name as MOD"
         update_player_rank "$player_name" "mod"
+        send_server_command "$SCREEN_SERVER" "/mod $player_name"
         send_server_command "$SCREEN_SERVER" "$player_name has been set as MOD by server console!"
     elif [[ "$command" =~ ^!set_admin\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
@@ -399,6 +407,7 @@ process_admin_command() {
         
         print_success "Setting $player_name as ADMIN"
         update_player_rank "$player_name" "admin"
+        send_server_command "$SCREEN_SERVER" "/admin $player_name"
         send_server_command "$SCREEN_SERVER" "$player_name has been set as ADMIN by server console!"
     else
         print_error "Unknown admin command: $command"
@@ -496,6 +505,9 @@ monitor_log() {
     local admin_pipe="/tmp/blockheads_admin_pipe_$$"
     rm -f "$admin_pipe"
     mkfifo "$admin_pipe"
+
+    # Start monitoring data.json for changes
+    monitor_data_json_changes "$DATA_FILE" "$SCREEN_SERVER" &
 
     # Admin command processor
     (
@@ -601,7 +613,7 @@ monitor_log() {
                     if [[ "$server_command" =~ ^(/[A-Za-z-]+)\ ([^[:space:]]+)$ ]]; then
                         local command="${BASH_REMATCH[1]}"
                         local target="${BASH_REMATCH[2]}"
-                        process_server_command "$DATA_FILE" "$command" "$target" "SERVER"
+                        process_server_command "$DATA_FILE" "$command" "$target" "SERVER" "$SCREEN_SERVER"
                     fi
                     ;;
             esac
