@@ -333,7 +333,7 @@ update_user_data() {
     fi
 }
 
-# Function to sync server files from data.json with command execution
+# Function to sync server files from data.json
 sync_server_files() {
     local data_file="$1"
     local log_dir=$(dirname "$data_file")
@@ -345,68 +345,26 @@ sync_server_files() {
     
     local data_content=$(read_json_file "$data_file")
     
-    # Create adminlist.txt and execute admin commands
+    # Create adminlist.txt
     echo "# Usernames in this file will be granted admin privileges" > "${log_dir}/adminlist.txt"
-    local admins=$(echo "$data_content" | jq -r '.users | to_entries[] | select(.value.rank == "admin") | .key')
-    while IFS= read -r admin; do
-        [ -n "$admin" ] && echo "$admin" >> "${log_dir}/adminlist.txt"
-        # Execute admin command if not already admin
-        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/admin $admin$(printf \\r)" 2>/dev/null
-    done <<< "$admins"
+    echo "$data_content" | jq -r '.users | to_entries[] | select(.value.rank == "admin") | .key' >> "${log_dir}/adminlist.txt"
     
-    # Create modlist.txt and execute mod commands
+    # Create modlist.txt
     echo "# Usernames in this file will be granted mod privileges" > "${log_dir}/modlist.txt"
-    local mods=$(echo "$data_content" | jq -r '.users | to_entries[] | select(.value.rank == "mod") | .key')
-    while IFS= read -r mod; do
-        [ -n "$mod" ] && echo "$mod" >> "${log_dir}/modlist.txt"
-        # Execute mod command if not already mod
-        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/mod $mod$(printf \\r)" 2>/dev/null
-    done <<< "$mods"
+    echo "$data_content" | jq -r '.users | to_entries[] | select(.value.rank == "mod") | .key' >> "${log_dir}/modlist.txt"
     
-    # Create blacklist.txt and execute ban commands
+    # Create blacklist.txt
     echo "# Usernames in this file will be banned from the server" > "${log_dir}/blacklist.txt"
-    local blacklisted=$(echo "$data_content" | jq -r '.users | to_entries[] | select(.value.blacklisted == true) | .key')
-    while IFS= read -r banned; do
-        [ -n "$banned" ] && echo "$banned" >> "${log_dir}/blacklist.txt"
-        # Execute ban command if not already banned
-        local ip=$(echo "$data_content" | jq -r --arg user "$banned" '.users[$user].ip_first // empty')
-        if [ -n "$ip" ] && [ "$ip" != "unknown" ]; then
-            screen -S "$SCREEN_SERVER" -p 0 -X stuff "/ban $ip$(printf \\r)" 2>/dev/null
-        else
-            screen -S "$SCREEN_SERVER" -p 0 -X stuff "/ban $banned$(printf \\r)" 2>/dev/null
-        fi
-    done <<< "$blacklisted"
+    echo "$data_content" | jq -r '.users | to_entries[] | select(.value.blacklisted == true) | .key' >> "${log_dir}/blacklist.txt"
     
-    # Create whitelist.txt and execute whitelist commands
+    # Create whitelist.txt
     echo "# Usernames in this file will be allowed to join the server" > "${log_dir}/whitelist.txt"
-    local whitelisted=$(echo "$data_content" | jq -r '.users | to_entries[] | select(.value.whitelisted == true) | .key')
-    while IFS= read -r allowed; do
-        [ -n "$allowed" ] && echo "$allowed" >> "${log_dir}/whitelist.txt"
-        # Execute whitelist command if not already whitelisted
-        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/whitelist $allowed$(printf \\r)" 2>/dev/null
-    done <<< "$whitelisted"
+    echo "$data_content" | jq -r '.users | to_entries[] | select(.value.whitelisted == true) | .key' >> "${log_dir}/whitelist.txt"
     
-    print_success "Synchronized server files and executed commands from data.json"
+    print_success "Synchronized server files from data.json"
 }
 
-# Function to monitor data.json for changes and sync
-monitor_data_changes() {
-    local data_file="$1"
-    local last_modified=$(stat -c %Y "$data_file" 2>/dev/null || stat -f %m "$data_file" 2>/dev/null)
-    
-    while true; do
-        sleep 5
-        local current_modified=$(stat -c %Y "$data_file" 2>/dev/null || stat -f %m "$data_file" 2>/dev/null)
-        
-        if [ "$current_modified" != "$last_modified" ]; then
-            print_status "Detected changes in data.json, synchronizing..."
-            sync_server_files "$data_file"
-            last_modified="$current_modified"
-        fi
-    done
-}
-
-# Enhanced function to process server commands
+# Function to process server commands that modify data.json
 process_server_command() {
     local data_file="$1"
     local command="$2"
@@ -419,65 +377,49 @@ process_server_command() {
     fi
     
     case "$command" in
-        "/KICK")
-            # Kick doesn't change data.json but we'll log it
-            print_status "$issuer executed: $command $target"
-            ;;
         "/BAN"|"/BAN-NO-DEVICE")
             update_user_data "$data_file" "$target" '{"blacklisted": true}'
-            print_success "$issuer banned: $target"
             ;;
         "/UNBAN")
             update_user_data "$data_file" "$target" '{"blacklisted": false}'
-            print_success "$issuer unbanned: $target"
             ;;
         "/WHITELIST")
             update_user_data "$data_file" "$target" '{"whitelisted": true}'
-            print_success "$issuer whitelisted: $target"
             ;;
         "/UNWHITELIST")
             update_user_data "$data_file" "$target" '{"whitelisted": false}'
-            print_success "$issuer unwhitelisted: $target"
             ;;
         "/MOD")
             update_user_data "$data_file" "$target" '{"rank": "mod"}'
-            print_success "$issuer promoted to mod: $target"
             ;;
         "/UNMOD")
             update_user_data "$data_file" "$target" '{"rank": "NONE"}'
-            print_success "$issuer demoted from mod: $target"
             ;;
         "/ADMIN")
             update_user_data "$data_file" "$target" '{"rank": "admin"}'
-            print_success "$issuer promoted to admin: $target"
             ;;
         "/UNADMIN")
             update_user_data "$data_file" "$target" '{"rank": "NONE"}'
-            print_success "$issuer demoted from admin: $target"
             ;;
         "/CLEAR-BLACKLIST")
             local data_content=$(read_json_file "$data_file")
             local updated_data=$(echo "$data_content" | jq '.users |= map_values(.blacklisted = false)')
             atomic_write_data_json "$data_file" "$updated_data"
-            print_success "$issuer cleared blacklist"
             ;;
         "/CLEAR-WHITELIST")
             local data_content=$(read_json_file "$data_file")
             local updated_data=$(echo "$data_content" | jq '.users |= map_values(.whitelisted = false)')
-            atomic_write_data_json "$data_file" "$updated_data"
-            print_success "$issuer cleared whitelist"
+            atomic_write_data_json "$data_FILE" "$updated_data"
             ;;
         "/CLEAR-MODLIST")
             local data_content=$(read_json_file "$data_file")
             local updated_data=$(echo "$data_content" | jq '.users |= map_values(if .rank == "mod" then .rank = "NONE" else . end)')
             atomic_write_data_json "$data_file" "$updated_data"
-            print_success "$issuer cleared modlist"
             ;;
         "/CLEAR-ADMINLIST")
             local data_content=$(read_json_file "$data_file")
             local updated_data=$(echo "$data_content" | jq '.users |= map_values(if .rank == "admin" then .rank = "NONE" else . end)')
             atomic_write_data_json "$data_file" "$updated_data"
-            print_success "$issuer cleared adminlist"
             ;;
         *)
             print_error "Unknown server command: $command"
@@ -488,12 +430,4 @@ process_server_command() {
     # Sync server files after modification
     sync_server_files "$data_file"
     return 0
-}
-
-# Function to find player by IP
-find_player_by_ip() {
-    local ip="$1"
-    local data_file="$2"
-    local data_content=$(read_json_file "$data_file")
-    echo "$data_content" | jq -r --arg ip "$ip" '.users | to_entries[] | select(.value.ip_first == $ip) | .key'
 }
