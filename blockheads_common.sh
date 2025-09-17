@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# BLOCKHEADS COMMON FUNCTIONS LIBRARY
+# BLOCKHEADS COMMON FUNCTIONS LIBRARY - CORREGIDO
 # =============================================================================
 
 # Color codes for output
@@ -148,7 +148,7 @@ find_library() {
 }
 
 # =============================================================================
-# DATA.JSON FUNCTIONS
+# DATA.JSON FUNCTIONS - CORREGIDAS
 # =============================================================================
 
 # Function to initialize data.json
@@ -370,6 +370,7 @@ process_server_command() {
     local command="$2"
     local target="$3"
     local issuer="$4"
+    local screen_session="$5"
     
     if ! validate_data_json "$data_file"; then
         print_error "data.json validation failed in process_server_command"
@@ -379,27 +380,44 @@ process_server_command() {
     case "$command" in
         "/BAN"|"/BAN-NO-DEVICE")
             update_user_data "$data_file" "$target" '{"blacklisted": true}'
+            # Ejecutar comando de ban en el servidor
+            send_server_command "$screen_session" "/ban $target"
+            send_server_command "$screen_session" "/kick $target"
             ;;
         "/UNBAN")
             update_user_data "$data_file" "$target" '{"blacklisted": false}'
+            # Ejecutar comando de unban en el servidor
+            send_server_command "$screen_session" "/unban $target"
             ;;
         "/WHITELIST")
             update_user_data "$data_file" "$target" '{"whitelisted": true}'
+            # Ejecutar comando de whitelist en el servidor
+            send_server_command "$screen_session" "/whitelist $target"
             ;;
         "/UNWHITELIST")
             update_user_data "$data_file" "$target" '{"whitelisted": false}'
+            # Ejecutar comando de unwhitelist en el servidor
+            send_server_command "$screen_session" "/unwhitelist $target"
             ;;
         "/MOD")
             update_user_data "$data_file" "$target" '{"rank": "mod"}'
+            # Ejecutar comando de mod en el servidor
+            send_server_command "$screen_session" "/mod $target"
             ;;
         "/UNMOD")
             update_user_data "$data_file" "$target" '{"rank": "NONE"}'
+            # Ejecutar comando de unmod en el servidor
+            send_server_command "$screen_session" "/unmod $target"
             ;;
         "/ADMIN")
             update_user_data "$data_file" "$target" '{"rank": "admin"}'
+            # Ejecutar comando de admin en el servidor
+            send_server_command "$screen_session" "/admin $target"
             ;;
         "/UNADMIN")
             update_user_data "$data_file" "$target" '{"rank": "NONE"}'
+            # Ejecutar comando de unadmin en el servidor
+            send_server_command "$screen_session" "/unadmin $target"
             ;;
         "/CLEAR-BLACKLIST")
             local data_content=$(read_json_file "$data_file")
@@ -409,7 +427,7 @@ process_server_command() {
         "/CLEAR-WHITELIST")
             local data_content=$(read_json_file "$data_file")
             local updated_data=$(echo "$data_content" | jq '.users |= map_values(.whitelisted = false)')
-            atomic_write_data_json "$data_file" "$updated_data"
+            atomic_write_data_json "$data_FILE" "$updated_data"
             ;;
         "/CLEAR-MODLIST")
             local data_content=$(read_json_file "$data_file")
@@ -430,4 +448,60 @@ process_server_command() {
     # Sync server files after modification
     sync_server_files "$data_file"
     return 0
+}
+
+# Function to monitor data.json for changes and apply them
+monitor_data_json_changes() {
+    local data_file="$1"
+    local screen_session="$2"
+    local last_hash=$(sha256sum "$data_file" | cut -d' ' -f1)
+    
+    while true; do
+        sleep 5
+        local current_hash=$(sha256sum "$data_file" | cut -d' ' -f1)
+        
+        if [ "$current_hash" != "$last_hash" ]; then
+            print_status "Detected changes in data.json, applying to server..."
+            last_hash="$current_hash"
+            
+            # Read the current data
+            local data_content=$(read_json_file "$data_file")
+            
+            # Process each user
+            echo "$data_content" | jq -r '.users | keys[]' | while read -r username; do
+                local user_data=$(echo "$data_content" | jq -r --arg user "$username" '.users[$user]')
+                local blacklisted=$(echo "$user_data" | jq -r '.blacklisted // false')
+                local whitelisted=$(echo "$user_data" | jq -r '.whitelisted // false')
+                local rank=$(echo "$user_data" | jq -r '.rank // "NONE"')
+                
+                # Apply blacklist changes
+                if [ "$blacklisted" = "true" ]; then
+                    send_server_command "$screen_session" "/ban $username"
+                    send_server_command "$screen_session" "/kick $username"
+                else
+                    send_server_command "$screen_session" "/unban $username"
+                fi
+                
+                # Apply whitelist changes
+                if [ "$whitelisted" = "true" ]; then
+                    send_server_command "$screen_session" "/whitelist $username"
+                else
+                    send_server_command "$screen_session" "/unwhitelist $username"
+                fi
+                
+                # Apply rank changes
+                if [ "$rank" = "admin" ]; then
+                    send_server_command "$screen_session" "/admin $username"
+                elif [ "$rank" = "mod" ]; then
+                    send_server_command "$screen_session" "/mod $username"
+                else
+                    send_server_command "$screen_session" "/unadmin $username"
+                    send_server_command "$screen_session" "/unmod $username"
+                fi
+            done
+            
+            # Sync server files
+            sync_server_files "$data_file"
+        fi
+    done
 }
