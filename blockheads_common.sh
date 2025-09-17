@@ -409,7 +409,7 @@ process_server_command() {
         "/CLEAR-WHITELIST")
             local data_content=$(read_json_file "$data_file")
             local updated_data=$(echo "$data_content" | jq '.users |= map_values(.whitelisted = false)')
-            atomic_write_data_json "$data_FILE" "$updated_data"
+            atomic_write_data_json "$data_file" "$updated_data"
             ;;
         "/CLEAR-MODLIST")
             local data_content=$(read_json_file "$data_file")
