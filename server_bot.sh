@@ -102,13 +102,14 @@ add_player_if_new() {
     
     if [ -z "$player_data" ] || [ "$player_data" = "{}" ]; then
         local rank=$(get_player_rank "$player_name")
+        # Create the updates JSON using jq with proper variable passing
         local updates=$(jq -n \
-            --arg user "$player_name" \
+            --arg username "$player_name" \
             --arg ip "$player_ip" \
             --arg rank "$rank" \
             --arg password "NONE" \
             '{
-                username: $user,
+                username: $username,
                 ip_first: $ip,
                 password: $password,
                 rank: $rank,
