@@ -640,13 +640,41 @@ cleanup() {
     exit 0
 }
 
+# Function to monitor data.json for changes and sync
+monitor_data_changes() {
+    local data_file="$1"
+    local last_modified=$(stat -c %Y "$data_file" 2>/dev/null || stat -f %m "$data_file" 2>/dev/null)
+    
+    while true; do
+        sleep 5
+        local current_modified=$(stat -c %Y "$data_file" 2>/dev/null || stat -f %m "$data_file" 2>/dev/null)
+        
+        if [ "$current_modified" != "$last_modified" ]; then
+            print_status "Detected changes in data.json, synchronizing..."
+            sync_server_files "$data_file"
+            last_modified="$current_modified"
+        fi
+    done
+}
+
+# Function to find player by IP
+find_player_by_ip() {
+    local ip="$1"
+    local data_content=$(read_json_file "$DATA_FILE")
+    echo "$data_content" | jq -r --arg ip "$ip" '.users | to_entries[] | select(.value.ip_first == $ip) | .key'
+}
+
 # Function to monitor log
 monitor_log() {
     local log_file="$1"
     LOG_FILE="$log_file"
     initialize_data
     
-    trap cleanup EXIT INT TERM
+    # Start monitoring data.json for changes
+    monitor_data_changes "$DATA_FILE" &
+    local monitor_pid=$!
+    
+    trap "kill $monitor_pid 2>/dev/null; cleanup" EXIT INT TERM
     
     print_header "STARTING ANTICHEAT SECURITY SYSTEM WITH IP VERIFICATION"
     print_status "Monitoring: $log_file"
@@ -664,6 +692,7 @@ monitor_log() {
     
     if [ ! -f "$log_file" ]; then
         print_error "Log file never appeared: $log_file"
+        kill $monitor_pid 2>/dev/null
         exit 1
     fi
     
@@ -815,6 +844,32 @@ monitor_log() {
                     check_dangerous_activity "$player_name" "$message"
                     ;;
             esac
+        fi
+
+        # Detect ban commands from console
+        if [[ "$line" =~ SERVER:\ /ban\ ([^[:space:]]+) ]]; then
+            local target="${BASH_REMATCH[1]}"
+            # Check if target is an IP address or username
+            if [[ "$target" =~ ^[0-9a-fA-F.:]+$ ]]; then
+                # It's an IP address, find the username
+                local player_name=$(find_player_by_ip "$target")
+                if [ -n "$player_name" ]; then
+                    process_server_command "$DATA_FILE" "/BAN" "$player_name" "SERVER"
+                else
+                    # IP not associated with any player, add to blacklist directly
+                    print_warning "Banning IP address: $target"
+                    # This IP will be added to blacklist.txt during sync
+                fi
+            else
+                # It's a username
+                process_server_command "$DATA_FILE" "/BAN" "$target" "SERVER"
+            fi
+        fi
+        
+        # Detect unban commands from console
+        if [[ "$line" =~ SERVER:\ /unban\ ([^[:space:]]+) ]]; then
+            local target="${BASH_REMATCH[1]}"
+            process_server_command "$DATA_FILE" "/UNBAN" "$target" "SERVER"
         fi
 
         # Process server console commands
