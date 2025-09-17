@@ -287,15 +287,14 @@ handle_password_creation() {
     fi
 
     # Actualizar contraseña
-    local updates=$(jq -n \
-        --arg ip "$player_ip" \
-        --arg password "$password" \
-        '{
-            ip_first: (if .ip_first == "" or .ip_first == "unknown" then $ip else .ip_first end),
-            password: $password
-        }')
-    
-    update_user_data "$DATA_FILE" "$player_name" "$updates"
+    if [ -n "$player_data" ] && [ "$player_data" != "{}" ]; then
+        local registered_ip=$(echo "$player_data" | jq -r '.ip_first // "unknown"')
+        local registered_rank=$(echo "$player_data" | jq -r '.rank // "NONE"')
+        update_player_info "$player_name" "$registered_ip" "$registered_rank" "$password"
+    else
+        local rank=$(get_player_rank "$player_name")
+        update_player_info "$player_name" "$player_ip" "$rank" "$password"
+    fi
 
     schedule_clear_and_messages "SUCCESS: $player_name, your IP password has been set successfully." "You can now use !ip_change YOUR_PASSWORD if your IP changes."
     return 0
@@ -417,11 +416,12 @@ check_username_theft() {
         # New player - add to data.json with no password
         local rank=$(get_player_rank "$player_name")
         local updates=$(jq -n \
+            --arg username "$player_name" \
             --arg ip "$player_ip" \
             --arg rank "$rank" \
             --arg password "NONE" \
             '{
-                username: $user,
+                username: $username,
                 ip_first: $ip,
                 password: $password,
                 rank: $rank,
