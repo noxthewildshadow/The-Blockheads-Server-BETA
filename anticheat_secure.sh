@@ -140,7 +140,7 @@ clear_admin_offenses() {
     local admin_name="$1"
     local offenses_data=$(read_json_file "$ADMIN_OFFENSES_FILE" 2>/dev/null || echo '{}')
     offenses_data=$(echo "$offenses_data" | jq --arg admin "$admin_name" 'del(.[$admin])')
-    write_json_file "$ADMIN_OFFENSES_FILE" "$offenses_data"
+    write_json_file "$ADMIN_OFFENSES_FILE" "$offsets_data"
 }
 
 # Function to remove from list file
@@ -191,7 +191,7 @@ get_player_info() {
                 echo "$ip|$rank|$password"
                 return 0
             fi
-        done < <(grep -F -i "^$player_name|" "$PLAYERS_LOG")
+        done < <(grep -i "^$player_name|" "$PLAYERS_LOG")
     fi
     echo ""
 }
