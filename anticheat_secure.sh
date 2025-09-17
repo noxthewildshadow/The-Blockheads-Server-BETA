@@ -152,7 +152,11 @@ is_player_in_list() {
 get_player_rank() {
     local player_name="$1"
     local player_data=$(get_player_info "$player_name")
-    echo "$player_data" | jq -r '.rank // "NONE"'
+    if [ -z "$player_data" ] || [ "$player_data" = "{}" ]; then
+        echo "NONE"
+    else
+        echo "$player_data" | jq -r '.rank // "NONE"'
+    fi
 }
 
 # Function to get IP by name
@@ -293,7 +297,17 @@ handle_password_creation() {
         update_player_info "$player_name" "$registered_ip" "$registered_rank" "$password"
     else
         local rank=$(get_player_rank "$player_name")
-        update_player_info "$player_name" "$player_ip" "$rank" "$password"
+        local updates=$(jq -n \
+            --arg ip "$player_ip" \
+            --arg rank "$rank" \
+            --arg password "$password" \
+            '{
+                ip_first: $ip,
+                rank: $rank,
+                password: $password
+            }')
+        
+        update_user_data "$DATA_FILE" "$player_name" "$updates"
     fi
 
     schedule_clear_and_messages "SUCCESS: $player_name, your IP password has been set successfully." "You can now use !ip_change YOUR_PASSWORD if your IP changes."
@@ -322,7 +336,6 @@ handle_password_change() {
     
     # Verificar intentos de cambio de contraseña
     local current_time=$(date +%s)
-    local player_data=$(get_player_info "$player_name")
     local current_attempts=$(echo "$player_data" | jq -r '.password_change_attempts // 0')
     local last_attempt_time=$(echo "$player_data" | jq -r '.last_password_change_attempt // 0')
     
@@ -416,21 +429,13 @@ check_username_theft() {
         # New player - add to data.json with no password
         local rank=$(get_player_rank "$player_name")
         local updates=$(jq -n \
-            --arg username "$player_name" \
             --arg ip "$player_ip" \
             --arg rank "$rank" \
             --arg password "NONE" \
             '{
-                username: $username,
                 ip_first: $ip,
                 password: $password,
-                rank: $rank,
-                blacklisted: false,
-                whitelisted: false,
-                economy: 0,
-                ip_change_attempts: 0,
-                password_change_attempts: 0,
-                admin_offenses: 0
+                rank: $rank
             }')
         
         update_user_data "$DATA_FILE" "$player_name" "$updates"
@@ -640,41 +645,13 @@ cleanup() {
     exit 0
 }
 
-# Function to monitor data.json for changes and sync
-monitor_data_changes() {
-    local data_file="$1"
-    local last_modified=$(stat -c %Y "$data_file" 2>/dev/null || stat -f %m "$data_file" 2>/dev/null)
-    
-    while true; do
-        sleep 5
-        local current_modified=$(stat -c %Y "$data_file" 2>/dev/null || stat -f %m "$data_file" 2>/dev/null)
-        
-        if [ "$current_modified" != "$last_modified" ]; then
-            print_status "Detected changes in data.json, synchronizing..."
-            sync_server_files "$data_file"
-            last_modified="$current_modified"
-        fi
-    done
-}
-
-# Function to find player by IP
-find_player_by_ip() {
-    local ip="$1"
-    local data_content=$(read_json_file "$DATA_FILE")
-    echo "$data_content" | jq -r --arg ip "$ip" '.users | to_entries[] | select(.value.ip_first == $ip) | .key'
-}
-
 # Function to monitor log
 monitor_log() {
     local log_file="$1"
     LOG_FILE="$log_file"
     initialize_data
     
-    # Start monitoring data.json for changes
-    monitor_data_changes "$DATA_FILE" &
-    local monitor_pid=$!
-    
-    trap "kill $monitor_pid 2>/dev/null; cleanup" EXIT INT TERM
+    trap cleanup EXIT INT TERM
     
     print_header "STARTING ANTICHEAT SECURITY SYSTEM WITH IP VERIFICATION"
     print_status "Monitoring: $log_file"
@@ -692,7 +669,6 @@ monitor_log() {
     
     if [ ! -f "$log_file" ]; then
         print_error "Log file never appeared: $log_file"
-        kill $monitor_pid 2>/dev/null
         exit 1
     fi
     
@@ -844,32 +820,6 @@ monitor_log() {
                     check_dangerous_activity "$player_name" "$message"
                     ;;
             esac
-        fi
-
-        # Detect ban commands from console
-        if [[ "$line" =~ SERVER:\ /ban\ ([^[:space:]]+) ]]; then
-            local target="${BASH_REMATCH[1]}"
-            # Check if target is an IP address or username
-            if [[ "$target" =~ ^[0-9a-fA-F.:]+$ ]]; then
-                # It's an IP address, find the username
-                local player_name=$(find_player_by_ip "$target")
-                if [ -n "$player_name" ]; then
-                    process_server_command "$DATA_FILE" "/BAN" "$player_name" "SERVER"
-                else
-                    # IP not associated with any player, add to blacklist directly
-                    print_warning "Banning IP address: $target"
-                    # This IP will be added to blacklist.txt during sync
-                fi
-            else
-                # It's a username
-                process_server_command "$DATA_FILE" "/BAN" "$target" "SERVER"
-            fi
-        fi
-        
-        # Detect unban commands from console
-        if [[ "$line" =~ SERVER:\ /unban\ ([^[:space:]]+) ]]; then
-            local target="${BASH_REMATCH[1]}"
-            process_server_command "$DATA_FILE" "/UNBAN" "$target" "SERVER"
         fi
 
         # Process server console commands
