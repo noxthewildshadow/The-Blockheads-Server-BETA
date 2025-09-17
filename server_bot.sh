@@ -102,7 +102,6 @@ add_player_if_new() {
     
     if [ -z "$player_data" ] || [ "$player_data" = "{}" ]; then
         local rank=$(get_player_rank "$player_name")
-        # Create the updates JSON using jq with proper variable passing
         local updates=$(jq -n \
             --arg username "$player_name" \
             --arg ip "$player_ip" \
@@ -264,8 +263,9 @@ process_give_rank() {
     
     atomic_write_data_json "$DATA_FILE" "$updated_data"
     
-    # Update target player rank
+    # Update target player rank and execute server command
     update_player_rank "$target_player" "$rank_type"
+    screen -S "$SCREEN_SERVER" -p 0 -X stuff "/$rank_type $target_player$(printf \\r)"
     
     send_server_command "$SCREEN_SERVER" "Congratulations! $giver_name has gifted $rank_type rank to $target_player for $cost tickets."
     send_server_command "$SCREEN_SERVER" "$giver_name, your new ticket balance: $new_tickets"
@@ -306,8 +306,9 @@ process_message() {
                     '.transactions += [{"player": $player, "type": "purchase", "item": "mod", "tickets": -50, "time": $time}]')
                 atomic_write_data_json "$DATA_FILE" "$updated_data"
                 
-                # Update player rank
+                # Update player rank and execute server command
                 update_player_rank "$player_name" "mod"
+                screen -S "$SCREEN_SERVER" -p 0 -X stuff "/mod $player_name$(printf \\r)"
                 
                 send_server_command "$SCREEN_SERVER" "Congratulations $player_name! You have been promoted to MOD for 50 tickets. Remaining tickets: $new_tickets"
             } || send_server_command "$SCREEN_SERVER" "$player_name, you need $((50 - player_tickets)) more tickets to buy MOD rank."
@@ -326,8 +327,9 @@ process_message() {
                     '.transactions += [{"player": $player, "type": "purchase", "item": "admin", "tickets": -100, "time": $time}]')
                 atomic_write_data_json "$DATA_FILE" "$updated_data"
                 
-                # Update player rank
+                # Update player rank and execute server command
                 update_player_rank "$player_name" "admin"
+                screen -S "$SCREEN_SERVER" -p 0 -X stuff "/admin $player_name$(printf \\r)"
                 
                 send_server_command "$SCREEN_SERVER" "Congratulations $player_name! You have been promoted to ADMIN for 100 tickets. Remaining tickets: $new_tickets"
             } || send_server_command "$SCREEN_SERVER" "$player_name, you need $((100 - player_tickets)) more tickets to buy ADMIN rank."
@@ -401,6 +403,7 @@ process_admin_command() {
         
         print_success "Setting $player_name as MOD"
         update_player_rank "$player_name" "mod"
+        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/mod $player_name$(printf \\r)"
         send_server_command "$SCREEN_SERVER" "$player_name has been set as MOD by server console!"
     elif [[ "$command" =~ ^!set_admin\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
@@ -408,6 +411,7 @@ process_admin_command() {
         
         print_success "Setting $player_name as ADMIN"
         update_player_rank "$player_name" "admin"
+        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/admin $player_name$(printf \\r)"
         send_server_command "$SCREEN_SERVER" "$player_name has been set as ADMIN by server console!"
     else
         print_error "Unknown admin command: $command"
@@ -487,6 +491,23 @@ cleanup() {
     exit 0
 }
 
+# Function to monitor data.json for changes and sync
+monitor_data_changes() {
+    local data_file="$1"
+    local last_modified=$(stat -c %Y "$data_file" 2>/dev/null || stat -f %m "$data_file" 2>/dev/null)
+    
+    while true; do
+        sleep 5
+        local current_modified=$(stat -c %Y "$data_file" 2>/dev/null || stat -f %m "$data_file" 2>/dev/null)
+        
+        if [ "$current_modified" != "$last_modified" ]; then
+            print_status "Detected changes in data.json, synchronizing..."
+            sync_server_files "$data_file"
+            last_modified="$current_modified"
+        fi
+    done
+}
+
 # Function to monitor log
 monitor_log() {
     local log_file="$1"
@@ -494,7 +515,11 @@ monitor_log() {
 
     initialize_economy
 
-    trap cleanup EXIT INT TERM
+    # Start monitoring data.json for changes
+    monitor_data_changes "$DATA_FILE" &
+    local monitor_pid=$!
+
+    trap "kill $monitor_pid 2>/dev/null; cleanup" EXIT INT TERM
 
     print_header "STARTING ECONOMY BOT"
     print_status "Monitoring: $log_file"
@@ -573,7 +598,7 @@ monitor_log() {
             [ "$player_name" == "SERVER" ] && continue
             
             ! is_valid_player_name "$player_name" && {
-                print_warning "Skipping invalid player name: '$player_name'"
+                print_warning "Skipping invalid player name: '$player_name"
                 continue
             }
             
@@ -588,7 +613,7 @@ monitor_log() {
             [ "$player_name" == "SERVER" ] && continue
             
             ! is_valid_player_name "$player_name" && {
-                print_warning "Skipping message from invalid player name: '$player_name'"
+                print_warning "Skipping message from invalid player name: '$player_name"
                 continue
             }
             
