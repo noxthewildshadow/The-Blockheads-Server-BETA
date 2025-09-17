@@ -146,3 +146,288 @@ find_library() {
     [ -z "$LIBRARY" ] && return 1
     printf '%s' "$LIBRARY"
 }
+
+# =============================================================================
+# DATA.JSON FUNCTIONS
+# =============================================================================
+
+# Function to initialize data.json
+initialize_data_json() {
+    local data_file="$1"
+    if [ ! -f "$data_file" ]; then
+        echo '{"users": {}}' > "$data_file"
+        print_success "Created new data.json file"
+    fi
+}
+
+# Function to validate data.json schema
+validate_data_json() {
+    local data_file="$1"
+    local temp_data
+    
+    # Check if file exists and is valid JSON
+    if [ ! -f "$data_file" ]; then
+        print_error "data.json does not exist"
+        return 1
+    fi
+    
+    if ! temp_data=$(read_json_file "$data_file"); then
+        print_error "Failed to read data.json"
+        return 1
+    fi
+    
+    if ! jq -e . >/dev/null 2>&1 <<<"$temp_data"; then
+        print_error "data.json contains invalid JSON"
+        return 1
+    fi
+    
+    # Check if users object exists
+    if ! jq -e '.users' >/dev/null 2>&1 <<<"$temp_data"; then
+        print_error "data.json missing users object"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Function to restore from backup
+restore_from_backup() {
+    local data_file="$1"
+    local backup_file
+    
+    for i in {1..3}; do
+        backup_file="${data_file}.bak.$i"
+        if [ -f "$backup_file" ] && validate_data_json "$backup_file"; then
+            cp "$backup_file" "$data_file"
+            print_success "Restored data.json from backup: $backup_file"
+            return 0
+        fi
+    done
+    
+    print_error "No valid backup found, creating new data.json"
+    echo '{"users": {}}' > "$data_file"
+    return 1
+}
+
+# Function to rotate backups
+rotate_backups() {
+    local data_file="$1"
+    
+    # Remove oldest backup
+    rm -f "${data_file}.bak.3" 2>/dev/null
+    
+    # Rotate backups
+    for i in {2..1}; do
+        if [ -f "${data_file}.bak.$i" ]; then
+            mv "${data_file}.bak.$i" "${data_file}.bak.$((i+1))"
+        fi
+    done
+    
+    # Create new backup
+    if [ -f "$data_file" ]; then
+        cp "$data_file" "${data_file}.bak.1"
+    fi
+}
+
+# Function to atomically write data.json
+atomic_write_data_json() {
+    local data_file="$1"
+    local content="$2"
+    local temp_file="${data_file}.tmp.$$"
+    
+    # Validate JSON before writing
+    if ! jq -e . >/dev/null 2>&1 <<<"$content"; then
+        print_error "Invalid JSON content, aborting write"
+        return 1
+    fi
+    
+    # Write to temporary file
+    echo "$content" > "$temp_file"
+    
+    # Validate the written file
+    if ! jq -e . >/dev/null 2>&1 <"$temp_file"; then
+        print_error "Temporary file contains invalid JSON"
+        rm -f "$temp_file"
+        return 1
+    fi
+    
+    # Rotate backups
+    rotate_backups "$data_file"
+    
+    # Atomically replace the file
+    if mv "$temp_file" "$data_file"; then
+        print_success "Successfully updated data.json"
+        return 0
+    else
+        print_error "Failed to replace data.json, restoring from backup"
+        rm -f "$temp_file"
+        restore_from_backup "$data_file"
+        return 1
+    fi
+}
+
+# Function to get user from data.json
+get_user_data() {
+    local data_file="$1"
+    local username="$2"
+    
+    if ! validate_data_json "$data_file"; then
+        print_error "data.json validation failed in get_user_data"
+        echo "{}"
+        return 1
+    fi
+    
+    local data_content=$(read_json_file "$data_file")
+    local user_data=$(echo "$data_content" | jq -r --arg user "$username" '.users[$user] // {}')
+    echo "$user_data"
+}
+
+# Function to update user in data.json
+update_user_data() {
+    local data_file="$1"
+    local username="$2"
+    local updates="$3"
+    
+    if ! validate_data_json "$data_file"; then
+        print_error "data.json validation failed in update_user_data"
+        return 1
+    fi
+    
+    local data_content=$(read_json_file "$data_file")
+    local updated_data
+    
+    # Check if user exists
+    local user_exists=$(echo "$data_content" | jq -r --arg user "$username" '.users | has($user)')
+    
+    if [ "$user_exists" = "true" ]; then
+        # Update existing user
+        updated_data=$(echo "$data_content" | jq --arg user "$username" --argjson updates "$updates" \
+            '.users[$user] = (.users[$user] + $updates)')
+    else
+        # Create new user with default values
+        local new_user=$(echo '{
+            "username": "",
+            "ip_first": "",
+            "password": "NONE",
+            "rank": "NONE",
+            "blacklisted": false,
+            "whitelisted": false,
+            "economy": 0,
+            "ip_change_attempts": 0,
+            "password_change_attempts": 0,
+            "admin_offenses": 0
+        }' | jq --arg user "$username" --argjson updates "$updates" \
+            '.username = $user | . + $updates')
+        
+        updated_data=$(echo "$data_content" | jq --arg user "$username" --argjson new_user "$new_user" \
+            '.users[$user] = $new_user')
+    fi
+    
+    # Atomically write the updated data
+    if atomic_write_data_json "$data_file" "$updated_data"; then
+        print_success "Updated user $username in data.json"
+        return 0
+    else
+        print_error "Failed to update user $username in data.json"
+        return 1
+    fi
+}
+
+# Function to sync server files from data.json
+sync_server_files() {
+    local data_file="$1"
+    local log_dir=$(dirname "$data_file")
+    
+    if ! validate_data_json "$data_file"; then
+        print_error "data.json validation failed in sync_server_files"
+        return 1
+    fi
+    
+    local data_content=$(read_json_file "$data_file")
+    
+    # Create adminlist.txt
+    echo "# Usernames in this file will be granted admin privileges" > "${log_dir}/adminlist.txt"
+    echo "$data_content" | jq -r '.users | to_entries[] | select(.value.rank == "admin") | .key' >> "${log_dir}/adminlist.txt"
+    
+    # Create modlist.txt
+    echo "# Usernames in this file will be granted mod privileges" > "${log_dir}/modlist.txt"
+    echo "$data_content" | jq -r '.users | to_entries[] | select(.value.rank == "mod") | .key' >> "${log_dir}/modlist.txt"
+    
+    # Create blacklist.txt
+    echo "# Usernames in this file will be banned from the server" > "${log_dir}/blacklist.txt"
+    echo "$data_content" | jq -r '.users | to_entries[] | select(.value.blacklisted == true) | .key' >> "${log_dir}/blacklist.txt"
+    
+    # Create whitelist.txt
+    echo "# Usernames in this file will be allowed to join the server" > "${log_dir}/whitelist.txt"
+    echo "$data_content" | jq -r '.users | to_entries[] | select(.value.whitelisted == true) | .key' >> "${log_dir}/whitelist.txt"
+    
+    print_success "Synchronized server files from data.json"
+}
+
+# Function to process server commands that modify data.json
+process_server_command() {
+    local data_file="$1"
+    local command="$2"
+    local target="$3"
+    local issuer="$4"
+    
+    if ! validate_data_json "$data_file"; then
+        print_error "data.json validation failed in process_server_command"
+        return 1
+    fi
+    
+    case "$command" in
+        "/BAN"|"/BAN-NO-DEVICE")
+            update_user_data "$data_file" "$target" '{"blacklisted": true}'
+            ;;
+        "/UNBAN")
+            update_user_data "$data_file" "$target" '{"blacklisted": false}'
+            ;;
+        "/WHITELIST")
+            update_user_data "$data_file" "$target" '{"whitelisted": true}'
+            ;;
+        "/UNWHITELIST")
+            update_user_data "$data_file" "$target" '{"whitelisted": false}'
+            ;;
+        "/MOD")
+            update_user_data "$data_file" "$target" '{"rank": "mod"}'
+            ;;
+        "/UNMOD")
+            update_user_data "$data_file" "$target" '{"rank": "NONE"}'
+            ;;
+        "/ADMIN")
+            update_user_data "$data_file" "$target" '{"rank": "admin"}'
+            ;;
+        "/UNADMIN")
+            update_user_data "$data_file" "$target" '{"rank": "NONE"}'
+            ;;
+        "/CLEAR-BLACKLIST")
+            local data_content=$(read_json_file "$data_file")
+            local updated_data=$(echo "$data_content" | jq '.users |= map_values(.blacklisted = false)')
+            atomic_write_data_json "$data_file" "$updated_data"
+            ;;
+        "/CLEAR-WHITELIST")
+            local data_content=$(read_json_file "$data_file")
+            local updated_data=$(echo "$data_content" | jq '.users |= map_values(.whitelisted = false)')
+            atomic_write_data_json "$data_file" "$updated_data"
+            ;;
+        "/CLEAR-MODLIST")
+            local data_content=$(read_json_file "$data_file")
+            local updated_data=$(echo "$data_content" | jq '.users |= map_values(if .rank == "mod" then .rank = "NONE" else . end)')
+            atomic_write_data_json "$data_file" "$updated_data"
+            ;;
+        "/CLEAR-ADMINLIST")
+            local data_content=$(read_json_file "$data_file")
+            local updated_data=$(echo "$data_content" | jq '.users |= map_values(if .rank == "admin" then .rank = "NONE" else . end)')
+            atomic_write_data_json "$data_file" "$updated_data"
+            ;;
+        *)
+            print_error "Unknown server command: $command"
+            return 1
+            ;;
+    esac
+    
+    # Sync server files after modification
+    sync_server_files "$data_file"
+    return 0
+}
