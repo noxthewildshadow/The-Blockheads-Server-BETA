@@ -17,6 +17,8 @@ fi
 LOG_DIR=$(dirname "$1")
 ECONOMY_FILE="$LOG_DIR/economy_data_$PORT.json"
 SCREEN_SERVER="blockheads_server_$PORT"
+AUTHORIZED_ADMINS_FILE="$LOG_DIR/authorized_admins.txt"
+AUTHORIZED_MODS_FILE="$LOG_DIR/authorized_mods.txt"
 PLAYERS_LOG="$LOG_DIR/players.log"
 
 # Function to initialize economy
@@ -33,13 +35,13 @@ is_player_in_list() {
 
 # Function to update player info in players.log
 update_player_info() {
-    local player_name="$1" first_ip="$2" current_ip="$3" password="$4" rank="$5" whitelisted="${6:-NO}" blacklisted="${7:-NO}"
+    local player_name="$1" player_ip="$2" player_rank="$3" player_password="$4"
     if [ -f "$PLAYERS_LOG" ]; then
         # Remove existing entry
         sed -i "/^$player_name|/Id" "$PLAYERS_LOG"
         # Add new entry
-        echo "$player_name|$first_ip|$current_ip|$password|$rank|$whitelisted|$blacklisted" >> "$PLAYERS_LOG"
-        print_success "Updated player info in registry: $player_name -> First IP: $first_ip, Current IP: $current_ip, Password: $password, Rank: $rank, Whitelisted: $whitelisted, Blacklisted: $blacklisted"
+        echo "$player_name|$player_ip|$player_rank|$player_password" >> "$PLAYERS_LOG"
+        print_success "Updated player info in registry: $player_name -> IP: $player_ip, Rank: $player_rank, Password: $player_password"
     fi
 }
 
@@ -47,9 +49,9 @@ update_player_info() {
 get_player_info() {
     local player_name="$1"
     if [ -f "$PLAYERS_LOG" ]; then
-        while IFS='|' read -r name first_ip current_ip password rank whitelisted blacklisted; do
+        while IFS='|' read -r name ip rank password; do
             if [ "$name" = "$player_name" ]; then
-                echo "$first_ip|$current_ip|$password|$rank|$whitelisted|$blacklisted"
+                echo "$ip|$rank|$password"
                 return 0
             fi
         done < <(grep -i "^$player_name|" "$PLAYERS_LOG")
@@ -63,12 +65,9 @@ update_player_rank() {
     local player_info=$(get_player_info "$player_name")
     
     if [ -n "$player_info" ]; then
-        local first_ip=$(echo "$player_info" | cut -d'|' -f1)
-        local current_ip=$(echo "$player_info" | cut -d'|' -f2)
-        local password=$(echo "$player_info" | cut -d'|' -f3)
-        local whitelisted=$(echo "$player_info" | cut -d'|' -f5)
-        local blacklisted=$(echo "$player_info" | cut -d'|' -f6)
-        update_player_info "$player_name" "$first_ip" "$current_ip" "$password" "$new_rank" "$whitelisted" "$blacklisted"
+        local registered_ip=$(echo "$player_info" | cut -d'|' -f1)
+        local registered_password=$(echo "$player_info" | cut -d'|' -f3)
+        update_player_info "$player_name" "$registered_ip" "$new_rank" "$registered_password"
         print_success "Updated player rank in registry: $player_name -> $new_rank"
     else
         print_error "Player $player_name not found in registry. Cannot update rank."
@@ -90,7 +89,7 @@ add_player_if_new() {
         
         # Add player to players.log if not exists
         if [ -z "$(get_player_info "$player_name")" ]; then
-            update_player_info "$player_name" "$player_ip" "$player_ip" "NONE" "NONE" "NO" "NO"
+            update_player_info "$player_name" "$player_ip" "NONE" "NONE"
         fi
         
         give_first_time_bonus "$player_name"
@@ -211,25 +210,22 @@ process_give_rank() {
     
     write_json_file "$ECONOMY_FILE" "$current_data"
     
-    # Update player rank in players.log
-    local target_ip=$(get_ip_by_name "$target_player")
-    local player_info=$(get_player_info "$target_player")
-    local first_ip="$target_ip"
-    local password="NONE"
-    local whitelisted="NO"
-    local blacklisted="NO"
-    
-    if [ -n "$player_info" ]; then
-        first_ip=$(echo "$player_info" | cut -d'|' -f1)
-        password=$(echo "$player_info" | cut -d'|' -f3)
-        whitelisted=$(echo "$player_info" | cut -d'|' -f5)
-        blacklisted=$(echo "$player_info" | cut -d'|' -f6)
-    fi
-    
-    update_player_info "$target_player" "$first_ip" "$target_ip" "$password" "$(echo "$rank_type" | tr '[:lower:]' '[:upper:]')" "$whitelisted" "$blacklisted"
+    # Add to authorized list
+    echo "$target_player" >> "$LOG_DIR/authorized_${rank_type}s.txt"
     
     # Execute rank command
     screen -S "$SCREEN_SERVER" -p 0 -X stuff "/$rank_type $target_player$(printf \\r)"
+    
+    # Update player rank in players.log
+    local target_ip=$(get_ip_by_name "$target_player")
+    local player_info=$(get_player_info "$target_player")
+    local password="NONE"
+    
+    if [ -n "$player_info" ]; then
+        password=$(echo "$player_info" | cut -d'|' -f3)
+    fi
+    
+    update_player_info "$target_player" "$target_ip" "$rank_type" "$password"
     
     send_server_command "$SCREEN_SERVER" "Congratulations! $giver_name has gifted $rank_type rank to $target_player for $cost tickets."
     send_server_command "$SCREEN_SERVER" "$giver_name, your new ticket balance: $new_tickets"
@@ -257,7 +253,7 @@ process_message() {
             send_server_command "$SCREEN_SERVER" "$player_name, you have $player_tickets tickets."
             ;;
         "!buy_mod")
-            (has_purchased "$player_name" "mod" || [ "$(get_player_rank "$player_name")" = "MOD" ]) && {
+            (has_purchased "$player_name" "mod" || is_player_in_list "$player_name" "mod") && {
                 send_server_command "$SCREEN_SERVER" "$player_name, you already have MOD rank."
             } || [ "$player_tickets" -ge 50 ] && {
                 local new_tickets=$((player_tickets - 50))
@@ -268,30 +264,25 @@ process_message() {
                     '.transactions += [{"player": $player, "type": "purchase", "item": "mod", "tickets": -50, "time": $time}]')
                 write_json_file "$ECONOMY_FILE" "$current_data"
                 
+                # Add to authorized mods
+                echo "$player_name" >> "$AUTHORIZED_MODS_FILE"
+                screen -S "$SCREEN_SERVER" -p 0 -X stuff "/mod $player_name$(printf \\r)"
+                
                 # Update player rank in players.log
                 local player_info=$(get_player_info "$player_name")
-                local first_ip="$player_ip"
                 local password="NONE"
-                local whitelisted="NO"
-                local blacklisted="NO"
                 
                 if [ -n "$player_info" ]; then
-                    first_ip=$(echo "$player_info" | cut -d'|' -f1)
                     password=$(echo "$player_info" | cut -d'|' -f3)
-                    whitelisted=$(echo "$player_info" | cut -d'|' -f5)
-                    blacklisted=$(echo "$player_info" | cut -d'|' -f6)
                 fi
                 
-                update_player_info "$player_name" "$first_ip" "$player_ip" "$password" "MOD" "$whitelisted" "$blacklisted"
-                
-                # Execute mod command
-                screen -S "$SCREEN_SERVER" -p 0 -X stuff "/mod $player_name$(printf \\r)"
+                update_player_info "$player_name" "$player_ip" "mod" "$password"
                 
                 send_server_command "$SCREEN_SERVER" "Congratulations $player_name! You have been promoted to MOD for 50 tickets. Remaining tickets: $new_tickets"
             } || send_server_command "$SCREEN_SERVER" "$player_name, you need $((50 - player_tickets)) more tickets to buy MOD rank."
             ;;
         "!buy_admin")
-            (has_purchased "$player_name" "admin" || [ "$(get_player_rank "$player_name")" = "ADMIN" ]) && {
+            (has_purchased "$player_name" "admin" || is_player_in_list "$player_name" "admin") && {
                 send_server_command "$SCREEN_SERVER" "$player_name, you already have ADMIN rank."
             } || [ "$player_tickets" -ge 100 ] && {
                 local new_tickets=$((player_tickets - 100))
@@ -302,24 +293,19 @@ process_message() {
                     '.transactions += [{"player": $player, "type": "purchase", "item": "admin", "tickets": -100, "time": $time}]')
                 write_json_file "$ECONOMY_FILE" "$current_data"
                 
+                # Add to authorized admins
+                echo "$player_name" >> "$AUTHORIZED_ADMINS_FILE"
+                screen -S "$SCREEN_SERVER" -p 0 -X stuff "/admin $player_name$(printf \\r)"
+                
                 # Update player rank in players.log
                 local player_info=$(get_player_info "$player_name")
-                local first_ip="$player_ip"
                 local password="NONE"
-                local whitelisted="NO"
-                local blacklisted="NO"
                 
                 if [ -n "$player_info" ]; then
-                    first_ip=$(echo "$player_info" | cut -d'|' -f1)
                     password=$(echo "$player_info" | cut -d'|' -f3)
-                    whitelisted=$(echo "$player_info" | cut -d'|' -f5)
-                    blacklisted=$(echo "$player_info" | cut -d'|' -f6)
                 fi
                 
-                update_player_info "$player_name" "$first_ip" "$player_ip" "$password" "ADMIN" "$whitelisted" "$blacklisted"
-                
-                # Execute admin command
-                screen -S "$SCREEN_SERVER" -p 0 -X stuff "/admin $player_name$(printf \\r)"
+                update_player_info "$player_name" "$player_ip" "admin" "$password"
                 
                 send_server_command "$SCREEN_SERVER" "Congratulations $player_name! You have been promoted to ADMIN for 100 tickets. Remaining tickets: $new_tickets"
             } || send_server_command "$SCREEN_SERVER" "$player_name, you need $((100 - player_tickets)) more tickets to buy ADMIN rank."
@@ -386,26 +372,19 @@ process_admin_command() {
         ! is_valid_player_name "$player_name" && print_error "Invalid player name: $player_name" && return 1
         
         print_success "Setting $player_name as MOD"
+        echo "$player_name" >> "$AUTHORIZED_MODS_FILE"
+        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/mod $player_name$(printf \\r)"
         
         # Update player rank in players.log
         local player_ip=$(get_ip_by_name "$player_name")
         local player_info=$(get_player_info "$player_name")
-        local first_ip="$player_ip"
         local password="NONE"
-        local whitelisted="NO"
-        local blacklisted="NO"
         
         if [ -n "$player_info" ]; then
-            first_ip=$(echo "$player_info" | cut -d'|' -f1)
             password=$(echo "$player_info" | cut -d'|' -f3)
-            whitelisted=$(echo "$player_info" | cut -d'|' -f5)
-            blacklisted=$(echo "$player_info" | cut -d'|' -f6)
         fi
         
-        update_player_info "$player_name" "$first_ip" "$player_ip" "$password" "MOD" "$whitelisted" "$blacklisted"
-        
-        # Execute mod command
-        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/mod $player_name$(printf \\r)"
+        update_player_info "$player_name" "$player_ip" "mod" "$password"
         
         send_server_command "$SCREEN_SERVER" "$player_name has been set as MOD by server console!"
     elif [[ "$command" =~ ^!set_admin\ ([a-zA-Z0-9_]+)$ ]]; then
@@ -413,26 +392,19 @@ process_admin_command() {
         ! is_valid_player_name "$player_name" && print_error "Invalid player name: $player_name" && return 1
         
         print_success "Setting $player_name as ADMIN"
+        echo "$player_name" >> "$AUTHORIZED_ADMINS_FILE"
+        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/admin $player_name$(printf \\r)"
         
         # Update player rank in players.log
         local player_ip=$(get_ip_by_name "$player_name")
         local player_info=$(get_player_info "$player_name")
-        local first_ip="$player_ip"
         local password="NONE"
-        local whitelisted="NO"
-        local blacklisted="NO"
         
         if [ -n "$player_info" ]; then
-            first_ip=$(echo "$player_info" | cut -d'|' -f1)
             password=$(echo "$player_info" | cut -d'|' -f3)
-            whitelisted=$(echo "$player_info" | cut -d'|' -f5)
-            blacklisted=$(echo "$player_info" | cut -d'|' -f6)
         fi
         
-        update_player_info "$player_name" "$first_ip" "$player_ip" "$password" "ADMIN" "$whitelisted" "$blacklisted"
-        
-        # Execute admin command
-        screen -S "$SCREEN_SERVER" -p 0 -X stuff "/admin $player_name$(printf \\r)"
+        update_player_info "$player_name" "$player_ip" "admin" "$password"
         
         send_server_command "$SCREEN_SERVER" "$player_name has been set as ADMIN by server console!"
     else
