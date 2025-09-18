@@ -317,7 +317,6 @@ show_status() {
             print_warning "World: Not configured for port $port"
         fi
     fi
-    
     print_header "END OF STATUS"
 }
 
