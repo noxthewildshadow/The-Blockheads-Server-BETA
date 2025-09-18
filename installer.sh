@@ -2,29 +2,25 @@
 set -euo pipefail
 
 # =============================================================================
-# THE BLOCKHEADS LINUX SERVER INSTALLER - ROBUST VERSION
+# THE BLOCKHEADS LINUX SERVER INSTALLER - ROBUST + KITWARE KEY AUTO-FIX
 # =============================================================================
-# This script is a more robust installer. It performs network and DNS checks,
-# handles apt/dpkg locks, retries apt-get update with sensible fallbacks,
-# and provides detailed diagnostics in /tmp for troubleshooting.
+# This installer includes robust network/apt handling and will automatically
+# install the Kitware GPG key & source entry to avoid NO_PUBKEY errors.
+# Run as root: sudo ./installer_fix_kitware.sh
 # =============================================================================
 
 # Colors
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'
 CYAN='\033[0;36m'; PURPLE='\033[0;35m'; NC='\033[0m'
 
-print_header() {
-    echo -e "${PURPLE}================================================================${NC}"
-    echo -e "${PURPLE}$1${NC}"
-    echo -e "${PURPLE}================================================================${NC}"
-}
+print_header() { echo -e "${PURPLE}================================================================${NC}"; echo -e "${PURPLE}$1${NC}"; echo -e "${PURPLE}================================================================${NC}"; }
 print_step()    { echo -e "${CYAN}[STEP]${NC} $1"; }
 print_status()  { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 print_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# Check root
+# Must be run as root
 if [ "$EUID" -ne 0 ]; then
     print_error "This script requires root privileges. Run: sudo $0"
     exit 1
@@ -48,11 +44,7 @@ PACKAGES_DEBIAN=( git cmake ninja-build clang systemtap-sdt-dev libbsd-dev linux
 PACKAGES_ARCH=( base-devel git cmake ninja clang systemtap libbsd curl tar grep gawk patchelf gnustep-base gcc-libs gnutls libgcrypt libxml2 libffi libnsl zlib icu libdispatch wget jq screen lsof )
 
 # ---------- Utilities ----------
-safe_sleep() {
-    # Sleep but responsive to SIGTERM
-    local t="$1"
-    for i in $(seq 1 "$t"); do sleep 1; done
-}
+safe_sleep() { local t="$1"; for i in $(seq 1 "$t"); do sleep 1; done; }
 
 wait_for_apt_unlock() {
     print_status "Waiting for apt/dpkg locks to be released if present..."
@@ -61,7 +53,7 @@ wait_for_apt_unlock() {
         tries=$((tries+1))
         if [ $tries -gt 30 ]; then
             print_warning "Persistent apt locks detected, trying dpkg --configure -a"
-            sudo dpkg --configure -a || true
+            dpkg --configure -a || true
         fi
         sleep 1
     done
@@ -80,12 +72,10 @@ network_check() {
         print_status "DNS resolution works (github.com resolves)."
     else
         print_warning "Failed to resolve github.com: possible DNS issue. Trying to use 8.8.8.8 temporarily."
-        # Backup (for diagnostics): only if resolv.conf is writable
         if [ -w /etc/resolv.conf ] || [ ! -e /etc/resolv.conf ]; then
             cp -n /etc/resolv.conf /etc/resolv.conf.bak 2>/dev/null || true
             echo "nameserver 8.8.8.8" > /etc/resolv.conf
-            print_status "Temporarily wrote 'nameserver 8.8.8.8' to /etc/resolv.conf"
-            # Retry resolution
+            print_status "Temporarily wrote 'nameserver 8.8.8.8' to /etc/resolv.conf for diagnosis."
             if ping -c1 -W2 github.com >/dev/null 2>&1; then
                 print_status "DNS temporarily fixed."
             else
@@ -101,7 +91,6 @@ network_check() {
 }
 
 apt_update_retry() {
-    # Retry apt-get update with multiple strategies and save output for diagnosis
     local max_try=5
     local try=1
     while [ $try -le $max_try ]; do
@@ -111,7 +100,7 @@ apt_update_retry() {
             print_success "apt-get update completed."
             return 0
         fi
-        # Inspect for release-change messages and retry with allow-releaseinfo-change
+        # Inspect output for release-change message
         if grep -i "Release file" /tmp/apt_update_out >/dev/null 2>&1 || grep -i "allow-releaseinfo-change" /tmp/apt_update_out >/dev/null 2>&1; then
             print_warning "Detected repository Release change. Retrying with --allow-releaseinfo-change..."
             if apt-get update --allow-releaseinfo-change >/tmp/apt_update_out 2>&1; then
@@ -123,14 +112,12 @@ apt_update_retry() {
         sleep 2
     done
 
-    # If still failing, print diagnostic output
     print_error "apt-get update failed after multiple attempts. Diagnostic output:"
     sed -n '1,200p' /tmp/apt_update_out || true
     return 1
 }
 
 apt_install_with_retry() {
-    # Wrapper to apt-get install with retries and --fix-missing fallback
     local pkg="$1"
     local tries=0
     local max=3
@@ -143,13 +130,11 @@ apt_install_with_retry() {
         print_warning "Failed installing $pkg (attempt $tries/$max). Retrying..."
         sleep 2
     done
-
     print_warning "Trying installation with --fix-missing for $pkg ..."
     if apt-get install -y --fix-missing "$pkg" >/tmp/apt_install_out 2>&1; then
         print_success "Installed (fix-missing): $pkg"
         return 0
     fi
-
     print_warning "Could not install $pkg. See /tmp/apt_install_out for details"
     sed -n '1,200p' /tmp/apt_install_out || true
     return 1
@@ -200,6 +185,50 @@ build_libdispatch() {
     return 0
 }
 
+# ------------------ NEW: Kitware key & source fix ------------------
+install_kitware_key_and_source() {
+    print_step "Ensuring Kitware APT key and source are present (auto-fix)..."
+    local keyring_dir="/usr/share/keyrings"
+    local keyring_file="${keyring_dir}/kitware-archive-keyring.gpg"
+    local distro_codename
+    distro_codename=$(lsb_release -cs 2>/dev/null || echo "jammy")
+
+    mkdir -p "$keyring_dir"
+
+    # Try to fetch and dearmor the key
+    if curl -fsSL https://apt.kitware.com/keys/kitware-archive-latest.asc | gpg --dearmor >"$keyring_file" 2>/tmp/kitware_key_err 2>&1; then
+        chmod 644 "$keyring_file" || true
+        print_status "Kitware key fetched and installed to $keyring_file"
+    else
+        print_warning "Failed to fetch/dearmor Kitware key with curl/gpg. See /tmp/kitware_key_err"
+        # Fallback: try apt-key (deprecated) to import by ID (id from error)
+        local keyid="16FAAD7AF99A65E2"
+        if command -v apt-key >/dev/null 2>&1; then
+            print_warning "Attempting fallback import with apt-key..."
+            apt-key adv --keyserver keyserver.ubuntu.com --recv-keys "$keyid" >/tmp/aptkey_out 2>&1 || true
+            print_status "apt-key fallback attempted (check /tmp/aptkey_out)."
+        else
+            print_warning "apt-key not available; cannot fallback. You may need to install gnupg and curl."
+        fi
+    fi
+
+    # Write/replace the kitware sources list with signed-by if keyring present
+    if [ -f "$keyring_file" ]; then
+        echo "deb [signed-by=${keyring_file}] https://apt.kitware.com/ubuntu/ ${distro_codename} main" > /etc/apt/sources.list.d/kitware.list
+        print_status "Kitware source written to /etc/apt/sources.list.d/kitware.list with signed-by."
+    else
+        # If keyring not available but apt-key added key, keep existing or write a plain entry
+        if grep -q "apt.kitware.com" /etc/apt/sources.list.d/* 2>/dev/null || grep -q "apt.kitware.com" /etc/apt/sources.list 2>/dev/null; then
+            print_status "Kitware source already present somewhere. Skipping third-party source write."
+        else
+            echo "deb https://apt.kitware.com/ubuntu/ ${distro_codename} main" > /etc/apt/sources.list.d/kitware.list
+            print_warning "Kitware source written without signed-by (keyring missing). apt may still warn if key is missing."
+        fi
+    fi
+    print_status "Kitware key/source ensure step complete."
+}
+# --------------------------------------------------------------------
+
 install_packages() {
     if [ ! -f /etc/os-release ]; then
         print_error "Cannot detect OS (/etc/os-release missing)."
@@ -210,11 +239,13 @@ install_packages() {
     case "$ID" in
         debian|ubuntu|pop)
             print_step "Installing packages for Debian/Ubuntu..."
-            # Verify network and DNS before apt-get update
             if ! network_check; then
                 print_error "Network or DNS issue detected. Aborting package installation."
                 return 1
             fi
+
+            # --- Ensure Kitware key/source BEFORE updating apt ---
+            install_kitware_key_and_source
 
             if ! apt_update_retry; then
                 print_error "Could not update package list (apt-get update)."
@@ -251,7 +282,7 @@ install_packages() {
 }
 
 # ------------------ Main script ------------------
-print_header "THE BLOCKHEADS LINUX SERVER INSTALLER - ROBUST"
+print_header "THE BLOCKHEADS LINUX SERVER INSTALLER - ROBUST + KITWARE AUTO-FIX"
 
 print_step "[1/8] Installing required packages..."
 if ! install_packages; then
@@ -261,7 +292,6 @@ if ! install_packages; then
         print_error "Cannot update package list in fallback. Aborting."
         exit 1
     fi
-    # Minimal essential packages
     for p in libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof; do
         apt_install_with_retry "$p" || print_warning "Failed to install $p in fallback"
     done
