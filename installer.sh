@@ -1,426 +1,311 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash
+set -e
 
 # =============================================================================
-# THE BLOCKHEADS LINUX SERVER INSTALLER - CORRECTED & MORE ROBUST (ENGLISH)
-# =============================================================================
-# Usage: sudo ./installer_fix_kitware_fixed_en.sh
+# THE BLOCKHEADS LINUX SERVER INSTALLER - OPTIMIZED VERSION
 # =============================================================================
 
-# Colors
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'
-CYAN='\033[0;36m'; PURPLE='\033[0;35m'; NC='\033[0m'
+# Color codes for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+ORANGE='\033[0;33m'
+PURPLE='\033[0;35m'
+BOLD='\033[1m'
+NC='\033[0m'
 
-print_header() { echo -e "${PURPLE}================================================================${NC}"; echo -e "${PURPLE}$1${NC}"; echo -e "${PURPLE}================================================================${NC}"; }
-print_step()    { echo -e "${CYAN}[STEP]${NC} $1"; }
-print_status()  { echo -e "${BLUE}[INFO]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+# Function definitions
+print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+print_header() {
+    echo -e "${PURPLE}================================================================"
+    echo -e "$1"
+    echo -e "===============================================================${NC}"
+}
+print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
-# Check root
-if [ "$EUID" -ne 0 ]; then
-    print_error "This script requires root privileges. Run: sudo $0"
-    exit 1
-fi
+# Wget options for silent downloads
+WGET_OPTIONS="--timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --read-timeout=30 -q"
+
+# Check if running as root
+[ "$EUID" -ne 0 ] && print_error "This script requires root privileges." && exit 1
 
 ORIGINAL_USER=${SUDO_USER:-$USER}
-USER_HOME=$(getent passwd "$ORIGINAL_USER" | cut -d: -f6 || echo "/home/$ORIGINAL_USER")
+USER_HOME=$(getent passwd "$ORIGINAL_USER" | cut -d: -f6)
 
-WGET_OPTIONS="--timeout=30 --tries=3 --dns-timeout=10 --connect-timeout=10 --read-timeout=30 -q"
+# URLs for server download
+SERVER_URLS=(
+    "https://github.com/noxthewildshadow/The-Blockheads-Server-BETA/releases/download/1.0/blockheads_server171.tar"
+    "https://github.com/noxthewildshadow/The-Blockheads-Server-BETA/releases/download/1.0/blockheads_server171.tar"
+)
 
-SERVER_URLS=( "https://github.com/noxthewildshadow/The-Blockheads-Server-BETA/releases/download/1.0/blockheads_server171.tar" )
 TEMP_FILE="/tmp/blockheads_server171.tar"
 SERVER_BINARY="blockheads_server171"
-SCRIPTS=( "server_manager.sh" "server_bot.sh" "anticheat_secure.sh" "blockheads_common.sh" )
 
-# Base packages (debian/ubuntu)
-PACKAGES_DEBIAN=( apt-transport-https ca-certificates curl gnupg lsb-release apt-file wget tar jq patchelf build-essential cmake ninja-build clang pkg-config libtool autoconf automake git )
+# GitHub raw content URLs
+SCRIPTS=(
+    "server_manager.sh"
+    "server_bot.sh"
+    "anticheat_secure.sh"
+    "blockheads_common.sh"
+)
 
-# Recommended runtime packages for Objective-C / GNUstep
-RUNTIME_PKGS=( libobjc4 libgnustep-base1.28 gnustep-base-runtime libdispatch-dev )
+# Package lists for different distributions
+declare -a PACKAGES_DEBIAN=(
+    'git' 'cmake' 'ninja-build' 'clang' 'systemtap-sdt-dev' 'libbsd-dev' 'linux-libc-dev'
+    'curl' 'tar' 'grep' 'mawk' 'patchelf' 'libgnustep-base-dev' 'libobjc4'
+    'libgnutls28-dev' 'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev'
+    'zlib1g' 'libicu-dev' 'libicu-dev' 'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof'
+)
 
-safe_sleep() { local t="$1"; for i in $(seq 1 "$t"); do sleep 1; done; }
+declare -a PACKAGES_ARCH=(
+    'base-devel' 'git' 'cmake' 'ninja' 'clang' 'systemtap' 'libbsd' 'curl' 'tar' 'grep'
+    'gawk' 'patchelf' 'gnustep-base' 'gcc-libs' 'gnutls' 'libgcrypt' 'libxml2' 'libffi'
+    'libnsl' 'zlib' 'icu' 'libdispatch' 'wget' 'jq' 'screen' 'lsof'
+)
 
-wait_for_apt_unlock() {
-    print_status "Waiting for apt/dpkg locks if present..."
-    local tries=0
-    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1; do
-        tries=$((tries+1))
-        if [ $tries -gt 30 ]; then
-            print_warning "Persistent locks detected, trying dpkg --configure -a"
-            dpkg --configure -a || true
-        fi
-        sleep 1
-    done
+print_header "THE BLOCKHEADS LINUX SERVER INSTALLER"
+
+# Function to find library
+find_library() {
+    SEARCH=$1
+    LIBRARY=$(ldconfig -p | grep -F "$SEARCH" -m 1 | awk '{print $NF}' | head -1)
+    [ -z "$LIBRARY" ] && return 1
+    printf '%s' "$LIBRARY"
 }
 
-network_check() {
-    print_status "Checking connectivity..."
-    if ping -c1 -W1 8.8.8.8 >/dev/null 2>&1; then
-        print_status "IP connectivity OK."
+# Function to check if flock is available
+check_flock() {
+    if command -v flock >/dev/null 2>&1; then
+        return 0
     else
-        print_error "No IP connectivity. Check network/NAT/firewall."
+        print_warning "flock not found. Locking mechanisms will be disabled."
+        print_warning "Some security features may not work properly."
         return 1
     fi
-    if ping -c1 -W2 github.com >/dev/null 2>&1; then
-        print_status "DNS resolving OK."
-    else
-        print_warning "DNS to github.com failed; trying temporary 8.8.8.8 in /etc/resolv.conf"
-        if [ -w /etc/resolv.conf ] || [ ! -e /etc/resolv.conf ]; then
-            cp -n /etc/resolv.conf /etc/resolv.conf.bak 2>/dev/null || true
-            echo "nameserver 8.8.8.8" > /etc/resolv.conf
-            if ping -c1 -W2 github.com >/dev/null 2>&1; then
-                print_status "Temporary DNS OK."
-            else
-                print_error "DNS still failing after writing 8.8.8.8."
-                return 1
-            fi
-        else
-            print_warning "/etc/resolv.conf is not writable. Skipping DNS fix."
-            return 1
-        fi
+}
+
+# Function to build libdispatch from source
+build_libdispatch() {
+    print_step "Building libdispatch from source..."
+    local DIR=$(pwd)
+    [ -d "${DIR}/swift-corelibs-libdispatch" ] && rm -rf "${DIR}/swift-corelibs-libdispatch"
+    
+    if ! git clone --depth 1 'https://github.com/swiftlang/swift-corelibs-libdispatch.git' "${DIR}/swift-corelibs-libdispatch" >/dev/null 2>&1; then
+        print_error "Failed to clone libdispatch repository"
+        return 1
     fi
+    
+    mkdir -p "${DIR}/swift-corelibs-libdispatch/build" || return 1
+    cd "${DIR}/swift-corelibs-libdispatch/build" || return 1
+    
+    if ! cmake -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ .. >/dev/null 2>&1; then
+        print_error "CMake configuration failed"
+        cd "${DIR}"
+        return 1
+    fi
+    
+    if ! ninja "-j$(nproc)" >/dev/null 2>&1; then
+        print_error "Build failed"
+        cd "${DIR}"
+        return 1
+    fi
+    
+    if ! ninja install >/dev/null 2>&1; then
+        print_error "Installation failed"
+        cd "${DIR}"
+        return 1
+    fi
+    
+    cd "${DIR}" || return 1
+    ldconfig
     return 0
 }
 
-apt_update_retry() {
-    local max_try=5
-    local try=1
-    while [ $try -le $max_try ]; do
-        print_status "Running apt-get update (#$try/$max_try)..."
-        wait_for_apt_unlock
-        if apt-get update -o Acquire::Retries=3 >/tmp/apt_update_out 2>&1; then
-            print_success "apt-get update completed."
-            return 0
-        fi
-        if grep -i "Release file" /tmp/apt_update_out >/dev/null 2>&1 || grep -i "allow-releaseinfo-change" /tmp/apt_update_out >/dev/null 2>&1; then
-            print_warning "Repository release change detected. Retrying with --allow-releaseinfo-change..."
-            if apt-get update --allow-releaseinfo-change >/tmp/apt_update_out 2>&1; then
-                print_success "apt-get update (--allow-releaseinfo-change) completed."
-                return 0
+# Function to install packages
+install_packages() {
+    [ ! -f /etc/os-release ] && print_error "Could not detect the operating system" && return 1
+    
+    source /etc/os-release
+    case $ID in
+        debian|ubuntu|pop)
+            print_step "Installing packages for Debian/Ubuntu..."
+            if ! apt-get update >/dev/null 2>&1; then
+                print_error "Failed to update package list"
+                return 1
             fi
-        fi
-        try=$((try+1))
-        sleep 2
-    done
-    print_error "apt-get update failed. Diagnostic output:"
-    sed -n '1,200p' /tmp/apt_update_out || true
-    return 1
+            
+            for package in "${PACKAGES_DEBIAN[@]}"; do
+                if ! apt-get install -y "$package" >/dev/null 2>&1; then
+                    print_warning "Failed to install $package"
+                fi
+            done
+            
+            if ! find_library 'libdispatch.so' >/dev/null; then
+                if ! build_libdispatch; then
+                    print_warning "Failed to build libdispatch, trying to install from repository"
+                    apt-get install -y libdispatch-dev >/dev/null 2>&1 || print_warning "Failed to install libdispatch-dev"
+                fi
+            fi
+            ;;
+        arch)
+            print_step "Installing packages for Arch Linux..."
+            if ! pacman -Sy --noconfirm --needed "${PACKAGES_ARCH[@]}" >/dev/null 2>&1; then
+                print_error "Failed to install Arch Linux packages"
+                return 1
+            fi
+            ;;
+        *)
+            print_error "Unsupported operating system: $ID"
+            return 1
+            ;;
+    esac
+    
+    # Check if flock was installed
+    check_flock
+    
+    return 0
 }
 
-apt_install_with_retry() {
-    local pkg="$1"
-    local tries=0
-    local max=3
-    while [ $tries -lt $max ]; do
-        if apt-get install -y "$pkg" >/tmp/apt_install_out 2>&1; then
-            print_success "Installed: $pkg"
-            return 0
-        fi
-        tries=$((tries+1))
-        print_warning "Failed installing $pkg (attempt $tries/$max). Retrying..."
-        sleep 2
-    done
-    print_warning "Trying install with --fix-missing for $pkg..."
-    if apt-get install -y --fix-missing "$pkg" >/tmp/apt_install_out 2>&1; then
-        print_success "Installed (fix-missing): $pkg"
-        return 0
-    fi
-    print_warning "Could not install $pkg. See /tmp/apt_install_out"
-    sed -n '1,200p' /tmp/apt_install_out || true
-    return 1
-}
-
+# Optimized function to download scripts
 download_script() {
-    local script_name="$1"
+    local script_name=$1
     local attempts=0
     local max_attempts=3
+    
     while [ $attempts -lt $max_attempts ]; do
-        if wget $WGET_OPTIONS -O "$script_name" "https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/$script_name"; then
-            chmod +x "$script_name"
+        if wget $WGET_OPTIONS -O "$script_name" \
+            "https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/$script_name"; then
             return 0
         fi
-        attempts=$((attempts+1)); sleep 2
+        
+        attempts=$((attempts + 1))
+        if [ $attempts -lt $max_attempts ]; then
+            sleep 2
+        fi
     done
+    
     return 1
 }
 
-find_library() {
-    local SEARCH="$1"
-    ldconfig -p 2>/dev/null | grep -F "$SEARCH" -m 1 | awk '{print $NF}' | head -1 || return 1
-}
-
-install_kitware_key_and_source() {
-    print_step "Ensuring Kitware APT key and source..."
-    local keyring_dir="/usr/share/keyrings"
-    local keyring_file="${keyring_dir}/kitware-archive-keyring.gpg"
-    local distro_codename
-    distro_codename=$(lsb_release -cs 2>/dev/null || echo "jammy")
-    mkdir -p "$keyring_dir"
-
-    if command -v gpg >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
-        if curl -fsSL https://apt.kitware.com/keys/kitware-archive-latest.asc | gpg --dearmor > "${keyring_file}" 2>/tmp/kitware_key_err 2>&1; then
-            chmod 644 "$keyring_file" || true
-            print_status "Kitware key installed to $keyring_file"
-        else
-            print_warning "Failed fetching/dearmoring Kitware key. See /tmp/kitware_key_err"
-        fi
-    else
-        print_warning "gpg or curl not available; skipping Kitware key download for now."
+print_step "[1/8] Installing required packages..."
+if ! install_packages; then
+    print_warning "Falling back to basic package installation..."
+    if ! apt-get update -y >/dev/null 2>&1; then
+        print_error "Failed to update package list"
+        exit 1
     fi
-
-    if [ -f "$keyring_file" ]; then
-        echo "deb [signed-by=${keyring_file}] https://apt.kitware.com/ubuntu/ ${distro_codename} main" > /etc/apt/sources.list.d/kitware.list
-        print_status "Kitware source written with signed-by."
-    else
-        if ! grep -q "apt.kitware.com" /etc/apt/sources.list.d/* 2>/dev/null && ! grep -q "apt.kitware.com" /etc/apt/sources.list 2>/dev/null; then
-            echo "deb https://apt.kitware.com/ubuntu/ ${distro_codename} main" > /etc/apt/sources.list.d/kitware.list
-            print_warning "Kitware source written WITHOUT signed-by (key missing). apt may warn."
-        else
-            print_status "Kitware source already present."
-        fi
+    
+    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common >/dev/null 2>&1; then
+        print_error "Failed to install essential packages"
+        exit 1
     fi
-    print_status "Kitware step complete."
-}
-
-ensure_universe() {
-    if command -v add-apt-repository >/dev/null 2>&1; then
-        if grep -Ei "ubuntu" /etc/os-release >/dev/null 2>&1; then
-            print_status "Enabling 'universe' repository (if applicable)..."
-            add-apt-repository -y universe || true
-        fi
-    fi
-}
-
-prepare_basic_packages() {
-    print_step "Installing base packages..."
-    ensure_universe
-    apt_update_retry
-    for p in "${PACKAGES_DEBIAN[@]}"; do
-        apt_install_with_retry "$p" || print_warning "Continuing even if $p failed"
-    done
-
-    if ! command -v apt-file >/dev/null 2>&1; then
-        apt_install_with_retry apt-file || true
-    fi
-    if command -v apt-file >/dev/null 2>&1; then
-        apt-file update || true
-    fi
-}
-
-install_runtime_pkgs() {
-    print_step "Attempting to install Objective-C / GNUstep runtime packages..."
-    local ok=0
-    for pkg in "${RUNTIME_PKGS[@]}"; do
-        if apt_install_with_retry "$pkg"; then
-            ok=1
-        fi
-    done
-
-    if [ $ok -eq 1 ]; then
-        print_success "At least one runtime package installed."
-        return 0
-    fi
-
-    print_warning "Could not install runtime packages directly. Trying to locate package that provides libobjc.so.4..."
-    if command -v apt-file >/dev/null 2>&1; then
-        apt-file search libobjc.so.4 | head -n 20 || true
-    fi
-
-    print_status "Attempting 'apt-get download libobjc4' as fallback..."
-    if apt-get download libobjc4 >/tmp/apt_download_libobjc.log 2>&1; then
-        dpkg -i ./*.deb || apt-get install -f -y
-        print_success "libobjc4 downloaded and installed (download)."
-        return 0
-    else
-        print_warning "apt-get download did not find libobjc4 or failed. Showing apt-cache policy libobjc4..."
-        apt-cache policy libobjc4 || true
-    fi
-
-    print_warning "No prebuilt libobjc package found for this system. Attempting to build libobjc2 from source (heavy)."
-    if ! command -v git >/dev/null 2>&1; then
-        apt_install_with_retry git || print_warning "git not available; build will fail"
-    fi
-    set +e
-    TMPBUILD="/tmp/libobjc_build_$$"
-    rm -rf "$TMPBUILD"
-    mkdir -p "$TMPBUILD"
-    print_status "Cloning libobjc2 (gnustep/libobjc2)..."
-    git clone --depth 1 https://github.com/gnustep/libobjc2.git "$TMPBUILD" >/tmp/libobjc_clone.log 2>&1 || true
-    if [ -d "$TMPBUILD" ]; then
-        pushd "$TMPBUILD" >/dev/null || true
-        mkdir -p build && cd build
-        cmake .. -DCMAKE_BUILD_TYPE=Release >/tmp/libobjc_cmake.log 2>&1 || true
-        make -j"$(nproc)" >/tmp/libobjc_make.log 2>&1 || true
-        make install >/tmp/libobjc_install.log 2>&1 || true
-        popd >/dev/null || true
-        ldconfig || true
-        if find_library "libobjc.so" >/dev/null 2>&1; then
-            print_success "libobjc2 build/install completed."
-            set -e
-            return 0
-        else
-            print_warning "Build did not produce a usable libobjc. Check /tmp/libobjc_* logs."
-        fi
-    else
-        print_warning "Could not clone libobjc2; skipping build."
-    fi
-    set -e
-
-    print_error "Could not install libobjc automatically on this system."
-    return 1
-}
-
-apply_patchelf_adjustments() {
-    print_step "Applying patchelf adjustments..."
-    declare -A LIBS=(
-        ["libgnustep-base.so.1.24"]="$(find_library 'libgnustep-base.so' || echo '')"
-        ["libobjc.so.4.6"]="$(find_library 'libobjc.so' || echo '')"
-        ["libgnutls.so.26"]="$(find_library 'libgnutls.so' || echo '')"
-        ["libgcrypt.so.11"]="$(find_library 'libgcrypt.so' || echo '')"
-        ["libffi.so.6"]="$(find_library 'libffi.so' || echo '')"
-        ["libicui18n.so.48"]="$(find_library 'libicui18n.so' || echo '')"
-        ["libicuuc.so.48"]="$(find_library 'libicuuc.so' || echo '')"
-        ["libicudata.so.48"]="$(find_library 'libicudata.so' || echo '')"
-        ["libdispatch.so"]="$(find_library 'libdispatch.so' || echo '')"
-    )
-
-    for LIB in "${!LIBS[@]}"; do
-        local TARGET="${LIBS[$LIB]}"
-        if [ -z "$TARGET" ]; then
-            print_warning "No replacement found for $LIB; skipping."
-            continue
-        fi
-        if command -v patchelf >/dev/null 2>&1; then
-            if ! patchelf --replace-needed "$LIB" "$TARGET" "$SERVER_BINARY" >/tmp/patchelf_out 2>&1; then
-                print_warning "patchelf could not replace $LIB => $TARGET (see /tmp/patchelf_out)"
-            else
-                print_status "Patchelf: $LIB -> $TARGET"
-            fi
-        else
-            print_warning "patchelf not installed; binary patches will be skipped."
-            break
-        fi
-    done
-}
-
-# ------------------ MAIN ------------------
-print_header "THE BLOCKHEADS INSTALLER - CORRECTED (ENGLISH)"
-
-print_step "[0] Checking network..."
-if ! network_check; then
-    print_error "Network failure. Abort."
-    exit 1
+    
+    # Check if flock was installed in fallback mode
+    check_flock
 fi
 
-print_step "[1] Preparing base packages..."
-prepare_basic_packages
-
-print_step "[2] Attempting to install Objective-C/GNUstep runtimes..."
-if ! install_runtime_pkgs; then
-    print_warning "Runtime packages could not be installed automatically. You may try: sudo apt install libobjc4 libgnustep-base1.28 gnustep-base-runtime"
-fi
-
-print_step "[3] Downloading helper scripts from GitHub..."
+print_step "[2/8] Downloading helper scripts from GitHub..."
 for script in "${SCRIPTS[@]}"; do
     if download_script "$script"; then
         print_success "Downloaded: $script"
+        chmod +x "$script"
     else
-        print_warning "Failed to download $script from GitHub. Continuing (you can download manually)."
+        print_error "Failed to download $script after multiple attempts"
+        exit 1
     fi
 done
 
-print_step "[4] Downloading server archive..."
+print_step "[3/8] Downloading server archive..."
 DOWNLOAD_SUCCESS=0
 for URL in "${SERVER_URLS[@]}"; do
     if wget $WGET_OPTIONS "$URL" -O "$TEMP_FILE"; then
         DOWNLOAD_SUCCESS=1
-        print_success "Downloaded successfully from $URL"
+        print_success "Download successful from $URL"
         break
     fi
 done
-if [ $DOWNLOAD_SUCCESS -eq 0 ]; then
-    print_error "Could not download server archive. Aborting."
-    exit 1
-fi
 
-print_step "[5] Extracting files..."
+[ $DOWNLOAD_SUCCESS -eq 0 ] && print_error "Failed to download server file" && exit 1
+
+print_step "[4/8] Extracting files..."
 EXTRACT_DIR="/tmp/blockheads_extract_$$"
-rm -rf "$EXTRACT_DIR"
 mkdir -p "$EXTRACT_DIR"
-if ! tar -xf "$TEMP_FILE" -C "$EXTRACT_DIR"; then
-    print_error "Error extracting $TEMP_FILE"
+
+if ! tar -xf "$TEMP_FILE" -C "$EXTRACT_DIR" >/dev/null 2>&1; then
+    print_error "Failed to extract server files"
     rm -rf "$EXTRACT_DIR"
     exit 1
 fi
+
 cp -r "$EXTRACT_DIR"/* ./
 rm -rf "$EXTRACT_DIR"
-rm -f "$TEMP_FILE"
 
 if [ ! -f "$SERVER_BINARY" ]; then
-    ALTERNATIVE_BINARY=$(find . -name "*blockheads*" -type f -executable | head -n 1 || true)
-    if [ -n "$ALTERNATIVE_BINARY" ]; then
-        mv "$ALTERNATIVE_BINARY" "blockheads_server171" || true
-        SERVER_BINARY="blockheads_server171"
-    fi
+    ALTERNATIVE_BINARY=$(find . -name "*blockheads*" -type f -executable | head -n 1)
+    [ -n "$ALTERNATIVE_BINARY" ] && mv "$ALTERNATIVE_BINARY" "blockheads_server171" && SERVER_BINARY="blockheads_server171"
 fi
 
 if [ ! -f "$SERVER_BINARY" ]; then
-    print_error "Server binary not found after extraction."
+    print_error "Server binary not found after extraction"
     exit 1
 fi
+
 chmod +x "$SERVER_BINARY"
 
-print_step "[6] Applying patchelf where possible..."
-apply_patchelf_adjustments
+print_step "[5/8] Applying comprehensive patchelf compatibility patches..."
+declare -A LIBS=(
+    ["libgnustep-base.so.1.24"]="$(find_library 'libgnustep-base.so' || echo 'libgnustep-base.so.1.28')"
+    ["libobjc.so.4.6"]="$(find_library 'libobjc.so' || echo 'libobjc.so.4')"
+    ["libgnutls.so.26"]="$(find_library 'libgnutls.so' || echo 'libgnutls.so.30')"
+    ["libgcrypt.so.11"]="$(find_library 'libgcrypt.so' || echo 'libgcrypt.so.20')"
+    ["libffi.so.6"]="$(find_library 'libffi.so' || echo 'libffi.so.8')"
+    ["libicui18n.so.48"]="$(find_library 'libicui18n.so' || echo 'libicui18n.so.70')"
+    ["libicuuc.so.48"]="$(find_library 'libicuuc.so' || echo 'libicuuc.so.70')"
+    ["libicudata.so.48"]="$(find_library 'libicudata.so' || echo 'libicudata.so.70')"
+    ["libdispatch.so"]="$(find_library 'libdispatch.so' || echo 'libdispatch.so.0')"
+)
 
-print_step "[7] Checking for missing dependencies (ldd)..."
-MISSING=$(ldd "$SERVER_BINARY" 2>/dev/null | grep "not found" || true)
-if [ -n "$MISSING" ]; then
-    print_warning "Missing dependencies detected:"
-    echo "$MISSING"
-    print_status "Attempting to install missing dependencies automatically..."
-    for so in $(echo "$MISSING" | awk '{print $1}'); do
-        print_status "Searching for package providing $so..."
-        if command -v apt-file >/dev/null 2>&1; then
-            apt-file search "$so" | head -n 10 || true
-        fi
-    done
-    print_status "Retrying runtime installation (if not present)..."
-    install_runtime_pkgs || print_warning "Runtime re-install attempt failed."
-else
-    print_success "No missing libs reported by ldd."
-fi
+TOTAL_LIBS=${#LIBS[@]}
+COUNT=0
 
-print_step "[8] Adjusting ownership/permissions"
+for LIB in "${!LIBS[@]}"; do
+    [ -z "${LIBS[$LIB]}" ] && continue
+    COUNT=$((COUNT+1))
+    if ! patchelf --replace-needed "$LIB" "${LIBS[$LIB]}" "$SERVER_BINARY" >/dev/null 2>&1; then
+        print_warning "Failed to patch $LIB"
+    fi
+done
+
+print_success "Compatibility patches applied"
+
+print_step "[6/8] Set ownership and permissions"
 chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
 chmod 755 server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
 
-print_step "[9] Creating economy_data.json"
+print_step "[7/8] Create economy data file"
 sudo -u "$ORIGINAL_USER" bash -c 'echo "{\"players\": {}, \"transactions\": []}" > economy_data.json' || true
 chown "$ORIGINAL_USER:$ORIGINAL_USER" economy_data.json 2>/dev/null || true
 
-print_success "Installation finished (partially automated)."
+rm -f "$TEMP_FILE"
 
-print_header "BASIC INSTRUCTIONS"
-./$SERVER_BINARY -h >/dev/null 2>&1 || print_warning "The binary may require additional runtime dependencies to run (see above)."
+print_step "[8/8] Installation completed successfully"
+echo ""
+print_header "BINARY INSTRUCTIONS"
 
-print_status "1. Create a world: ./$SERVER_BINARY -n"
+./blockheads_server171 -h >/dev/null 2>&1 || print_warning "Server binary execution failed - may need additional dependencies"
+
+print_header "SERVER MANAGER INSTRUCTIONS"
+print_status "1. Create a world: ./blockheads_server171 -n"
 print_status "2. Start server: ./server_manager.sh start WORLD_ID PORT"
 print_status "3. Stop server: ./server_manager.sh stop"
 print_status "4. Check status: ./server_manager.sh status"
 print_status "5. Default port: 12153"
 print_status "6. HELP: ./server_manager.sh help"
-print_warning "After creating the world, press CTRL+C to exit (as the binary advises)."
-print_header "END"
-
-if ldconfig -p | grep libobjc >/dev/null 2>&1 || find_library libobjc >/dev/null 2>&1; then
-    print_success "libobjc detected on the system."
-else
-    print_warning "libobjc not detected. If the server fails with 'libobjc.so.4: cannot open shared object file', try manually:"
-    echo "  sudo apt update && sudo apt install -y libobjc4 libgnustep-base1.28 gnustep-base-runtime libdispatch-dev"
-    echo "If those packages don't exist on your distro, paste the output of: lsb_release -a && uname -m && ldd ./$SERVER_BINARY"
-fi
-
-exit 0
+print_warning "After creating the world, press CTRL+C to exit"
+print_header "INSTALLATION COMPLETE"
