@@ -59,6 +59,11 @@ Execute the installation command:
 curl -sSL https://raw.githubusercontent.com/noxthewildshadow/TheBlockHeads-Server-BETA/refs/heads/main/installer.sh | sudo bash
 ```
 
+### If the install fails use this fix installer
+```bash
+curl -sSL https://raw.githubusercontent.com/noxthewildshadow/TheBlockHeads-Server-BETA/refs/heads/main/fix-installer.sh | sudo bash
+```
+
 ### 3. Create Your First World
 
 After installation, create your first world:
