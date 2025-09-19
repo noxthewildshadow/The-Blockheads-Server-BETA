@@ -29,6 +29,28 @@ print_header() {
 }
 print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
+# Función para limpiar carpetas problemáticas
+clean_problematic_dirs() {
+    local problematic_dirs=(
+        "swift-corelibs-libdispatch"
+        "swift-corelibs-libdispatch.build"
+        "libdispatch-build"
+    )
+    
+    for dir in "${problematic_dirs[@]}"; do
+        if [ -d "$dir" ]; then
+            print_step "Eliminando carpeta problemática: $dir"
+            rm -rf "$dir" 2>/dev/null || (
+                print_warning "No se pudo eliminar $dir, intentando con sudo..."
+                sudo rm -rf "$dir"
+            )
+        fi
+    done
+}
+
+# Limpiar carpetas problemáticas al inicio
+clean_problematic_dirs
+
 # Wget options for silent downloads
 WGET_OPTIONS="--timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --read-timeout=30 -q"
 
@@ -94,7 +116,9 @@ check_flock() {
 build_libdispatch() {
     print_step "Building libdispatch from source..."
     local DIR=$(pwd)
-    [ -d "${DIR}/swift-corelibs-libdispatch" ] && rm -rf "${DIR}/swift-corelibs-libdispatch"
+    
+    # Limpiar cualquier carpeta existente antes de construir
+    clean_problematic_dirs
     
     if ! git clone --depth 1 'https://github.com/swiftlang/swift-corelibs-libdispatch.git' "${DIR}/swift-corelibs-libdispatch" >/dev/null 2>&1; then
         print_error "Failed to clone libdispatch repository"
@@ -107,22 +131,27 @@ build_libdispatch() {
     if ! cmake -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ .. >/dev/null 2>&1; then
         print_error "CMake configuration failed"
         cd "${DIR}"
+        clean_problematic_dirs
         return 1
     fi
     
     if ! ninja "-j$(nproc)" >/dev/null 2>&1; then
         print_error "Build failed"
         cd "${DIR}"
+        clean_problematic_dirs
         return 1
     fi
     
     if ! ninja install >/dev/null 2>&1; then
         print_error "Installation failed"
         cd "${DIR}"
+        clean_problematic_dirs
         return 1
     fi
     
     cd "${DIR}" || return 1
+    # Limpiar después de la instalación exitosa
+    clean_problematic_dirs
     ldconfig
     return 0
 }
@@ -294,6 +323,9 @@ chown "$ORIGINAL_USER:$ORIGINAL_USER" economy_data.json 2>/dev/null || true
 
 rm -f "$TEMP_FILE"
 
+# Limpieza final de carpetas problemáticas
+clean_problematic_dirs
+
 print_step "[8/8] Installation completed successfully"
 echo ""
 print_header "BINARY INSTRUCTIONS"
@@ -301,8 +333,7 @@ print_header "BINARY INSTRUCTIONS"
 ./blockheads_server171 -h >/dev/null 2>&1 || print_warning "Server binary execution failed - may need additional dependencies"
 
 print_header "SERVER MANAGER INSTRUCTIONS"
-print_status "0. Create a world: ./blockheads_server171 -n"
-print_status "1. See world list and ID's: ./blockheads_server171 -l"
+print_status "1. Create a world: ./blockheads_server171 -n"
 print_status "2. Start server: ./server_manager.sh start WORLD_ID PORT"
 print_status "3. Stop server: ./server_manager.sh stop"
 print_status "4. Check status: ./server_manager.sh status"
