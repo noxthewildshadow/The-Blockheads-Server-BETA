@@ -253,7 +253,9 @@ process_give_rank() {
         password=$(echo "$player_info" | cut -d'|' -f3)
     fi
     
-    update_player_info "$target_player" "$target_ip" "$rank_type" "$password"
+    # Convert rank to uppercase
+    local upper_rank=$(echo "$rank_type" | tr '[:lower:]' '[:upper:]')
+    update_player_info "$target_player" "$target_ip" "$upper_rank" "$password"
     
     send_server_command "$SCREEN_SERVER" "Congratulations! $giver_name has gifted $rank_type rank to $target_player for $cost tickets."
     send_server_command "$SCREEN_SERVER" "$giver_name, your new ticket balance: $new_tickets"
@@ -300,7 +302,7 @@ process_message() {
                     password=$(echo "$player_info" | cut -d'|' -f3)
                 fi
                 
-                update_player_info "$player_name" "$player_ip" "mod" "$password"
+                update_player_info "$player_name" "$player_ip" "MOD" "$password"
                 
                 send_server_command "$SCREEN_SERVER" "Congratulations $player_name! You have been promoted to MOD for 50 tickets. Remaining tickets: $new_tickets"
             } || send_server_command "$SCREEN_SERVER" "$player_name, you need $((50 - player_tickets)) more tickets to buy MOD rank."
@@ -325,7 +327,7 @@ process_message() {
                     password=$(echo "$player_info" | cut -d'|' -f3)
                 fi
                 
-                update_player_info "$player_name" "$player_ip" "admin" "$password"
+                update_player_info "$player_name" "$player_ip" "ADMIN" "$password"
                 
                 send_server_command "$SCREEN_SERVER" "Congratulations $player_name! You have been promoted to ADMIN for 100 tickets. Remaining tickets: $new_tickets"
             } || send_server_command "$SCREEN_SERVER" "$player_name, you need $((100 - player_tickets)) more tickets to buy ADMIN rank."
@@ -402,7 +404,7 @@ process_admin_command() {
             password=$(echo "$player_info" | cut -d'|' -f3)
         fi
         
-        update_player_info "$player_name" "$player_ip" "mod" "$password"
+        update_player_info "$player_name" "$player_ip" "MOD" "$password"
         
         send_server_command "$SCREEN_SERVER" "$player_name has been set as MOD by server console!"
     elif [[ "$command" =~ ^!set_admin\ ([a-zA-Z0-9_]+)$ ]]; then
@@ -420,7 +422,7 @@ process_admin_command() {
             password=$(echo "$player_info" | cut -d'|' -f3)
         fi
         
-        update_player_info "$player_name" "$player_ip" "admin" "$password"
+        update_player_info "$player_name" "$player_ip" "ADMIN" "$password"
         
         send_server_command "$SCREEN_SERVER" "$player_name has been set as ADMIN by server console!"
     else
