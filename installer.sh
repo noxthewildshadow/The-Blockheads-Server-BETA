@@ -71,15 +71,15 @@ apply_security_patches() {
     # Parche 1: Prevenir crash por paquetes malformados
     print_status "Applying patch 1: Bad packet crash fix"
     if strings "$binary" | grep -q "match:didReceiveData:fromPlayer:"; then
-        # Buscar la función vulnerable
-        local offset=$(strings -t d "$binary" | grep "match:didReceiveData:fromPlayer:" | awk '{print $1}')
-        if [ -n "$offset" ]; then
+        # Buscar la función vulnerable - tomar solo el primer offset
+        local offset=$(strings -t d "$binary" | grep "match:didReceiveData:fromPlayer:" | head -1 | awk '{print $1}')
+        if [ -n "$offset" ] && [[ "$offset" =~ ^[0-9]+$ ]]; then
             # Aplicar verificación de datos (assembly x86-64)
             # Comprueba si el puntero a datos es NULL y salta si está vacío
             printf '\x48\x85\xFF\x74\x0D\x48\x83\x3F\x00\x74\x08' | dd of="$binary" bs=1 seek=$((offset)) conv=notrunc status=none
             print_success "Applied packet validation patch"
         else
-            print_warning "Could not find packet handling function"
+            print_warning "Could not find packet handling function or invalid offset"
         fi
     else
         print_warning "Packet handling function not found in binary"
@@ -95,8 +95,8 @@ apply_security_patches() {
     
     for method in "${freightcar_methods[@]}"; do
         if strings "$binary" | grep -q "$method"; then
-            local offset=$(strings -t d "$binary" | grep "$method" | awk '{print $1}')
-            if [ -n "$offset" ]; then
+            local offset=$(strings -t d "$binary" | grep "$method" | head -1 | awk '{print $1}')
+            if [ -n "$offset" ] && [[ "$offset" =~ ^[0-9]+$ ]]; then
                 # Reemplazar con código que retorna NULL
                 printf '\x48\x31\xC0\x48\x83\xC4\x28\xC3' | dd of="$binary" bs=1 seek=$((offset)) conv=notrunc status=none
                 print_success "Patched FreightCar method: $method"
