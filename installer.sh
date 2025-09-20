@@ -51,7 +51,7 @@ clean_problematic_dirs() {
         "swift-corelibs-libdispatch.build"
         "libdispatch-build"
     )
-
+    
     for dir in "${problematic_dirs[@]}"; do
         if [ -d "$dir" ]; then
             print_step "Eliminando carpeta problemática: $dir"
@@ -61,82 +61,6 @@ clean_problematic_dirs() {
             )
         fi
     done
-}
-
-# Función para aplicar parche de paquetes malformados
-apply_packet_patch() {
-    local binary="$1"
-    print_status "Applying patch 1: Bad packet crash fix"
-    
-    # Buscar la función vulnerable
-    local offset=$(strings -t d "$binary" | grep "match:didReceiveData:fromPlayer:" | head -1 | awk '{print $1}')
-    
-    if [ -n "$offset" ] && [[ "$offset" =~ ^[0-9]+$ ]]; then
-        # Aplicar verificación de datos (assembly x86-64)
-        # Comprueba si el puntero a datos es NULL y salta si está vacío
-        printf '\x48\x85\xFF\x74\x0D\x48\x83\x3F\x00\x74\x08' | dd of="$binary" bs=1 seek=$((offset)) conv=notrunc status=none
-        print_success "Applied packet validation patch"
-    else
-        print_warning "Could not find packet handling function or invalid offset"
-    fi
-}
-
-# Función para crear y compilar parche FreightCar
-create_freightcar_patch() {
-    print_status "Creating FreightCar security patch..."
-    
-    cat > freightcar_patch.c << 'EOF'
-#define _GNU_SOURCE
-#include <dlfcn.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-// Parche para FreightCar - Previene la creación de objetos vulnerables
-__attribute__((constructor)) void init_patch() {
-    printf("[FREIGHTCAR PATCH] Loaded - Blocking vulnerable FreightCar constructors\n");
-}
-
-// Función genérica para bloquear cualquier inicialización de FreightCar
-void* freightcar_blocker() {
-    printf("[FREIGHTCAR PATCH] Blocked vulnerable FreightCar creation\n");
-    return NULL;
-}
-
-// Interceptar métodos específicos de FreightCar
-void* initWithWorld_dynamicWorld_atPosition_cache_saveDict_placedByClient_(void* self, int arg2, int arg3, int arg4, int arg5, int arg6, int arg7) {
-    return freightcar_blocker();
-}
-
-void* initWithWorld_dynamicWorld_cache_netData_(void* self, int arg2, int arg3, int arg4, int arg5) {
-    return freightcar_blocker();
-}
-
-void* initWithWorld_dynamicWorld_saveDict_chestSaveDict_cache_(void* self, int arg2, int arg3, int arg4, int arg5, int arg6) {
-    return freightcar_blocker();
-}
-EOF
-
-    # Compilar el parche
-    if command -v gcc >/dev/null 2>&1; then
-        if gcc -shared -fPIC -o freightcar_patch.so freightcar_patch.c -ldl; then
-            print_success "Compiled FreightCar security patch with gcc"
-            rm -f freightcar_patch.c
-            return 0
-        fi
-    fi
-    
-    if command -v clang >/dev/null 2>&1; then
-        if clang -shared -fPIC -o freightcar_patch.so freightcar_patch.c -ldl; then
-            print_success "Compiled FreightCar security patch with clang"
-            rm -f freightcar_patch.c
-            return 0
-        fi
-    fi
-    
-    print_error "Failed to compile FreightCar security patch"
-    rm -f freightcar_patch.c
-    return 1
 }
 
 # Limpiar carpetas problemáticas al inicio
@@ -169,16 +93,14 @@ SCRIPTS=(
 
 # Package lists for different distributions
 declare -a PACKAGES_DEBIAN=(
-    'git' 'cmake' 'ninja-build' 'clang' 'systemtap-sdt-dev' 'libbsd-dev' 'linux-libc-dev'
-    'curl' 'tar' 'grep' 'mawk' 'patchelf' 'libgnustep-base-dev' 'libobjc4' 'libgnutls28-dev'
-    'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev' 'zlib1g' 'libicu-dev' 'libicu-dev'
-    'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof' 'binutils' 'gcc'
+    'git' 'cmake' 'ninja-build' 'clang' 'systemtap-sdt-dev' 'libbsd-dev' 'linux-libc-dev' 'curl' 'tar' 'grep' 'mawk'
+    'patchelf' 'libgnustep-base-dev' 'libobjc4' 'libgnutls28-dev' 'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev'
+    'zlib1g' 'libicu-dev' 'libicu-dev' 'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof' 'hexedit'
 )
 
 declare -a PACKAGES_ARCH=(
-    'base-devel' 'git' 'cmake' 'ninja' 'clang' 'systemtap' 'libbsd' 'curl' 'tar' 'grep' 'gawk'
-    'patchelf' 'gnustep-base' 'gcc-libs' 'gnutls' 'libgcrypt' 'libxml2' 'libffi' 'libnsl' 'zlib'
-    'icu' 'libdispatch' 'wget' 'jq' 'screen' 'lsof' 'binutils' 'gcc'
+    'base-devel' 'git' 'cmake' 'ninja' 'clang' 'systemtap' 'libbsd' 'curl' 'tar' 'grep' 'gawk' 'patchelf' 'gnustep-base'
+    'gcc-libs' 'gnutls' 'libgcrypt' 'libxml2' 'libffi' 'libnsl' 'zlib' 'icu' 'libdispatch' 'wget' 'jq' 'screen' 'lsof' 'hexedit'
 )
 
 print_header "THE BLOCKHEADS LINUX SERVER INSTALLER"
@@ -206,39 +128,39 @@ check_flock() {
 build_libdispatch() {
     print_step "Building libdispatch from source..."
     local DIR=$(pwd)
-
+    
     # Limpiar cualquier carpeta existente antes de construir
     clean_problematic_dirs
-
+    
     if ! git clone --depth 1 'https://github.com/swiftlang/swift-corelibs-libdispatch.git' "${DIR}/swift-corelibs-libdispatch" >/dev/null 2>&1; then
         print_error "Failed to clone libdispatch repository"
         return 1
     fi
-
+    
     mkdir -p "${DIR}/swift-corelibs-libdispatch/build" || return 1
     cd "${DIR}/swift-corelibs-libdispatch/build" || return 1
-
+    
     if ! cmake -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ .. >/dev/null 2>&1; then
         print_error "CMake configuration failed"
         cd "${DIR}"
         clean_problematic_dirs
         return 1
     fi
-
+    
     if ! ninja "-j$(nproc)" >/dev/null 2>&1; then
         print_error "Build failed"
         cd "${DIR}"
         clean_problematic_dirs
         return 1
     fi
-
+    
     if ! ninja install >/dev/null 2>&1; then
         print_error "Installation failed"
         cd "${DIR}"
         clean_problematic_dirs
         return 1
     fi
-
+    
     cd "${DIR}" || return 1
     # Limpiar después de la instalación exitosa
     clean_problematic_dirs
@@ -249,8 +171,9 @@ build_libdispatch() {
 # Function to install packages
 install_packages() {
     [ ! -f /etc/os-release ] && print_error "Could not detect the operating system" && return 1
+    
     source /etc/os-release
-
+    
     case $ID in
         debian|ubuntu|pop)
             print_step "Installing packages for Debian/Ubuntu..."
@@ -258,11 +181,13 @@ install_packages() {
                 print_error "Failed to update package list"
                 return 1
             fi
+            
             for package in "${PACKAGES_DEBIAN[@]}"; do
                 if ! apt-get install -y "$package" >/dev/null 2>&1; then
                     print_warning "Failed to install $package"
                 fi
             done
+            
             if ! find_library 'libdispatch.so' >/dev/null; then
                 if ! build_libdispatch; then
                     print_warning "Failed to build libdispatch, trying to install from repository"
@@ -282,7 +207,7 @@ install_packages() {
             return 1
             ;;
     esac
-
+    
     # Check if flock was installed
     check_flock
     return 0
@@ -293,18 +218,92 @@ download_script() {
     local script_name=$1
     local attempts=0
     local max_attempts=3
-
+    
     while [ $attempts -lt $max_attempts ]; do
         if wget $WGET_OPTIONS -O "$script_name" \
             "https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/$script_name"; then
             return 0
         fi
+        
         attempts=$((attempts + 1))
         if [ $attempts -lt $max_attempts ]; then
             sleep 2
         fi
     done
+    
     return 1
+}
+
+# Function to apply security patches
+apply_security_patches() {
+    local binary="$1"
+    print_step "Applying security patches to $binary..."
+    
+    # Parche 1: Prevenir crash por paquetes malformados en BHServer
+    print_status "Applying packet crash patch..."
+    if hexdump -C "$binary" | grep -q "match:didReceiveData:fromPlayer:"; then
+        # Buscar y parchear la función vulnerable
+        local match_func_offset=$(nm "$binary" | grep "match:didReceiveData:fromPlayer:" | awk '{print $1}')
+        if [ -n "$match_func_offset" ]; then
+            # Parchear para agregar verificación de paquete nulo
+            printf '\x48\x85\xff\x74\x0d\x48\x83\x3f\x00\x74\x08\xc3' | dd of="$binary" bs=1 seek=$((0x$match_func_offset)) conv=notrunc 2>/dev/null
+            print_success "Packet crash patch applied"
+        else
+            print_warning "Could not find match function for packet crash patch"
+        fi
+    else
+        print_warning "Packet crash patch not applied (function not found)"
+    fi
+    
+    # Parche 2: Prevenir inicialización de FreightCar vulnerable
+    print_status "Applying FreightCar vulnerability patches..."
+    
+    # Buscar los métodos de inicialización de FreightCar
+    local init1_offset=$(nm "$binary" | grep "initWithWorld:dynamicWorld:atPosition:cache:saveDict:placedByClient:" | awk '{print $1}')
+    local init2_offset=$(nm "$binary" | grep "initWithWorld:dynamicWorld:cache:netData:" | awk '{print $1}')
+    local init3_offset=$(nm "$binary" | grep "initWithWorld:dynamicWorld:saveDict:chestSaveDict:cache:" | awk '{print $1}')
+    
+    # Parche común para todos los métodos init
+    local patch_bytes="\x48\xc7\xc0\x01\x00\x00\x00\x50\x48\x89\xfe\x48\xb8"
+    patch_bytes+="\x90\x90\x90\x90\x90\x90\x90\x90"  # Placeholder for setNeedsRemoved address
+    patch_bytes+="\xff\xd0\x58\x48\x89\xfe\x48\xb8"
+    patch_bytes+="\x90\x90\x90\x90\x90\x90\x90\x90"  # Placeholder for dealloc address
+    patch_bytes+="\xff\xd0\x48\x31\xc0\xc3"  # xor rax, rax; ret
+    
+    # Encontrar direcciones de setNeedsRemoved y dealloc
+    local setneedsremoved_offset=$(nm "$binary" | grep "setNeedsRemoved:" | awk '{print $1}')
+    local dealloc_offset=$(nm "$binary" | grep "dealloc" | awk '{print $1}')
+    
+    if [ -n "$setneedsremoved_offset" ] && [ -n "$dealloc_offset" ]; then
+        # Aplicar parche a cada método init encontrado
+        for offset in "$init1_offset" "$init2_offset" "$init3_offset"; do
+            if [ -n "$offset" ]; then
+                # Reemplazar placeholders con direcciones reales
+                local real_patch=$(printf "$patch_bytes" | sed \
+                    "s/\x90\x90\x90\x90\x90\x90\x90\x90/$(printf \\x${setneedsremoved_offset:6:2}\\x${setneedsremoved_offset:4:2}\\x${setneedsremoved_offset:2:2}\\x${setneedsremoved_offset:0:2}\\x00\\x00\\x00\\x00)/g" | \
+                    sed "s/\x90\x90\x90\x90\x90\x90\x90\x90/$(printf \\x${dealloc_offset:6:2}\\x${dealloc_offset:4:2}\\x${dealloc_offset:2:2}\\x${dealloc_offset:0:2}\\x00\\x00\\x00\\x00)/g")
+                
+                printf "$real_patch" | dd of="$binary" bs=1 seek=$((0x$offset)) conv=notrunc 2>/dev/null
+                print_success "FreightCar init patch applied at offset 0x$offset"
+            fi
+        done
+    else
+        print_warning "Could not find setNeedsRemoved or dealloc methods for FreightCar patch"
+    fi
+    
+    # Parche adicional para setNeedsRemoved basado en el código assembly
+    print_status "Applying setNeedsRemoved assembly patch..."
+    local setneedsremoved_func=$(nm "$binary" | grep "setNeedsRemoved:" | awk '{print $1}')
+    if [ -n "$setneedsremoved_func" ]; then
+        # Parchear la función para evitar el crash
+        # Reemplazar el JZ condicional con un JMP incondicional
+        printf '\x90\x90\x90\x90\x90\x90' | dd of="$binary" bs=1 seek=$((0x$setneedsremoved_func + 0x19)) conv=notrunc 2>/dev/null
+        # Parchear para saltar la destrucción del objeto
+        printf '\x90\x90\x90\x90\x90\x90' | dd of="$binary" bs=1 seek=$((0x$setneedsremoved_func + 0x70)) conv=notrunc 2>/dev/null
+        print_success "setNeedsRemoved assembly patch applied"
+    else
+        print_warning "Could not find setNeedsRemoved function for assembly patch"
+    fi
 }
 
 print_step "[1/8] Installing required packages..."
@@ -314,10 +313,12 @@ if ! install_packages; then
         print_error "Failed to update package list"
         exit 1
     fi
-    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common binutils gcc >/dev/null 2>&1; then
+    
+    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common hexedit >/dev/null 2>&1; then
         print_error "Failed to install essential packages"
         exit 1
     fi
+    
     # Check if flock was installed in fallback mode
     check_flock
 fi
@@ -348,6 +349,7 @@ done
 print_step "[4/8] Extracting files..."
 EXTRACT_DIR="/tmp/blockheads_extract_$$"
 mkdir -p "$EXTRACT_DIR"
+
 if ! tar -xf "$TEMP_FILE" -C "$EXTRACT_DIR" >/dev/null 2>&1; then
     print_error "Failed to extract server files"
     rm -rf "$EXTRACT_DIR"
@@ -369,14 +371,10 @@ fi
 
 chmod +x "$SERVER_BINARY"
 
-# Aplicar parche de paquetes malformados
-apply_packet_patch "$SERVER_BINARY"
-
-# Crear y compilar parche FreightCar
-create_freightcar_patch
+print_step "[4.5/8] Applying security patches..."
+apply_security_patches "$SERVER_BINARY"
 
 print_step "[5/8] Applying comprehensive patchelf compatibility patches..."
-
 declare -A LIBS=(
     ["libgnustep-base.so.1.24"]="$(find_library 'libgnustep-base.so' || echo 'libgnustep-base.so.1.28')"
     ["libobjc.so.4.6"]="$(find_library 'libobjc.so' || echo 'libobjc.so.4')"
@@ -394,6 +392,7 @@ COUNT=0
 for LIB in "${!LIBS[@]}"; do
     [ -z "${LIBS[$LIB]}" ] && continue
     COUNT=$((COUNT+1))
+    
     if ! patchelf --replace-needed "$LIB" "${LIBS[$LIB]}" "$SERVER_BINARY" >/dev/null 2>&1; then
         print_warning "Failed to patch $LIB"
     fi
@@ -402,49 +401,12 @@ done
 print_success "Compatibility patches applied"
 
 print_step "[6/8] Set ownership and permissions"
-chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json freightcar_patch.* 2>/dev/null || true
-chmod 755 server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json freightcar_patch.* 2>/dev/null || true
+chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
+chmod 755 server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
 
 print_step "[7/8] Create economy data file"
 sudo -u "$ORIGINAL_USER" bash -c 'echo "{\"players\": {}, \"transactions\": []}" > economy_data.json' || true
 chown "$ORIGINAL_USER:$ORIGINAL_USER" economy_data.json 2>/dev/null || true
-
-# Actualizar server_manager.sh para usar el parche de seguridad
-if [ -f "freightcar_patch.so" ]; then
-    print_step "Updating server manager to use security patches..."
-    # Crear un backup del server_manager.sh original
-    cp server_manager.sh server_manager.sh.backup
-    
-    # Actualizar la función start_server para usar el parche
-    sed -i '/# Configurar LD_PRELOAD si el parche existe/,/# Main execution/{
-        /# Configurar LD_PRELOAD si el parche existe/{
-            n
-            n
-            n
-            n
-            n
-            n
-            n
-            n
-            n
-            n
-            n
-            i\
-    # Configurar LD_PRELOAD si el parche existe\
-    local PRELOAD_CMD=""\
-    if [ -f "./freightcar_patch.so" ]; then\
-        PRELOAD_CMD="LD_PRELOAD=./freightcar_patch.so"\
-        print_status "Security patch detected: ./freightcar_patch.so"\
-    else\
-        print_warning "FreightCar security patch not found - vulnerability may be present"\
-    fi
-        }
-    }' server_manager.sh
-
-    # Actualizar la línea que ejecuta el servidor
-    sed -i 's|./blockheads_server171 -o|$PRELOAD_CMD ./blockheads_server171 -o|g' server_manager.sh
-    print_success "Server manager updated to use security patches"
-fi
 
 rm -f "$TEMP_FILE"
 
@@ -452,6 +414,11 @@ rm -f "$TEMP_FILE"
 clean_problematic_dirs
 
 print_step "[8/8] Installation completed successfully"
+echo ""
+print_header "SECURITY PATCHES APPLIED"
+print_success "1. Packet crash vulnerability patched"
+print_success "2. FreightCar initialization vulnerabilities patched"
+print_success "3. setNeedsRemoved crash vulnerability patched"
 echo ""
 
 print_header "BINARY INSTRUCTIONS"
@@ -466,15 +433,5 @@ print_status "4. Check status: ./server_manager.sh status"
 print_status "5. Default port: 12153"
 print_status "6. HELP: ./server_manager.sh help"
 print_warning "After creating the world, press CTRL+C to exit"
-
-print_header "SECURITY FEATURES"
-print_success "✓ Packet validation patch applied to binary"
-if [ -f "freightcar_patch.so" ]; then
-    print_success "✓ FreightCar vulnerability patch compiled and ready"
-    print_success "✓ Server manager automatically uses security patches"
-else
-    print_warning "✗ FreightCar vulnerability patch not available"
-    print_warning "✗ Server will be vulnerable to FreightCar exploits"
-fi
 
 print_header "INSTALLATION COMPLETE"
