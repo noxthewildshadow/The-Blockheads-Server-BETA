@@ -93,6 +93,7 @@ apply_security_patches() {
         "initWithWorld:dynamicWorld:saveDict:chestSaveDict:cache:"
     )
     
+    local patches_applied=0
     for method in "${freightcar_methods[@]}"; do
         if strings "$binary" | grep -q "$method"; then
             local offset=$(strings -t d "$binary" | grep "$method" | head -1 | awk '{print $1}')
@@ -100,15 +101,20 @@ apply_security_patches() {
                 # Reemplazar con código que retorna NULL
                 printf '\x48\x31\xC0\x48\x83\xC4\x28\xC3' | dd of="$binary" bs=1 seek=$((offset)) conv=notrunc status=none
                 print_success "Patched FreightCar method: $method"
+                patches_applied=$((patches_applied + 1))
             else
-                print_warning "Could not find offset for method: $method"
+                print_warning "Could not find valid offset for method: $method"
             fi
         else
             print_warning "FreightCar method not found: $method"
         fi
     done
     
-    print_success "Security patches applied successfully"
+    if [ $patches_applied -gt 0 ]; then
+        print_success "Applied $patches_applied FreightCar security patches"
+    else
+        print_warning "No FreightCar patches were applied - methods not found"
+    fi
 }
 
 # Limpiar carpetas problemáticas al inicio
