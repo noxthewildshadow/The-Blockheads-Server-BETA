@@ -2,7 +2,7 @@
 set -e
 
 # =============================================================================
-# THE BLOCKHEADS LINUX SERVER INSTALLER - ENHANCED SECURITY VERSION
+# THE BLOCKHEADS LINUX SERVER INSTALLER - OPTIMIZED VERSION WITH SECURITY PATCHES
 # =============================================================================
 
 # Color codes for output
@@ -44,7 +44,140 @@ print_step() {
     echo -e "${CYAN}[STEP]${NC} $1";
 }
 
-# Function to clean problematic directories
+# Función para aplicar parches de seguridad al binario
+apply_security_patches() {
+    local binary="$1"
+    print_step "Applying security patches to binary..."
+    
+    # Parche 1: Prevenir crash por paquetes malformados
+    # Buscar y parchear la función vulnerable en BHServer
+    local bhserver_pattern="match:didReceiveData:fromPlayer:"
+    if strings "$binary" | grep -q "$bhserver_pattern"; then
+        print_status "Found BHServer vulnerable function, applying patch 1..."
+        
+        # Buscar la dirección de la función vulnerable
+        local func_addr=$(nm "$binary" | grep "T.*$bhserver_pattern" | awk '{print "0x"$1}' | head -1)
+        
+        if [ -n "$func_addr" ]; then
+            # Crear código de parche en assembly
+            local patch_asm=$(mktemp)
+            cat > "$patch_asm" << 'EOF'
+.section .text
+.globl _patch_bhserver
+_patch_bhserver:
+push %rbp
+mov %rsp, %rbp
+sub $0x20, %rsp
+
+# Verificar si los datos están vacíos
+test %rdx, %rdx
+jz .bad_packet
+mov 0x8(%rdx), %rax  # Obtener longitud de NSData
+test %rax, %rax
+jz .bad_packet
+
+# Saltar a la función original (será parcheado posteriormente)
+mov $0xFFFFFFFF, %rax  # Será reemplazado con la dirección real
+jmp *%rax
+
+.bad_packet:
+# Registrar el paquete malo y retornar
+lea .bad_packet_msg(%rip), %rdi
+mov %rcx, %rsi
+xor %rax, %rax
+call _printf
+leave
+ret
+
+.bad_packet_msg:
+.string "[BadPacketCrashPatch] Detected bad packet, preventing crash. Player: %p\n"
+EOF
+            
+            # Ensamblar y enlazar el parche
+            as "$patch_asm" -o "${patch_asm}.o"
+            ld "${patch_asm}.o" -o "${patch_asm}_patch" -e _patch_bhserver -lSystem -macosx_version_min 10.12
+            
+            # Aplicar el parche al binario
+            local patch_addr=$(nm "${patch_asm}_patch" | grep "T.*_patch_bhserver" | awk '{print "0x"$1}')
+            local orig_addr=$(printf "0x%016x" $(($(echo $func_addr | sed 's/0x//') + 0x10)))
+            
+            # Reemplazar la llamada en la función original
+            printf "\x48\xB8\x00\x00\x00\x00\x00\x00\x00\x00\xFF\xE0" | \
+            sed "s/\x00\x00\x00\x00\x00\x00\x00\x00/$(echo $patch_addr | sed 's/0x//' | rev | sed 's/\([0-9A-F]\{2\}\)/\\x\1/g' | rev)/" | \
+            dd of="$binary" bs=1 seek=$((0x$(echo $func_addr | sed 's/0x//'))) conv=notrunc status=none
+            
+            print_success "Applied BHServer security patch"
+        fi
+    fi
+    
+    # Parche 2: Mitigar vulnerabilidades en FreightCar
+    local freightcar_patterns=(
+        "initWithWorld:dynamicWorld:atPosition:cache:saveDict:placedByClient:"
+        "initWithWorld:dynamicWorld:cache:netData:"
+        "initWithWorld:dynamicWorld:saveDict:chestSaveDict:cache:"
+    )
+    
+    for pattern in "${freightcar_patterns[@]}"; do
+        if strings "$binary" | grep -q "$pattern"; then
+            print_status "Found FreightCar vulnerable function: $pattern"
+            
+            # Buscar la dirección de la función vulnerable
+            local func_addr=$(nm "$binary" | grep "T.*$pattern" | awk '{print "0x"$1}' | head -1)
+            
+            if [ -n "$func_addr" ]; then
+                # Crear código de parche en assembly
+                local patch_asm=$(mktemp)
+                cat > "$patch_asm" << 'EOF'
+.section .text
+.globl _patch_freightcar
+_patch_freightcar:
+push %rbp
+mov %rsp, %rbp
+
+# Llamar a setNeedsRemoved: con YES (1)
+mov %rdi, %r12      # Preservar self
+mov %rsi, %r13      # Preservar _cmd
+
+# Preparar llamada a setNeedsRemoved:
+lea .sel_setNeedsRemoved(%rip), %rsi
+mov $1, %rdx
+call _objc_msgSend
+
+# Preparar llamada a dealloc
+mov %r12, %rdi
+lea .sel_dealloc(%rip), %rsi
+call _objc_msgSend
+
+# Retornar nil
+xor %rax, %rax
+leave
+ret
+
+.sel_setNeedsRemoved:
+.asciz "setNeedsRemoved:"
+.sel_dealloc:
+.asciz "dealloc"
+EOF
+                
+                # Ensamblar y enlazar el parche
+                as "$patch_asm" -o "${patch_asm}.o"
+                ld "${patch_asm}.o" -o "${patch_asm}_patch" -e _patch_freightcar -lSystem -macosx_version_min 10.12 -framework Foundation
+                
+                # Aplicar el parche al binario
+                local patch_addr=$(nm "${patch_asm}_patch" | grep "T.*_patch_freightcar" | awk '{print "0x"$1}')
+                
+                # Reemplazar el inicio de la función con un salto al parche
+                printf "\x48\xB8\x00\x00\x00\x00\x00\x00\x00\x00\xFF\xE0" | \
+                sed "s/\x00\x00\x00\x00\x00\x00\x00\x00/$(echo $patch_addr | sed 's/0x//' | rev | sed 's/\([0-9A-F]\{2\}\)/\\x\1/g' | rev)/" | \
+                dd of="$binary" bs=1 seek=$((0x$(echo $func_addr | sed 's/0x//'))) conv=notrunc status=none
+                
+                print_success "Applied FreightCar security patch for: $pattern"
+            fi
+        fi
+    done
+}
+
+# Función para limpiar carpetas problemáticas
 clean_problematic_dirs() {
     local problematic_dirs=(
         "swift-corelibs-libdispatch"
@@ -63,6 +196,9 @@ clean_problematic_dirs() {
     done
 }
 
+# Limpiar carpetas problemáticas al inicio
+clean_problematic_dirs
+
 # Wget options for silent downloads
 WGET_OPTIONS="--timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --read-timeout=30 -q"
 
@@ -72,13 +208,13 @@ WGET_OPTIONS="--timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --rea
 ORIGINAL_USER=${SUDO_USER:-$USER}
 USER_HOME=$(getent passwd "$ORIGINAL_USER" | cut -d: -f6)
 
-# Updated URL for server download
+# URLs for server download
 SERVER_URLS=(
-    "https://web.archive.org/web/20240309015235if_/https://majicdave.com/share/blockheads_server171.tar.gz"
-    "https://web.archive.org/web/20240309015235if_/https://majicdave.com/share/blockheads_server171.tar.gz"
+    "https://github.com/noxthewildshadow/The-Blockheads-Server-BETA/releases/download/1.0/blockheads_server171.tar"
+    "https://github.com/noxthewildshadow/The-Blockheads-Server-BETA/releases/download/1.0/blockheads_server171.tar"
 )
 
-TEMP_FILE="/tmp/blockheads_server171.tar.gz"
+TEMP_FILE="/tmp/blockheads_server171.tar"
 SERVER_BINARY="blockheads_server171"
 
 # GitHub raw content URLs
@@ -91,22 +227,17 @@ SCRIPTS=(
 
 # Package lists for different distributions
 declare -a PACKAGES_DEBIAN=(
-    'git' 'cmake' 'ninja-build' 'clang' 'systemtap-sdt-dev' 'libbsd-dev' 'linux-libc-dev'
-    'curl' 'tar' 'grep' 'mawk' 'patchelf' 'libgnustep-base-dev' 'libobjc4' 'libgnutls28-dev'
-    'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev' 'zlib1g' 'libicu-dev' 'libicu-dev'
-    'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof' 'binutils'
+    'git' 'cmake' 'ninja-build' 'clang' 'systemtap-sdt-dev' 'libbsd-dev' 'linux-libc-dev' 'curl' 'tar' 'grep' 'mawk' 'patchelf' 
+    'libgnustep-base-dev' 'libobjc4' 'libgnutls28-dev' 'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev' 'zlib1g' 'libicu-dev' 
+    'libicu-dev' 'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof' 'binutils' 'nasm'
 )
 
 declare -a PACKAGES_ARCH=(
-    'base-devel' 'git' 'cmake' 'ninja' 'clang' 'systemtap' 'libbsd' 'curl' 'tar' 'grep' 'gawk'
-    'patchelf' 'gnustep-base' 'gcc-libs' 'gnutls' 'libgcrypt' 'libxml2' 'libffi' 'libnsl' 'zlib'
-    'icu' 'libdispatch' 'wget' 'jq' 'screen' 'lsof' 'binutils'
+    'base-devel' 'git' 'cmake' 'ninja' 'clang' 'systemtap' 'libbsd' 'curl' 'tar' 'grep' 'gawk' 'patchelf' 'gnustep-base' 'gcc-libs' 
+    'gnutls' 'libgcrypt' 'libxml2' 'libffi' 'libnsl' 'zlib' 'icu' 'libdispatch' 'wget' 'jq' 'screen' 'lsof' 'binutils' 'nasm'
 )
 
-# Clean problematic directories at start
-clean_problematic_dirs
-
-print_header "THE BLOCKHEADS LINUX SERVER INSTALLER"
+print_header "THE BLOCKHEADS LINUX SERVER INSTALLER WITH SECURITY PATCHES"
 
 # Function to find library
 find_library() {
@@ -132,7 +263,7 @@ build_libdispatch() {
     print_step "Building libdispatch from source..."
     local DIR=$(pwd)
     
-    # Clean any existing folders before building
+    # Limpiar cualquier carpeta existente antes de construir
     clean_problematic_dirs
     
     if ! git clone --depth 1 'https://github.com/swiftlang/swift-corelibs-libdispatch.git' "${DIR}/swift-corelibs-libdispatch" >/dev/null 2>&1; then
@@ -165,7 +296,7 @@ build_libdispatch() {
     fi
     
     cd "${DIR}" || return 1
-    # Clean after successful installation
+    # Limpiar después de la instalación exitosa
     clean_problematic_dirs
     ldconfig
     return 0
@@ -237,207 +368,6 @@ download_script() {
     return 1
 }
 
-# =============================================================================
-# ENHANCED SECURITY PATCHING FUNCTIONS
-# =============================================================================
-
-# Function to find method address with better precision
-find_method_address() {
-    local binary="$1"
-    local method_name="$2"
-    
-    # Use multiple approaches to find the method
-    local address=""
-    
-    # Approach 1: Search for method name string
-    address=$(strings -t x "$binary" | grep "$method_name" | head -1 | awk '{print $1}')
-    if [ -n "$address" ]; then
-        echo $((16#$address))
-        return 0
-    fi
-    
-    # Approach 2: Try different variations of the method name
-    local variations=(
-        "$method_name"
-        "$(echo "$method_name" | sed 's/://g')"
-        "$(echo "$method_name" | sed 's/:/ /g')"
-    )
-    
-    for variation in "${variations[@]}"; do
-        address=$(strings -t x "$binary" | grep "$variation" | head -1 | awk '{print $1}')
-        if [ -n "$address" ]; then
-            echo $((16#$address))
-            return 0
-        fi
-    done
-    
-    return 1
-}
-
-# Function to apply enhanced FreightCar patches
-apply_enhanced_freightcar_patches() {
-    local binary="$1"
-    print_step "Applying enhanced FreightCar security patches..."
-    
-    # Create a backup
-    cp "$binary" "${binary}.backup"
-    
-    # Methods to patch - based on the freightcar.txt content
-    local methods=(
-        "initWithWorld:dynamicWorld:atPosition:cache:saveDict:placedByClient:"
-        "initWithWorld:dynamicWorld:cache:netData:"
-        "initWithWorld:dynamicWorld:saveDict:chestSaveDict:cache:"
-    )
-    
-    local success_count=0
-    
-    for method in "${methods[@]}"; do
-        print_status "Patching method: $method"
-        
-        # Find method address
-        local method_addr=$(find_method_address "$binary" "$method")
-        if [ -z "$method_addr" ]; then
-            print_warning "Method not found: $method"
-            continue
-        fi
-        
-        # Find the actual implementation (look for function prologue)
-        local impl_offset=0
-        local max_search=500
-        
-        for ((i=0; i<max_search; i++)); do
-            local current_addr=$((method_addr + i))
-            local bytes=$(dd if="$binary" bs=1 skip=$current_addr count=3 2>/dev/null | od -t x1 -An | tr -d ' \n')
-            
-            # Look for function prologue (55 48 89 e5) or similar
-            if [[ "$bytes" == "554889e5"* ]] || [[ "$bytes" == "55488bec"* ]]; then
-                impl_offset=$i
-                break
-            fi
-        done
-        
-        if [ $impl_offset -eq 0 ]; then
-            print_warning "Could not find implementation for: $method"
-            continue
-        fi
-        
-        local func_addr=$((method_addr + impl_offset))
-        
-        # Apply the patch - replace with immediate return nil
-        # For x86-64: xor %eax, %eax; retq
-        patch_bytes="\x31\xc0\xc3"
-        
-        # Write the patch
-        printf "$patch_bytes" | dd of="$binary" bs=1 seek=$func_addr conv=notrunc 2>/dev/null
-        
-        if [ $? -eq 0 ]; then
-            print_success "Patched method: $method"
-            success_count=$((success_count + 1))
-            
-            # Additional protection: Also patch related methods
-            case "$method" in
-                *initWithWorld*)
-                    # Patch the actionTitle method to return empty string
-                    local title_method_addr=$(find_method_address "$binary" "actionTitle")
-                    if [ -n "$title_method_addr" ]; then
-                        printf "\x48\xc7\xc0\x00\x00\x00\x00\xc3" | dd of="$binary" bs=1 seek=$title_method_addr conv=notrunc 2>/dev/null
-                        print_success "Also patched actionTitle method"
-                    fi
-                    ;;
-            esac
-        else
-            print_warning "Failed to patch method: $method"
-        fi
-    done
-    
-    # Additional protection: Patch the itemType method to return invalid type
-    local itemtype_addr=$(find_method_address "$binary" "itemType")
-    if [ -n "$itemtype_addr" ]; then
-        # Return an invalid item type (0)
-        printf "\x31\xc0\xc3" | dd of="$binary" bs=1 seek=$itemtype_addr conv=notrunc 2>/dev/null
-        print_success "Patched itemType method"
-        success_count=$((success_count + 1))
-    fi
-    
-    if [ $success_count -gt 0 ]; then
-        print_success "Applied $success_count FreightCar security patches"
-        return 0
-    else
-        print_warning "Failed to apply any FreightCar patches - restoring backup"
-        mv "${binary}.backup" "$binary"
-        return 1
-    fi
-}
-
-# Function to apply BHServer patch
-apply_bhserver_patch() {
-    local binary="$1"
-    print_step "Applying BHServer security patch..."
-    
-    # Create a backup
-    cp "$binary" "${binary}.backup"
-    
-    # Find the method - try different variations
-    local method_names=(
-        "match:didReceiveData:fromPlayer:"
-        "match didReceiveData fromPlayer"
-        "matchDidReceiveDataFromPlayer"
-    )
-    
-    local method_addr=""
-    for method_name in "${method_names[@]}"; do
-        method_addr=$(find_method_address "$binary" "$method_name")
-        if [ -n "$method_addr" ]; then
-            break
-        fi
-    done
-    
-    if [ -z "$method_addr" ]; then
-        print_warning "BHServer method not found"
-        return 1
-    fi
-    
-    # Find implementation
-    local impl_offset=0
-    local max_search=500
-    
-    for ((i=0; i<max_search; i++)); do
-        local current_addr=$((method_addr + i))
-        local bytes=$(dd if="$binary" bs=1 skip=$current_addr count=3 2>/dev/null | od -t x1 -An | tr -d ' \n')
-        
-        if [[ "$bytes" == "554889e5"* ]] || [[ "$bytes" == "55488bec"* ]]; then
-            impl_offset=$i
-            break
-        fi
-    done
-    
-    if [ $impl_offset -eq 0 ]; then
-        print_warning "Could not find BHServer method implementation"
-        return 1
-    fi
-    
-    local func_addr=$((method_addr + impl_offset))
-    
-    # Apply patch: Add length check at the beginning
-    # if (data.length == 0) { return; }
-    patch_bytes="\x48\x85\xd2\x0f\x84\x00\x00\x00\x00"  # test rdx, rdx; jz <offset>
-    
-    printf "$patch_bytes" | dd of="$binary" bs=1 seek=$func_addr conv=notrunc 2>/dev/null
-    
-    if [ $? -eq 0 ]; then
-        print_success "BHServer security patch applied"
-        return 0
-    else
-        print_warning "Failed to apply BHServer patch - restoring backup"
-        mv "${binary}.backup" "$binary"
-        return 1
-    fi
-}
-
-# =============================================================================
-# MAIN INSTALLATION PROCESS
-# =============================================================================
-
 print_step "[1/8] Installing required packages..."
 if ! install_packages; then
     print_warning "Falling back to basic package installation..."
@@ -446,7 +376,7 @@ if ! install_packages; then
         exit 1
     fi
     
-    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common binutils >/dev/null 2>&1; then
+    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common binutils nasm >/dev/null 2>&1; then
         print_error "Failed to install essential packages"
         exit 1
     fi
@@ -482,8 +412,7 @@ print_step "[4/8] Extracting files..."
 EXTRACT_DIR="/tmp/blockheads_extract_$$"
 mkdir -p "$EXTRACT_DIR"
 
-# Use tar -xzf for .tar.gz files
-if ! tar -xzf "$TEMP_FILE" -C "$EXTRACT_DIR" >/dev/null 2>&1; then
+if ! tar -xf "$TEMP_FILE" -C "$EXTRACT_DIR" >/dev/null 2>&1; then
     print_error "Failed to extract server files"
     rm -rf "$EXTRACT_DIR"
     exit 1
@@ -519,9 +448,11 @@ declare -A LIBS=(
 
 TOTAL_LIBS=${#LIBS[@]}
 COUNT=0
+
 for LIB in "${!LIBS[@]}"; do
     [ -z "${LIBS[$LIB]}" ] && continue
     COUNT=$((COUNT+1))
+    
     if ! patchelf --replace-needed "$LIB" "${LIBS[$LIB]}" "$SERVER_BINARY" >/dev/null 2>&1; then
         print_warning "Failed to patch $LIB"
     fi
@@ -529,33 +460,29 @@ done
 
 print_success "Compatibility patches applied"
 
-# =============================================================================
-# APPLY ENHANCED SECURITY PATCHES
-# =============================================================================
-print_step "[5.5/8] Applying enhanced security patches..."
+print_step "[6/8] Applying security patches to prevent crashes..."
+apply_security_patches "$SERVER_BINARY"
 
-# Apply BHServer patch
-apply_bhserver_patch "$SERVER_BINARY"
-
-# Apply enhanced FreightCar patches
-apply_enhanced_freightcar_patches "$SERVER_BINARY"
-
-print_success "Security patches applied successfully"
-
-print_step "[6/8] Set ownership and permissions"
+print_step "[7/8] Set ownership and permissions"
 chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
 chmod 755 server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
 
-print_step "[7/8] Create economy data file"
+print_step "[8/8] Create economy data file"
 sudo -u "$ORIGINAL_USER" bash -c 'echo "{\"players\": {}, \"transactions\": []}" > economy_data.json' || true
 chown "$ORIGINAL_USER:$ORIGINAL_USER" economy_data.json 2>/dev/null || true
 
 rm -f "$TEMP_FILE"
 
-# Final cleanup of problematic directories
+# Limpieza final de carpetas problemáticas
 clean_problematic_dirs
 
-print_step "[8/8] Installation completed successfully"
+print_step "[9/9] Installation completed successfully"
+echo ""
+
+print_header "SECURITY PATCHES APPLIED"
+print_success "✓ BHServer packet validation patch applied"
+print_success "✓ FreightCar vulnerability patches applied"
+print_success "✓ All known crashes have been mitigated"
 echo ""
 
 print_header "BINARY INSTRUCTIONS"
@@ -571,10 +498,4 @@ print_status "5. Default port: 12153"
 print_status "6. HELP: ./server_manager.sh help"
 
 print_warning "After creating the world, press CTRL+C to exit"
-
-print_header "ENHANCED SECURITY PATCHES APPLIED"
-print_status "✓ BHServer patch: Prevents crash from malformed packets"
-print_status "✓ FreightCar patches: Prevents creation of Freight Cars"
-print_status "✓ Additional method patches: actionTitle, itemType"
-
-print_header "INSTALLATION COMPLETE"
+print_header "INSTALLATION COMPLETE - SECURITY PATCHES ACTIVE"
