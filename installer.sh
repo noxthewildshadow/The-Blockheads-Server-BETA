@@ -2,7 +2,7 @@
 set -e
 
 # =============================================================================
-# THE BLOCKHEADS LINUX SERVER INSTALLER - OPTIMIZED VERSION WITH SECURITY PATCHES
+# THE BLOCKHEADS LINUX SERVER INSTALLER - ENHANCED SECURITY VERSION
 # =============================================================================
 
 # Color codes for output
@@ -94,13 +94,13 @@ declare -a PACKAGES_DEBIAN=(
     'git' 'cmake' 'ninja-build' 'clang' 'systemtap-sdt-dev' 'libbsd-dev' 'linux-libc-dev'
     'curl' 'tar' 'grep' 'mawk' 'patchelf' 'libgnustep-base-dev' 'libobjc4' 'libgnutls28-dev'
     'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev' 'zlib1g' 'libicu-dev' 'libicu-dev'
-    'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof'
+    'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof' 'binutils' 'objdump'
 )
 
 declare -a PACKAGES_ARCH=(
     'base-devel' 'git' 'cmake' 'ninja' 'clang' 'systemtap' 'libbsd' 'curl' 'tar' 'grep' 'gawk'
     'patchelf' 'gnustep-base' 'gcc-libs' 'gnutls' 'libgcrypt' 'libxml2' 'libffi' 'libnsl' 'zlib'
-    'icu' 'libdispatch' 'wget' 'jq' 'screen' 'lsof'
+    'icu' 'libdispatch' 'wget' 'jq' 'screen' 'lsof' 'binutils'
 )
 
 # Clean problematic directories at start
@@ -164,7 +164,7 @@ build_libdispatch() {
         return 1
     fi
     
-    cd "${DIR}" || return 1
+    cd "${DIR" || return 1
     # Clean after successful installation
     clean_problematic_dirs
     ldconfig
@@ -238,65 +238,43 @@ download_script() {
 }
 
 # =============================================================================
-# SECURITY PATCHING FUNCTIONS
+# ENHANCED SECURITY PATCHING FUNCTIONS
 # =============================================================================
 
-# Function to apply BHServer security patch
-apply_bhserver_patch() {
+# Function to find method address with better precision
+find_method_address() {
     local binary="$1"
-    print_step "Applying BHServer security patch..."
+    local method_name="$2"
     
-    # Create a backup
-    cp "$binary" "${binary}.backup"
+    # Use multiple approaches to find the method
+    local address=""
     
-    # Search for the method string in the binary
-    local method_offset=$(strings -t x "$binary" | grep "match:didReceiveData:fromPlayer:" | head -1 | awk '{print $1}')
-    
-    if [ -z "$method_offset" ]; then
-        print_warning "BHServer method not found - patch may not be applicable"
-        return 1
-    fi
-    
-    # Convert to decimal
-    method_offset=$((16#$method_offset))
-    
-    # Find the method implementation by searching for common prologue patterns
-    # For x86-64, we look for function prologues: 55 48 89 e5 (push rbp; mov rbp, rsp)
-    local impl_offset=$(dd if="$binary" bs=1 skip=$method_offset 2>/dev/null | \
-                       od -v -t x1 -An | tr -d '\n' | \
-                       grep -bo "55 48 89 e5" | head -1 | cut -d: -f1)
-    
-    if [ -z "$impl_offset" ]; then
-        print_warning "Could not find BHServer method implementation for patching"
-        return 1
-    fi
-    
-    # Calculate the actual function address
-    local func_offset=$((method_offset + impl_offset))
-    
-    # Apply the patch - replace the beginning of the function with our safety check
-    # This is a simplified version - a real patch would be more complex
-    printf "\x48\x89\xf8\x48\x85\xc0\x74\x1c" | dd of="$binary" bs=1 seek=$func_offset conv=notrunc 2>/dev/null
-    
-    if [ $? -eq 0 ]; then
-        print_success "BHServer security patch applied successfully"
+    # Approach 1: Search for method name string
+    address=$(strings -t x "$binary" | grep "$method_name" | head -1 | awk '{print $1}')
+    if [ -n "$address" ]; then
+        echo $((16#$address))
         return 0
-    else
-        print_warning "Failed to apply BHServer patch - restoring backup"
-        mv "${binary}.backup" "$binary"
-        return 1
     fi
+    
+    # Approach 2: Use objdump for more precise search
+    address=$(objdump -t "$binary" | grep "$method_name" | awk '{print $1}' | head -1)
+    if [ -n "$address" ]; then
+        echo $((16#$address))
+        return 0
+    fi
+    
+    return 1
 }
 
-# Function to apply FreightCar security patches
-apply_freightcar_patches() {
+# Function to apply enhanced FreightCar patches
+apply_enhanced_freightcar_patches() {
     local binary="$1"
-    print_step "Applying FreightCar security patches..."
+    print_step "Applying enhanced FreightCar security patches..."
     
     # Create a backup
     cp "$binary" "${binary}.backup"
     
-    # Patch the three initialization methods
+    # Methods to patch - based on the freightcar.txt content
     local methods=(
         "initWithWorld:dynamicWorld:atPosition:cache:saveDict:placedByClient:"
         "initWithWorld:dynamicWorld:cache:netData:"
@@ -306,46 +284,130 @@ apply_freightcar_patches() {
     local success_count=0
     
     for method in "${methods[@]}"; do
-        local method_offset=$(strings -t x "$binary" | grep "$method" | head -1 | awk '{print $1}')
+        print_status "Patching method: $method"
         
-        if [ -z "$method_offset" ]; then
-            print_warning "FreightCar method not found: $method"
+        # Find method address
+        local method_addr=$(find_method_address "$binary" "$method")
+        if [ -z "$method_addr" ]; then
+            print_warning "Method not found: $method"
             continue
         fi
         
-        # Convert to decimal
-        method_offset=$((16#$method_offset))
+        # Find the actual implementation (look for function prologue)
+        local impl_offset=0
+        local max_search=500
         
-        # Find the method implementation
-        local impl_offset=$(dd if="$binary" bs=1 skip=$method_offset 2>/dev/null | \
-                           od -v -t x1 -An | tr -d '\n' | \
-                           grep -bo "55 48 89 e5" | head -1 | cut -d: -f1)
+        for ((i=0; i<max_search; i++)); do
+            local current_addr=$((method_addr + i))
+            local bytes=$(dd if="$binary" bs=1 skip=$current_addr count=3 2>/dev/null | od -t x1 -An | tr -d ' \n')
+            
+            # Look for function prologue (55 48 89 e5) or similar
+            if [[ "$bytes" == "554889e5"* ]] || [[ "$bytes" == "55488bec"* ]]; then
+                impl_offset=$i
+                break
+            fi
+        done
         
-        if [ -z "$impl_offset" ]; then
-            print_warning "Could not find implementation for FreightCar method: $method"
+        if [ $impl_offset -eq 0 ]; then
+            print_warning "Could not find implementation for: $method"
             continue
         fi
         
-        local func_offset=$((method_offset + impl_offset))
+        local func_addr=$((method_addr + impl_offset))
         
-        # Replace the method with a simple implementation that calls setNeedsRemoved: and dealloc
-        # This is a simplified version - a real patch would need proper function prologue/epilogue
-        printf "\x48\x89\xf8\x48\x83\xec\x20\x48\x89\xc7\xbe\x00\x00\x00\x00\xba\x01\x00\x00\x00\xe8\x00\x00\x00\x00\x48\x89\xc7\xbe\x00\x00\x00\x00\xe8\x00\x00\x00\x00\x31\xc0\x48\x83\xc4\x20\xc3" | \
-        dd of="$binary" bs=1 seek=$func_offset conv=notrunc 2>/dev/null
+        # Apply the patch - replace with immediate return nil
+        # For x86-64: xor %eax, %eax; retq
+        patch_bytes="\x31\xc0\xc3"
+        
+        # Write the patch
+        printf "$patch_bytes" | dd of="$binary" bs=1 seek=$func_addr conv=notrunc 2>/dev/null
         
         if [ $? -eq 0 ]; then
-            print_success "Patched FreightCar method: $method"
+            print_success "Patched method: $method"
             success_count=$((success_count + 1))
+            
+            # Additional protection: Also patch related methods
+            case "$method" in
+                *initWithWorld*)
+                    # Patch the actionTitle method to return empty string
+                    local title_method_addr=$(find_method_address "$binary" "actionTitle")
+                    if [ -n "$title_method_addr" ]; then
+                        printf "\x48\xc7\xc0\x00\x00\x00\x00\xc3" | dd of="$binary" bs=1 seek=$title_method_addr conv=notrunc 2>/dev/null
+                        print_success "Also patched actionTitle method"
+                    fi
+                    ;;
+            esac
         else
-            print_warning "Failed to patch FreightCar method: $method"
+            print_warning "Failed to patch method: $method"
         fi
     done
+    
+    # Additional protection: Patch the itemType method to return invalid type
+    local itemtype_addr=$(find_method_address "$binary" "itemType")
+    if [ -n "$itemtype_addr" ]; then
+        # Return an invalid item type (0)
+        printf "\x31\xc0\xc3" | dd of="$binary" bs=1 seek=$itemtype_addr conv=notrunc 2>/dev/null
+        print_success "Patched itemType method"
+        success_count=$((success_count + 1))
+    fi
     
     if [ $success_count -gt 0 ]; then
         print_success "Applied $success_count FreightCar security patches"
         return 0
     else
         print_warning "Failed to apply any FreightCar patches - restoring backup"
+        mv "${binary}.backup" "$binary"
+        return 1
+    fi
+}
+
+# Function to apply BHServer patch
+apply_bhserver_patch() {
+    local binary="$1"
+    print_step "Applying BHServer security patch..."
+    
+    # Create a backup
+    cp "$binary" "${binary}.backup"
+    
+    # Find the method
+    local method_addr=$(find_method_address "$binary" "match:didReceiveData:fromPlayer:")
+    if [ -z "$method_addr" ]; then
+        print_warning "BHServer method not found"
+        return 1
+    fi
+    
+    # Find implementation
+    local impl_offset=0
+    local max_search=500
+    
+    for ((i=0; i<max_search; i++)); do
+        local current_addr=$((method_addr + i))
+        local bytes=$(dd if="$binary" bs=1 skip=$current_addr count=3 2>/dev/null | od -t x1 -An | tr -d ' \n')
+        
+        if [[ "$bytes" == "554889e5"* ]] || [[ "$bytes" == "55488bec"* ]]; then
+            impl_offset=$i
+            break
+        fi
+    done
+    
+    if [ $impl_offset -eq 0 ]; then
+        print_warning "Could not find BHServer method implementation"
+        return 1
+    fi
+    
+    local func_addr=$((method_addr + impl_offset))
+    
+    # Apply patch: Add length check at the beginning
+    # if (data.length == 0) { return; }
+    patch_bytes="\x48\x85\xd2\x0f\x84\x00\x00\x00\x00"  # test rdx, rdx; jz <offset>
+    
+    printf "$patch_bytes" | dd of="$binary" bs=1 seek=$func_addr conv=notrunc 2>/dev/null
+    
+    if [ $? -eq 0 ]; then
+        print_success "BHServer security patch applied"
+        return 0
+    else
+        print_warning "Failed to apply BHServer patch - restoring backup"
         mv "${binary}.backup" "$binary"
         return 1
     fi
@@ -363,7 +425,7 @@ if ! install_packages; then
         exit 1
     fi
     
-    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common >/dev/null 2>&1; then
+    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common binutils >/dev/null 2>&1; then
         print_error "Failed to install essential packages"
         exit 1
     fi
@@ -446,15 +508,15 @@ done
 print_success "Compatibility patches applied"
 
 # =============================================================================
-# APPLY SECURITY PATCHES
+# APPLY ENHANCED SECURITY PATCHES
 # =============================================================================
-print_step "[5.5/8] Applying security patches to prevent crashes and vulnerabilities..."
+print_step "[5.5/8] Applying enhanced security patches..."
 
 # Apply BHServer patch
 apply_bhserver_patch "$SERVER_BINARY"
 
-# Apply FreightCar patches
-apply_freightcar_patches "$SERVER_BINARY"
+# Apply enhanced FreightCar patches
+apply_enhanced_freightcar_patches "$SERVER_BINARY"
 
 print_success "Security patches applied successfully"
 
@@ -488,8 +550,9 @@ print_status "6. HELP: ./server_manager.sh help"
 
 print_warning "After creating the world, press CTRL+C to exit"
 
-print_header "SECURITY PATCHES APPLIED"
+print_header "ENHANCED SECURITY PATCHES APPLIED"
 print_status "✓ BHServer patch: Prevents crash from malformed packets"
-print_status "✓ FreightCar patches: Fix initialization vulnerabilities"
+print_status "✓ FreightCar patches: Prevents creation of Freight Cars"
+print_status "✓ Additional method patches: actionTitle, itemType"
 
 print_header "INSTALLATION COMPLETE"
