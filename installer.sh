@@ -121,6 +121,7 @@ EOF
     if command -v gcc >/dev/null 2>&1; then
         if gcc -shared -fPIC -o freightcar_patch.so freightcar_patch.c -ldl; then
             print_success "Compiled FreightCar security patch with gcc"
+            rm -f freightcar_patch.c
             return 0
         fi
     fi
@@ -128,11 +129,13 @@ EOF
     if command -v clang >/dev/null 2>&1; then
         if clang -shared -fPIC -o freightcar_patch.so freightcar_patch.c -ldl; then
             print_success "Compiled FreightCar security patch with clang"
+            rm -f freightcar_patch.c
             return 0
         fi
     fi
     
     print_error "Failed to compile FreightCar security patch"
+    rm -f freightcar_patch.c
     return 1
 }
 
@@ -215,7 +218,7 @@ build_libdispatch() {
     mkdir -p "${DIR}/swift-corelibs-libdispatch/build" || return 1
     cd "${DIR}/swift-corelibs-libdispatch/build" || return 1
 
-    if ! cmake -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPiler=clang++ .. >/dev/null 2>&1; then
+    if ! cmake -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ .. >/dev/null 2>&1; then
         print_error "CMake configuration failed"
         cd "${DIR}"
         clean_problematic_dirs
@@ -406,11 +409,40 @@ print_step "[7/8] Create economy data file"
 sudo -u "$ORIGINAL_USER" bash -c 'echo "{\"players\": {}, \"transactions\": []}" > economy_data.json' || true
 chown "$ORIGINAL_USER:$ORIGINAL_USER" economy_data.json 2>/dev/null || true
 
-# Modificar server_manager.sh para usar automáticamente el parche
-if [ -f "server_manager.sh" ] && [ -f "freightcar_patch.so" ]; then
+# Actualizar server_manager.sh para usar el parche de seguridad
+if [ -f "freightcar_patch.so" ]; then
     print_step "Updating server manager to use security patches..."
-    sed -i 's|\./blockheads_server171|LD_PRELOAD=./freightcar_patch.so ./blockheads_server171|g' server_manager.sh
-    sed -i 's|\(start_server\)|# Security patches applied automatically\n\1|' server_manager.sh
+    # Crear un backup del server_manager.sh original
+    cp server_manager.sh server_manager.sh.backup
+    
+    # Actualizar la función start_server para usar el parche
+    sed -i '/# Configurar LD_PRELOAD si el parche existe/,/# Main execution/{
+        /# Configurar LD_PRELOAD si el parche existe/{
+            n
+            n
+            n
+            n
+            n
+            n
+            n
+            n
+            n
+            n
+            n
+            i\
+    # Configurar LD_PRELOAD si el parche existe\
+    local PRELOAD_CMD=""\
+    if [ -f "./freightcar_patch.so" ]; then\
+        PRELOAD_CMD="LD_PRELOAD=./freightcar_patch.so"\
+        print_status "Security patch detected: ./freightcar_patch.so"\
+    else\
+        print_warning "FreightCar security patch not found - vulnerability may be present"\
+    fi
+        }
+    }' server_manager.sh
+
+    # Actualizar la línea que ejecuta el servidor
+    sed -i 's|./blockheads_server171 -o|$PRELOAD_CMD ./blockheads_server171 -o|g' server_manager.sh
     print_success "Server manager updated to use security patches"
 fi
 
@@ -437,7 +469,12 @@ print_warning "After creating the world, press CTRL+C to exit"
 
 print_header "SECURITY FEATURES"
 print_success "✓ Packet validation patch applied to binary"
-print_success "✓ FreightCar vulnerability patch compiled and ready"
-print_success "✓ Server manager automatically uses security patches"
+if [ -f "freightcar_patch.so" ]; then
+    print_success "✓ FreightCar vulnerability patch compiled and ready"
+    print_success "✓ Server manager automatically uses security patches"
+else
+    print_warning "✗ FreightCar vulnerability patch not available"
+    print_warning "✗ Server will be vulnerable to FreightCar exploits"
+fi
 
 print_header "INSTALLATION COMPLETE"
