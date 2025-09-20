@@ -232,9 +232,10 @@ create_protection_wrapper() {
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <stdio.h>
-#include <string.h>
+#include <stdint.h>
 #include <objc/objc.h>
 #include <objc/runtime.h>
+#include <objc/message.h>
 
 // Forward declarations
 typedef id (*init_world_func)(id, SEL, id, id, id, id, id);
@@ -266,17 +267,22 @@ void hooked_didReceiveData(id self, SEL _cmd, id match, id data, id player) {
         return;
     }
     
-    // Check if data has length method and if length is 0
+    // Check if data has length method using runtime functions
     SEL lengthSelector = sel_registerName("length");
-    if ([data respondsToSelector:lengthSelector]) {
-        NSUInteger length = [data length];
+    Class dataClass = object_getClass(data);
+    
+    if (class_respondsToSelector(dataClass, lengthSelector)) {
+        // Get the length using objc_msgSend
+        uintptr_t (*msgSend)(id, SEL) = (uintptr_t (*)(id, SEL))objc_msgSend;
+        NSUInteger length = (NSUInteger)msgSend(data, lengthSelector);
+        
         if (length == 0) {
             printf("[PROTECTION] Blocked zero-length data in BHServer\n");
             return;
         }
     }
     
-    // Call original method
+    // Call original method if it exists
     void (*orig)(id, SEL, id, id, id) = dlsym(RTLD_NEXT, "didReceiveData");
     if (orig) {
         orig(self, _cmd, match, data, player);
@@ -322,6 +328,8 @@ EOF
             return 0
         else
             print_error "Failed to compile protection wrapper"
+            # Show more detailed error information
+            gcc -shared -fPIC -ldl -lobjc "$wrapper_src" -o "$wrapper_lib" 2>&1 | head -10
             return 1
         fi
     else
