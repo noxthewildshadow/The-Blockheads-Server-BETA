@@ -241,13 +241,23 @@ apply_security_patches() {
     
     # Parche 1: Prevenir crash por paquetes malformados en BHServer
     print_status "Applying packet crash patch..."
-    if hexdump -C "$binary" | grep -q "match:didReceiveData:fromPlayer:"; then
-        # Buscar y parchear la función vulnerable
+    if strings "$binary" | grep -q "match:didReceiveData:fromPlayer:"; then
         local match_func_offset=$(nm "$binary" | grep "match:didReceiveData:fromPlayer:" | awk '{print $1}')
         if [ -n "$match_func_offset" ]; then
-            # Parchear para agregar verificación de paquete nulo
-            printf '\x48\x85\xff\x74\x0d\x48\x83\x3f\x00\x74\x08\xc3' | dd of="$binary" bs=1 seek=$((0x$match_func_offset)) conv=notrunc 2>/dev/null
-            print_success "Packet crash patch applied"
+            # Convertir offset hexadecimal a decimal
+            local match_addr=$(printf "%d" "0x$match_func_offset")
+            # Parche assembly: if (!data || [data length] == 0) return;
+            # 48 85 ff          test   rdi, rdi
+            # 74 0d             je     +13
+            # 48 83 3f 00       cmp    QWORD PTR [rdi], 0x0
+            # 74 08             je     +8
+            # c3                ret
+            printf '\x48\x85\xff\x74\x0d\x48\x83\x3f\x00\x74\x08\xc3' | dd of="$binary" bs=1 seek="$match_addr" conv=notrunc 2>/dev/null
+            if [ $? -eq 0 ]; then
+                print_success "Packet crash patch applied at offset 0x$match_func_offset"
+            else
+                print_warning "Failed to apply packet crash patch"
+            fi
         else
             print_warning "Could not find match function for packet crash patch"
         fi
@@ -258,49 +268,52 @@ apply_security_patches() {
     # Parche 2: Prevenir inicialización de FreightCar vulnerable
     print_status "Applying FreightCar vulnerability patches..."
     
-    # Buscar los métodos de inicialización de FreightCar
-    local init1_offset=$(nm "$binary" | grep "initWithWorld:dynamicWorld:atPosition:cache:saveDict:placedByClient:" | awk '{print $1}')
-    local init2_offset=$(nm "$binary" | grep "initWithWorld:dynamicWorld:cache:netData:" | awk '{print $1}')
-    local init3_offset=$(nm "$binary" | grep "initWithWorld:dynamicWorld:saveDict:chestSaveDict:cache:" | awk '{print $1}')
+    # Buscar métodos de inicialización
+    local init_methods=(
+        "initWithWorld:dynamicWorld:atPosition:cache:saveDict:placedByClient:"
+        "initWithWorld:dynamicWorld:cache:netData:"
+        "initWithWorld:dynamicWorld:saveDict:chestSaveDict:cache:"
+    )
     
-    # Parche común para todos los métodos init
-    local patch_bytes="\x48\xc7\xc0\x01\x00\x00\x00\x50\x48\x89\xfe\x48\xb8"
-    patch_bytes+="\x90\x90\x90\x90\x90\x90\x90\x90"  # Placeholder for setNeedsRemoved address
-    patch_bytes+="\xff\xd0\x58\x48\x89\xfe\x48\xb8"
-    patch_bytes+="\x90\x90\x90\x90\x90\x90\x90\x90"  # Placeholder for dealloc address
-    patch_bytes+="\xff\xd0\x48\x31\xc0\xc3"  # xor rax, rax; ret
-    
-    # Encontrar direcciones de setNeedsRemoved y dealloc
-    local setneedsremoved_offset=$(nm "$binary" | grep "setNeedsRemoved:" | awk '{print $1}')
-    local dealloc_offset=$(nm "$binary" | grep "dealloc" | awk '{print $1}')
-    
-    if [ -n "$setneedsremoved_offset" ] && [ -n "$dealloc_offset" ]; then
-        # Aplicar parche a cada método init encontrado
-        for offset in "$init1_offset" "$init2_offset" "$init3_offset"; do
-            if [ -n "$offset" ]; then
-                # Reemplazar placeholders con direcciones reales
-                local real_patch=$(printf "$patch_bytes" | sed \
-                    "s/\x90\x90\x90\x90\x90\x90\x90\x90/$(printf \\x${setneedsremoved_offset:6:2}\\x${setneedsremoved_offset:4:2}\\x${setneedsremoved_offset:2:2}\\x${setneedsremoved_offset:0:2}\\x00\\x00\\x00\\x00)/g" | \
-                    sed "s/\x90\x90\x90\x90\x90\x90\x90\x90/$(printf \\x${dealloc_offset:6:2}\\x${dealloc_offset:4:2}\\x${dealloc_offset:2:2}\\x${dealloc_offset:0:2}\\x00\\x00\\x00\\x00)/g")
-                
-                printf "$real_patch" | dd of="$binary" bs=1 seek=$((0x$offset)) conv=notrunc 2>/dev/null
-                print_success "FreightCar init patch applied at offset 0x$offset"
+    for method in "${init_methods[@]}"; do
+        local method_offset=$(nm "$binary" | grep "$method" | awk '{print $1}')
+        if [ -n "$method_offset" ]; then
+            # Convertir offset hexadecimal a decimal
+            local method_addr=$(printf "%d" "0x$method_offset")
+            # Parche simple: return nil inmediatamente
+            # 48 31 c0          xor    rax, rax
+            # c3                ret
+            printf '\x48\x31\xc0\xc3' | dd of="$binary" bs=1 seek="$method_addr" conv=notrunc 2>/dev/null
+            if [ $? -eq 0 ]; then
+                print_success "FreightCar init patch applied for $method at offset 0x$method_offset"
+            else
+                print_warning "Failed to apply FreightCar init patch for $method"
             fi
-        done
-    else
-        print_warning "Could not find setNeedsRemoved or dealloc methods for FreightCar patch"
-    fi
+        else
+            print_warning "Could not find method $method"
+        fi
+    done
     
-    # Parche adicional para setNeedsRemoved basado en el código assembly
-    print_status "Applying setNeedsRemoved assembly patch..."
-    local setneedsremoved_func=$(nm "$binary" | grep "setNeedsRemoved:" | awk '{print $1}')
-    if [ -n "$setneedsremoved_func" ]; then
-        # Parchear la función para evitar el crash
-        # Reemplazar el JZ condicional con un JMP incondicional
-        printf '\x90\x90\x90\x90\x90\x90' | dd of="$binary" bs=1 seek=$((0x$setneedsremoved_func + 0x19)) conv=notrunc 2>/dev/null
-        # Parchear para saltar la destrucción del objeto
-        printf '\x90\x90\x90\x90\x90\x90' | dd of="$binary" bs=1 seek=$((0x$setneedsremoved_func + 0x70)) conv=notrunc 2>/dev/null
-        print_success "setNeedsRemoved assembly patch applied"
+    # Parche 3: setNeedsRemoved patch
+    print_status "Applying setNeedsRemoved patch..."
+    local setneedsremoved_offset=$(nm "$binary" | grep "setNeedsRemoved:" | awk '{print $1}')
+    if [ -n "$setneedsremoved_offset" ]; then
+        local setneedsremoved_addr=$(printf "%d" "0x$setneedsremoved_offset")
+        # Parchear para saltar la verificación peligrosa
+        # Buscar el JZ condicional y cambiarlo a JMP incondicional
+        # JZ opcode: 0x74 -> JMP opcode: 0xEB
+        local jz_offset=$((setneedsremoved_addr + 0x19))
+        printf '\xEB' | dd of="$binary" bs=1 seek="$jz_offset" conv=notrunc 2>/dev/null
+        
+        # Parchear para evitar la llamada peligrosa
+        local call_offset=$((setneedsremoved_addr + 0x70))
+        printf '\x90\x90\x90\x90\x90\x90' | dd of="$binary" bs=1 seek="$call_offset" conv=notrunc 2>/dev/null
+        
+        if [ $? -eq 0 ]; then
+            print_success "setNeedsRemoved assembly patch applied"
+        else
+            print_warning "Failed to apply setNeedsRemoved assembly patch"
+        fi
     else
         print_warning "Could not find setNeedsRemoved function for assembly patch"
     fi
