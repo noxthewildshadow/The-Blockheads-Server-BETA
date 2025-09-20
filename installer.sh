@@ -1,450 +1,306 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # =============================================================================
-# THE BLOCKHEADS LINUX SERVER INSTALLER - OPTIMIZED VERSION WITH SECURITY PATCHES
+# THE BLOCKHEADS LINUX SERVER INSTALLER - AUTOMATIC PATCH + LD_PRELOAD HOOKS
 # =============================================================================
 
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
-ORANGE='\033[0;33m'
-PURPLE='\033[0;35m'
-BOLD='\033[1m'
-NC='\033[0m'
+# Colors
+RED='\033[0;31m' GREEN='\033[0;32m' YELLOW='\033[1;33m' BLUE='\033[0;34m'
+CYAN='\033[0;36m' MAGENTA='\033[0;35m' PURPLE='\033[0;35m' BOLD='\033[1m' NC='\033[0m'
 
-# Function definitions
-print_status() {
-    echo -e "${BLUE}[INFO]${NC} $1";
-}
+print_status(){ echo -e "${BLUE}[INFO]${NC} $1"; }
+print_success(){ echo -e "${GREEN}[OK]${NC} $1"; }
+print_warning(){ echo -e "${YELLOW}[WARN]${NC} $1"; }
+print_error(){ echo -e "${RED}[ERR]${NC} $1"; }
+print_header(){ echo -e "${PURPLE}========================================${NC}\n$1\n${PURPLE}========================================${NC}"; }
+print_step(){ echo -e "${CYAN}[STEP]${NC} $1"; }
 
-print_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1";
-}
-
-print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1";
-}
-
-print_error() {
-    echo -e "${RED}[ERROR]${NC} $1";
-}
-
-print_header() {
-    echo -e "${PURPLE}================================================================"
-    echo -e "$1"
-    echo -e "===============================================================${NC}"
-}
-
-print_step() {
-    echo -e "${CYAN}[STEP]${NC} $1";
-}
-
-# Función para limpiar carpetas problemáticas
-clean_problematic_dirs() {
-    local problematic_dirs=(
-        "swift-corelibs-libdispatch"
-        "swift-corelibs-libdispatch.build"
-        "libdispatch-build"
-    )
-    
-    for dir in "${problematic_dirs[@]}"; do
-        if [ -d "$dir" ]; then
-            print_step "Eliminando carpeta problemática: $dir"
-            rm -rf "$dir" 2>/dev/null || (
-                print_warning "No se pudo eliminar $dir, intentando con sudo..."
-                sudo rm -rf "$dir"
-            )
-        fi
-    done
-}
-
-# Limpiar carpetas problemáticas al inicio
-clean_problematic_dirs
-
-# Wget options for silent downloads
-WGET_OPTIONS="--timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --read-timeout=30 -q"
-
-# Check if running as root
-[ "$EUID" -ne 0 ] && print_error "This script requires root privileges." && exit 1
-
+# --- Basic checks
+[ "$EUID" -ne 0 ] && print_error "Run as root: sudo ./installer.sh" && exit 1
 ORIGINAL_USER=${SUDO_USER:-$USER}
-USER_HOME=$(getent passwd "$ORIGINAL_USER" | cut -d: -f6)
+USER_HOME=$(getent passwd "$ORIGINAL_USER" | cut -d: -f6 || echo "/home/$ORIGINAL_USER")
 
-# URLs for server download
+# --- Config (edit if needed)
 SERVER_URLS=(
-    "https://github.com/noxthewildshadow/The-Blockheads-Server-BETA/releases/download/1.0/blockheads_server171.tar"
-    "https://github.com/noxthewildshadow/The-Blockheads-Server-BETA/releases/download/1.0/blockheads_server171.tar"
+  "https://github.com/noxthewildshadow/The-Blockheads-Server-BETA/releases/download/1.0/blockheads_server171.tar"
+  # add mirrors if you have
 )
 TEMP_FILE="/tmp/blockheads_server171.tar"
-SERVER_BINARY="blockheads_server171"
-
-# GitHub raw content URLs
-SCRIPTS=(
-    "server_manager.sh"
-    "server_bot.sh"
-    "anticheat_secure.sh"
-    "blockheads_common.sh"
-)
-
-# Package lists for different distributions
-declare -a PACKAGES_DEBIAN=(
-    'git' 'cmake' 'ninja-build' 'clang' 'systemtap-sdt-dev' 'libbsd-dev' 'linux-libc-dev' 'curl' 'tar' 'grep' 'mawk'
-    'patchelf' 'libgnustep-base-dev' 'libobjc4' 'libgnutls28-dev' 'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev'
-    'zlib1g' 'libicu-dev' 'libicu-dev' 'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof' 'hexedit'
-)
-
-declare -a PACKAGES_ARCH=(
-    'base-devel' 'git' 'cmake' 'ninja' 'clang' 'systemtap' 'libbsd' 'curl' 'tar' 'grep' 'gawk' 'patchelf' 'gnustep-base'
-    'gcc-libs' 'gnutls' 'libgcrypt' 'libxml2' 'libffi' 'libnsl' 'zlib' 'icu' 'libdispatch' 'wget' 'jq' 'screen' 'lsof' 'hexedit'
-)
-
-print_header "THE BLOCKHEADS LINUX SERVER INSTALLER"
-
-# Function to find library
-find_library() {
-    SEARCH=$1
-    LIBRARY=$(ldconfig -p | grep -F "$SEARCH" -m 1 | awk '{print $NF}' | head -1)
-    [ -z "$LIBRARY" ] && return 1
-    printf '%s' "$LIBRARY"
-}
-
-# Function to check if flock is available
-check_flock() {
-    if command -v flock >/dev/null 2>&1; then
-        return 0
-    else
-        print_warning "flock not found. Locking mechanisms will be disabled."
-        print_warning "Some security features may not work properly."
-        return 1
-    fi
-}
-
-# Function to build libdispatch from source
-build_libdispatch() {
-    print_step "Building libdispatch from source..."
-    local DIR=$(pwd)
-    
-    # Limpiar cualquier carpeta existente antes de construir
-    clean_problematic_dirs
-    
-    if ! git clone --depth 1 'https://github.com/swiftlang/swift-corelibs-libdispatch.git' "${DIR}/swift-corelibs-libdispatch" >/dev/null 2>&1; then
-        print_error "Failed to clone libdispatch repository"
-        return 1
-    fi
-    
-    mkdir -p "${DIR}/swift-corelibs-libdispatch/build" || return 1
-    cd "${DIR}/swift-corelibs-libdispatch/build" || return 1
-    
-    if ! cmake -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ .. >/dev/null 2>&1; then
-        print_error "CMake configuration failed"
-        cd "${DIR}"
-        clean_problematic_dirs
-        return 1
-    fi
-    
-    if ! ninja "-j$(nproc)" >/dev/null 2>&1; then
-        print_error "Build failed"
-        cd "${DIR}"
-        clean_problematic_dirs
-        return 1
-    fi
-    
-    if ! ninja install >/dev/null 2>&1; then
-        print_error "Installation failed"
-        cd "${DIR}"
-        clean_problematic_dirs
-        return 1
-    fi
-    
-    cd "${DIR}" || return 1
-    # Limpiar después de la instalación exitosa
-    clean_problematic_dirs
-    ldconfig
-    return 0
-}
-
-# Function to install packages
-install_packages() {
-    [ ! -f /etc/os-release ] && print_error "Could not detect the operating system" && return 1
-    
-    source /etc/os-release
-    
-    case $ID in
-        debian|ubuntu|pop)
-            print_step "Installing packages for Debian/Ubuntu..."
-            if ! apt-get update >/dev/null 2>&1; then
-                print_error "Failed to update package list"
-                return 1
-            fi
-            
-            for package in "${PACKAGES_DEBIAN[@]}"; do
-                if ! apt-get install -y "$package" >/dev/null 2>&1; then
-                    print_warning "Failed to install $package"
-                fi
-            done
-            
-            if ! find_library 'libdispatch.so' >/dev/null; then
-                if ! build_libdispatch; then
-                    print_warning "Failed to build libdispatch, trying to install from repository"
-                    apt-get install -y libdispatch-dev >/dev/null 2>&1 || print_warning "Failed to install libdispatch-dev"
-                fi
-            fi
-            ;;
-        arch)
-            print_step "Installing packages for Arch Linux..."
-            if ! pacman -Sy --noconfirm --needed "${PACKAGES_ARCH[@]}" >/dev/null 2>&1; then
-                print_error "Failed to install Arch Linux packages"
-                return 1
-            fi
-            ;;
-        *)
-            print_error "Unsupported operating system: $ID"
-            return 1
-            ;;
-    esac
-    
-    # Check if flock was installed
-    check_flock
-    return 0
-}
-
-# Optimized function to download scripts
-download_script() {
-    local script_name=$1
-    local attempts=0
-    local max_attempts=3
-    
-    while [ $attempts -lt $max_attempts ]; do
-        if wget $WGET_OPTIONS -O "$script_name" \
-            "https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/$script_name"; then
-            return 0
-        fi
-        
-        attempts=$((attempts + 1))
-        if [ $attempts -lt $max_attempts ]; then
-            sleep 2
-        fi
-    done
-    
-    return 1
-}
-
-# Function to apply security patches
-apply_security_patches() {
-    local binary="$1"
-    print_step "Applying security patches to $binary..."
-    
-    # Parche 1: Prevenir crash por paquetes malformados en BHServer
-    print_status "Applying packet crash patch..."
-    if strings "$binary" | grep -q "match:didReceiveData:fromPlayer:"; then
-        local match_func_offset=$(nm "$binary" | grep "match:didReceiveData:fromPlayer:" | awk '{print $1}')
-        if [ -n "$match_func_offset" ]; then
-            # Convertir offset hexadecimal a decimal
-            local match_addr=$(printf "%d" "0x$match_func_offset")
-            # Parche assembly: if (!data || [data length] == 0) return;
-            # 48 85 ff          test   rdi, rdi
-            # 74 0d             je     +13
-            # 48 83 3f 00       cmp    QWORD PTR [rdi], 0x0
-            # 74 08             je     +8
-            # c3                ret
-            printf '\x48\x85\xff\x74\x0d\x48\x83\x3f\x00\x74\x08\xc3' | dd of="$binary" bs=1 seek="$match_addr" conv=notrunc 2>/dev/null
-            if [ $? -eq 0 ]; then
-                print_success "Packet crash patch applied at offset 0x$match_func_offset"
-            else
-                print_warning "Failed to apply packet crash patch"
-            fi
-        else
-            print_warning "Could not find match function for packet crash patch"
-        fi
-    else
-        print_warning "Packet crash patch not applied (function not found)"
-    fi
-    
-    # Parche 2: Prevenir inicialización de FreightCar vulnerable
-    print_status "Applying FreightCar vulnerability patches..."
-    
-    # Buscar métodos de inicialización
-    local init_methods=(
-        "initWithWorld:dynamicWorld:atPosition:cache:saveDict:placedByClient:"
-        "initWithWorld:dynamicWorld:cache:netData:"
-        "initWithWorld:dynamicWorld:saveDict:chestSaveDict:cache:"
-    )
-    
-    for method in "${init_methods[@]}"; do
-        local method_offset=$(nm "$binary" | grep "$method" | awk '{print $1}')
-        if [ -n "$method_offset" ]; then
-            # Convertir offset hexadecimal a decimal
-            local method_addr=$(printf "%d" "0x$method_offset")
-            # Parche simple: return nil inmediatamente
-            # 48 31 c0          xor    rax, rax
-            # c3                ret
-            printf '\x48\x31\xc0\xc3' | dd of="$binary" bs=1 seek="$method_addr" conv=notrunc 2>/dev/null
-            if [ $? -eq 0 ]; then
-                print_success "FreightCar init patch applied for $method at offset 0x$method_offset"
-            else
-                print_warning "Failed to apply FreightCar init patch for $method"
-            fi
-        else
-            print_warning "Could not find method $method"
-        fi
-    done
-    
-    # Parche 3: setNeedsRemoved patch
-    print_status "Applying setNeedsRemoved patch..."
-    local setneedsremoved_offset=$(nm "$binary" | grep "setNeedsRemoved:" | awk '{print $1}')
-    if [ -n "$setneedsremoved_offset" ]; then
-        local setneedsremoved_addr=$(printf "%d" "0x$setneedsremoved_offset")
-        # Parchear para saltar la verificación peligrosa
-        # Buscar el JZ condicional y cambiarlo a JMP incondicional
-        # JZ opcode: 0x74 -> JMP opcode: 0xEB
-        local jz_offset=$((setneedsremoved_addr + 0x19))
-        printf '\xEB' | dd of="$binary" bs=1 seek="$jz_offset" conv=notrunc 2>/dev/null
-        
-        # Parchear para evitar la llamada peligrosa
-        local call_offset=$((setneedsremoved_addr + 0x70))
-        printf '\x90\x90\x90\x90\x90\x90' | dd of="$binary" bs=1 seek="$call_offset" conv=notrunc 2>/dev/null
-        
-        if [ $? -eq 0 ]; then
-            print_success "setNeedsRemoved assembly patch applied"
-        else
-            print_warning "Failed to apply setNeedsRemoved assembly patch"
-        fi
-    else
-        print_warning "Could not find setNeedsRemoved function for assembly patch"
-    fi
-}
-
-print_step "[1/8] Installing required packages..."
-if ! install_packages; then
-    print_warning "Falling back to basic package installation..."
-    if ! apt-get update -y >/dev/null 2>&1; then
-        print_error "Failed to update package list"
-        exit 1
-    fi
-    
-    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common hexedit >/dev/null 2>&1; then
-        print_error "Failed to install essential packages"
-        exit 1
-    fi
-    
-    # Check if flock was installed in fallback mode
-    check_flock
-fi
-
-print_step "[2/8] Downloading helper scripts from GitHub..."
-for script in "${SCRIPTS[@]}"; do
-    if download_script "$script"; then
-        print_success "Downloaded: $script"
-        chmod +x "$script"
-    else
-        print_error "Failed to download $script after multiple attempts"
-        exit 1
-    fi
-done
-
-print_step "[3/8] Downloading server archive..."
-DOWNLOAD_SUCCESS=0
-for URL in "${SERVER_URLS[@]}"; do
-    if wget $WGET_OPTIONS "$URL" -O "$TEMP_FILE"; then
-        DOWNLOAD_SUCCESS=1
-        print_success "Download successful from $URL"
-        break
-    fi
-done
-
-[ $DOWNLOAD_SUCCESS -eq 0 ] && print_error "Failed to download server file" && exit 1
-
-print_step "[4/8] Extracting files..."
 EXTRACT_DIR="/tmp/blockheads_extract_$$"
-mkdir -p "$EXTRACT_DIR"
+SERVER_BINARY="blockheads_server171"
+SCRIPTS=( "server_manager.sh" "server_bot.sh" "anticheat_secure.sh" "blockheads_common.sh" )
+PATCH_C="/tmp/patch_objc_hooks.c"
+PATCH_SO="./libbhpatch.so"
+LAUNCHER="./run_blockheads.sh"
+BACKUP_SUFFIX=".installer.bak"
 
-if ! tar -xf "$TEMP_FILE" -C "$EXTRACT_DIR" >/dev/null 2>&1; then
-    print_error "Failed to extract server files"
-    rm -rf "$EXTRACT_DIR"
-    exit 1
+print_header "THE BLOCKHEADS LINUX SERVER INSTALLER (AUTO PATCH)"
+
+# --- Helper: detect OS
+if [ -f /etc/os-release ]; then
+  . /etc/os-release
+  OS_ID="$ID"
+else
+  OS_ID="unknown"
 fi
 
-cp -r "$EXTRACT_DIR"/* ./
-rm -rf "$EXTRACT_DIR"
+# --- Install packages (best effort)
+print_step "Installing build/runtime dependencies..."
+case "$OS_ID" in
+  debian|ubuntu|pop)
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y build-essential gcc clang make git cmake ninja-build patchelf wget jq screen lsof tar curl libgnustep-base-dev libobjc-*-dev libobjc4 2>/dev/null || \
+    apt-get install -y build-essential gcc clang make git cmake ninja-build patchelf wget jq screen lsof tar curl libgnustep-base-dev libobjc4 2>/dev/null || true
+    ;;
+  arch)
+    pacman -Sy --noconfirm base-devel git cmake ninja patchelf wget jq screen lsof tar curl gnustep-base 2>/dev/null || true
+    ;;
+  *)
+    print_warning "Unsupported or unknown OS ($OS_ID). Attempting best-effort installs (may fail)."
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y build-essential gcc make patchelf wget jq screen lsof tar curl 2>/dev/null || true
+    ;;
+esac
 
-if [ ! -f "$SERVER_BINARY" ]; then
-    ALTERNATIVE_BINARY=$(find . -name "*blockheads*" -type f -executable | head -n 1)
-    [ -n "$ALTERNATIVE_BINARY" ] && mv "$ALTERNATIVE_BINARY" "blockheads_server171" && SERVER_BINARY="blockheads_server171"
-fi
-
-if [ ! -f "$SERVER_BINARY" ]; then
-    print_error "Server binary not found after extraction"
-    exit 1
-fi
-
-chmod +x "$SERVER_BINARY"
-
-print_step "[4.5/8] Applying security patches..."
-apply_security_patches "$SERVER_BINARY"
-
-print_step "[5/8] Applying comprehensive patchelf compatibility patches..."
-declare -A LIBS=(
-    ["libgnustep-base.so.1.24"]="$(find_library 'libgnustep-base.so' || echo 'libgnustep-base.so.1.28')"
-    ["libobjc.so.4.6"]="$(find_library 'libobjc.so' || echo 'libobjc.so.4')"
-    ["libgnutls.so.26"]="$(find_library 'libgnutls.so' || echo 'libgnutls.so.30')"
-    ["libgcrypt.so.11"]="$(find_library 'libgcrypt.so' || echo 'libgcrypt.so.20')"
-    ["libffi.so.6"]="$(find_library 'libffi.so' || echo 'libffi.so.8')"
-    ["libicui18n.so.48"]="$(find_library 'libicui18n.so' || echo 'libicui18n.so.70')"
-    ["libicuuc.so.48"]="$(find_library 'libicuuc.so' || echo 'libicuuc.so.70')"
-    ["libicudata.so.48"]="$(find_library 'libicudata.so' || echo 'libicudata.so.70')"
-    ["libdispatch.so"]="$(find_library 'libdispatch.so' || echo 'libdispatch.so.0')"
-)
-
-TOTAL_LIBS=${#LIBS[@]}
-COUNT=0
-for LIB in "${!LIBS[@]}"; do
-    [ -z "${LIBS[$LIB]}" ] && continue
-    COUNT=$((COUNT+1))
-    
-    if ! patchelf --replace-needed "$LIB" "${LIBS[$LIB]}" "$SERVER_BINARY" >/dev/null 2>&1; then
-        print_warning "Failed to patch $LIB"
-    fi
+# --- Download server archive
+print_step "Downloading server archive..."
+DOWNLOAD_OK=0
+for url in "${SERVER_URLS[@]}"; do
+  if wget --timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --read-timeout=30 -q -O "$TEMP_FILE" "$url"; then
+    print_success "Downloaded server archive from $url"
+    DOWNLOAD_OK=1
+    break
+  else
+    print_warning "Failed to download from $url"
+  fi
 done
+[ $DOWNLOAD_OK -eq 0 ] && print_error "Could not download server archive" && exit 1
 
-print_success "Compatibility patches applied"
-
-print_step "[6/8] Set ownership and permissions"
-chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
-chmod 755 server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
-
-print_step "[7/8] Create economy data file"
-sudo -u "$ORIGINAL_USER" bash -c 'echo "{\"players\": {}, \"transactions\": []}" > economy_data.json' || true
-chown "$ORIGINAL_USER:$ORIGINAL_USER" economy_data.json 2>/dev/null || true
-
+# --- Extract
+print_step "Extracting archive..."
+rm -rf "$EXTRACT_DIR"
+mkdir -p "$EXTRACT_DIR"
+tar -xf "$TEMP_FILE" -C "$EXTRACT_DIR" || { print_error "Extraction failed"; exit 1; }
+# Copy contents to current directory
+print_step "Copying files into $(pwd)..."
+cp -r "$EXTRACT_DIR"/* ./ 2>/dev/null || true
+rm -rf "$EXTRACT_DIR"
 rm -f "$TEMP_FILE"
 
-# Limpieza final de carpetas problemáticas
-clean_problematic_dirs
+# --- Ensure server binary exists (fallback find)
+if [ ! -f "$SERVER_BINARY" ]; then
+  ALT=$(find . -type f -executable -name "*blockheads*" | head -n1 || true)
+  if [ -n "$ALT" ]; then
+    mv "$ALT" "$SERVER_BINARY"
+    print_success "Found and renamed $ALT -> $SERVER_BINARY"
+  else
+    print_error "Server binary ($SERVER_BINARY) not found after extraction"
+    exit 1
+  fi
+fi
+chmod +x "$SERVER_BINARY" || true
 
-print_step "[8/8] Installation completed successfully"
-echo ""
-print_header "SECURITY PATCHES APPLIED"
-print_success "1. Packet crash vulnerability patched"
-print_success "2. FreightCar initialization vulnerabilities patched"
-print_success "3. setNeedsRemoved crash vulnerability patched"
-echo ""
+# --- Create runtime patch C (LD_PRELOAD hooks)
+print_step "Generating Objective-C runtime hook source ($PATCH_C)..."
 
-print_header "BINARY INSTRUCTIONS"
-./blockheads_server171 -h >/dev/null 2>&1 || print_warning "Server binary execution failed - may need additional dependencies"
+cat > "$PATCH_C" <<'EOF'
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <dlfcn.h>
+#include <objc/objc.h>
+#include <objc/message.h>
+#include <objc/runtime.h>
 
-print_header "SERVER MANAGER INSTRUCTIONS"
-print_status "0. Create a world: ./blockheads_server171 -n"
-print_status "1. See world list and ID's: ./blockheads_server171 -l"
-print_status "2. Start server: ./server_manager.sh start WORLD_ID PORT"
-print_status "3. Stop server: ./server_manager.sh stop"
-print_status "4. Check status: ./server_manager.sh status"
-print_status "5. Default port: 12153"
-print_status "6. HELP: ./server_manager.sh help"
-print_warning "After creating the world, press CTRL+C to exit"
+// Original IMP holders
+static IMP orig_bh_match_imp = NULL;
+static IMP orig_fc_init1_imp = NULL;
+static IMP orig_fc_init2_imp = NULL;
+static IMP orig_fc_init3_imp = NULL;
 
+static unsigned long data_length_or_zero(id data) {
+    if (!data) return 0;
+    SEL sel_len = sel_registerName("length");
+    unsigned long len = (unsigned long) ((unsigned long (*)(id, SEL))objc_msgSend)(data, sel_len);
+    return len;
+}
+
+/* Safe BHServer - (void)match:didReceiveData:fromPlayer: */
+static void safe_BHServer_match_didReceiveData_fromPlayer(id self, SEL _cmd, id match, id data, id player) {
+    unsigned long len = data_length_or_zero(data);
+    if (!data || len == 0) {
+        fprintf(stderr, "[BadPacketCrashPatch] blocked empty/bad packet (player=%p)\n", (void*)player);
+        return;
+    }
+    if (orig_bh_match_imp) {
+        ((void (*)(id, SEL, id, id, id))orig_bh_match_imp)(self, _cmd, match, data, player);
+    }
+}
+
+/* Safe FreightCar inits: setNeedsRemoved:YES; dealloc; return NULL */
+static id safe_FreightCar_init1(id self, SEL _cmd, id a1, id a2, id a3, id a4, id a5, id a6) {
+    SEL sel_setNeedsRemoved = sel_registerName("setNeedsRemoved:");
+    SEL sel_dealloc = sel_registerName("dealloc");
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(self, sel_setNeedsRemoved, (BOOL)1);
+    ((void (*)(id, SEL))objc_msgSend)(self, sel_dealloc);
+    return NULL;
+}
+static id safe_FreightCar_init2(id self, SEL _cmd, id a1, id a2, id a3, id a4) {
+    SEL sel_setNeedsRemoved = sel_registerName("setNeedsRemoved:");
+    SEL sel_dealloc = sel_registerName("dealloc");
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(self, sel_setNeedsRemoved, (BOOL)1);
+    ((void (*)(id, SEL))objc_msgSend)(self, sel_dealloc);
+    return NULL;
+}
+static id safe_FreightCar_init3(id self, SEL _cmd, id a1, id a2, id a3, id a4, id a5) {
+    SEL sel_setNeedsRemoved = sel_registerName("setNeedsRemoved:");
+    SEL sel_dealloc = sel_registerName("dealloc");
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(self, sel_setNeedsRemoved, (BOOL)1);
+    ((void (*)(id, SEL))objc_msgSend)(self, sel_dealloc);
+    return NULL;
+}
+
+__attribute__((constructor))
+static void install_objc_patches(void) {
+    Class bhClass = objc_getClass("BHServer");
+    Class fcClass = objc_getClass("FreightCar");
+
+    if (bhClass) {
+        SEL sel_bh = sel_registerName("match:didReceiveData:fromPlayer:");
+        Method m = class_getInstanceMethod(bhClass, sel_bh);
+        if (m) {
+            orig_bh_match_imp = method_getImplementation(m);
+            method_setImplementation(m, (IMP)safe_BHServer_match_didReceiveData_fromPlayer);
+            fprintf(stderr, "[patch] BHServer match:didReceiveData:fromPlayer: hooked\n");
+        } else {
+            fprintf(stderr, "[patch] BHServer selector not found: match:didReceiveData:fromPlayer:\n");
+        }
+    } else {
+        fprintf(stderr, "[patch] BHServer class not found\n");
+    }
+
+    if (fcClass) {
+        SEL sel_init1 = sel_registerName("initWithWorld:dynamicWorld:atPosition:cache:saveDict:placedByClient:");
+        SEL sel_init2 = sel_registerName("initWithWorld:dynamicWorld:cache:netData:");
+        SEL sel_init3 = sel_registerName("initWithWorld:dynamicWorld:saveDict:chestSaveDict:cache:");
+
+        Method m1 = class_getInstanceMethod(fcClass, sel_init1);
+        Method m2 = class_getInstanceMethod(fcClass, sel_init2);
+        Method m3 = class_getInstanceMethod(fcClass, sel_init3);
+
+        if (m1) {
+            orig_fc_init1_imp = method_getImplementation(m1);
+            method_setImplementation(m1, (IMP)safe_FreightCar_init1);
+            fprintf(stderr, "[patch] FreightCar initWithWorld:dynamicWorld:atPosition:... hooked\n");
+        } else {
+            fprintf(stderr, "[patch] FreightCar selector not found: init1\n");
+        }
+        if (m2) {
+            orig_fc_init2_imp = method_getImplementation(m2);
+            method_setImplementation(m2, (IMP)safe_FreightCar_init2);
+            fprintf(stderr, "[patch] FreightCar initWithWorld:dynamicWorld:cache:netData: hooked\n");
+        } else {
+            fprintf(stderr, "[patch] FreightCar selector not found: init2\n");
+        }
+        if (m3) {
+            orig_fc_init3_imp = method_getImplementation(m3);
+            method_setImplementation(m3, (IMP)safe_FreightCar_init3);
+            fprintf(stderr, "[patch] FreightCar initWithWorld:dynamicWorld:saveDict:chestSaveDict:cache: hooked\n");
+        } else {
+            fprintf(stderr, "[patch] FreightCar selector not found: init3\n");
+        }
+    } else {
+        fprintf(stderr, "[patch] FreightCar class not found\n");
+    }
+}
+EOF
+
+print_success "Source created: $PATCH_C"
+
+# --- Compile libbhpatch.so
+print_step "Compiling $PATCH_SO..."
+COMPILE_LOG="/tmp/patch_compile_$$.log"
+if command -v gcc >/dev/null 2>&1; then
+  if gcc -shared -fPIC -o "$PATCH_SO" "$PATCH_C" -ldl -lobjc -O2 2>"$COMPILE_LOG"; then
+    print_success "Compiled $PATCH_SO successfully"
+  else
+    print_warning "Compilation failed. See $COMPILE_LOG for details"
+    tail -n 80 "$COMPILE_LOG" || true
+    print_warning "Continuing without runtime patch (server will still be installed)."
+    rm -f "$PATCH_SO" 2>/dev/null || true
+  fi
+else
+  print_warning "gcc not installed. Skipping compilation of runtime patch."
+fi
+
+# --- Create launcher wrapper (run_blockheads.sh)
+print_step "Creating launcher wrapper: $LAUNCHER"
+cat > "$LAUNCHER" <<'SH_EOF'
+#!/bin/bash
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PATCH="$HERE/libbhpatch.so"
+EXEC="$HERE/blockheads_server171"
+if [ -f "$PATCH" ]; then
+  export LD_PRELOAD="$PATCH${LD_PRELOAD:+:$LD_PRELOAD}"
+fi
+# Execute the original with any args
+exec "$EXEC" "$@"
+SH_EOF
+chmod +x "$LAUNCHER"
+
+# --- Modify server_manager.sh to use launcher (backup first)
+if [ -f "server_manager.sh" ]; then
+  print_step "Backing up server_manager.sh -> server_manager.sh$BACKUP_SUFFIX"
+  cp -a server_manager.sh "server_manager.sh$BACKUP_SUFFIX" || true
+
+  # Replace the SERVER_BINARY assignment if present
+  if grep -q "^SERVER_BINARY=" server_manager.sh; then
+    sed -i "s|^SERVER_BINARY=.*|SERVER_BINARY=\"./run_blockheads.sh\"|g" server_manager.sh && print_success "server_manager.sh updated to use ./run_blockheads.sh"
+  else
+    # Fallback: append at top
+    sed -i "1i SERVER_BINARY=\"./run_blockheads.sh\"" server_manager.sh && print_success "Inserted SERVER_BINARY assignment into server_manager.sh"
+  fi
+else
+  print_warning "server_manager.sh not found in current directory; skipping modification."
+fi
+
+# --- Patchelf compatibility adjustments (best-effort)
+print_step "Applying patchelf compatibility adjustments (best-effort)..."
+if command -v patchelf >/dev/null 2>&1; then
+  # Try to detect common libs and replace needed if present
+  declare -A LIBS_TO_TRY=(
+    ["libgnustep-base.so.1.24"]="libgnustep-base.so.1.28"
+    ["libobjc.so.4.6"]="libobjc.so.4"
+    ["libgnutls.so.26"]="libgnutls.so.30"
+    ["libgcrypt.so.11"]="libgcrypt.so.20"
+    ["libffi.so.6"]="libffi.so.8"
+    ["libicui18n.so.48"]="libicui18n.so.70"
+    ["libicuuc.so.48"]="libicuuc.so.70"
+    ["libicudata.so.48"]="libicudata.so.70"
+  )
+  for L in "${!LIBS_TO_TRY[@]}"; do
+    TARGET=${LIBS_TO_TRY[$L]}
+    if ldd "./$SERVER_BINARY" 2>/dev/null | grep -q "$L"; then
+      patchelf --replace-needed "$L" "$TARGET" "./$SERVER_BINARY" 2>/dev/null || print_warning "patchelf replace $L -> $TARGET failed"
+    fi
+  done
+  print_success "patchelf adjustments attempted"
+else
+  print_warning "patchelf not found; skipping binary compatibility adjustments"
+fi
+
+# --- Set ownership/permissions
+print_step "Setting permissions and ownerships..."
+chown "$ORIGINAL_USER:$ORIGINAL_USER" ./* 2>/dev/null || true
+chmod +x "$SERVER_BINARY" "$LAUNCHER" 2>/dev/null || true
+
+# --- Final notes and output
 print_header "INSTALLATION COMPLETE"
+print_status "To run the server with runtime patches (if compiled): ./run_blockheads.sh -h"
+print_status "Server manager uses: ./run_blockheads.sh (server_manager.sh was updated if present)."
+print_status "If the runtime patch failed to compile, you can still run the server directly: ./blockheads_server171"
+print_warning "If you prefer NOT to preload patches, run ./blockheads_server171 directly."
+print_success "Installer finished. Check compile logs: /tmp/patch_compile_$$.log (if present)."
+
+# --- End
