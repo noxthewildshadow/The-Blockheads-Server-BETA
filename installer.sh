@@ -72,13 +72,13 @@ WGET_OPTIONS="--timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --rea
 ORIGINAL_USER=${SUDO_USER:-$USER}
 USER_HOME=$(getent passwd "$ORIGINAL_USER" | cut -d: -f6)
 
-# URLs for server download
+# Updated URL for server download
 SERVER_URLS=(
-    "https://github.com/noxthewildshadow/The-Blockheads-Server-BETA/releases/download/1.0/blockheads_server171.tar"
-    "https://github.com/noxthewildshadow/The-Blockheads-Server-BETA/releases/download/1.0/blockheads_server171.tar"
+    "https://web.archive.org/web/20240309015235if_/https://majicdave.com/share/blockheads_server171.tar.gz"
+    "https://web.archive.org/web/20240309015235if_/https://majicdave.com/share/blockheads_server171.tar.gz"
 )
 
-TEMP_FILE="/tmp/blockheads_server171.tar"
+TEMP_FILE="/tmp/blockheads_server171.tar.gz"
 SERVER_BINARY="blockheads_server171"
 
 # GitHub raw content URLs
@@ -164,7 +164,7 @@ build_libdispatch() {
         return 1
     fi
     
-    cd "${DIR" || return 1
+    cd "${DIR}" || return 1
     # Clean after successful installation
     clean_problematic_dirs
     ldconfig
@@ -461,7 +461,8 @@ print_step "[4/8] Extracting files..."
 EXTRACT_DIR="/tmp/blockheads_extract_$$"
 mkdir -p "$EXTRACT_DIR"
 
-if ! tar -xf "$TEMP_FILE" -C "$EXTRACT_DIR" >/dev/null 2>&1; then
+# Use tar -xzf for .tar.gz files
+if ! tar -xzf "$TEMP_FILE" -C "$EXTRACT_DIR" >/dev/null 2>&1; then
     print_error "Failed to extract server files"
     rm -rf "$EXTRACT_DIR"
     exit 1
