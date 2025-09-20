@@ -94,7 +94,7 @@ declare -a PACKAGES_DEBIAN=(
     'git' 'cmake' 'ninja-build' 'clang' 'systemtap-sdt-dev' 'libbsd-dev' 'linux-libc-dev'
     'curl' 'tar' 'grep' 'mawk' 'patchelf' 'libgnustep-base-dev' 'libobjc4' 'libgnutls28-dev'
     'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev' 'zlib1g' 'libicu-dev' 'libicu-dev'
-    'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof' 'binutils' 'objdump'
+    'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof' 'binutils'
 )
 
 declare -a PACKAGES_ARCH=(
@@ -256,12 +256,20 @@ find_method_address() {
         return 0
     fi
     
-    # Approach 2: Use objdump for more precise search
-    address=$(objdump -t "$binary" | grep "$method_name" | awk '{print $1}' | head -1)
-    if [ -n "$address" ]; then
-        echo $((16#$address))
-        return 0
-    fi
+    # Approach 2: Try different variations of the method name
+    local variations=(
+        "$method_name"
+        "$(echo "$method_name" | sed 's/://g')"
+        "$(echo "$method_name" | sed 's/:/ /g')"
+    )
+    
+    for variation in "${variations[@]}"; do
+        address=$(strings -t x "$binary" | grep "$variation" | head -1 | awk '{print $1}')
+        if [ -n "$address" ]; then
+            echo $((16#$address))
+            return 0
+        fi
+    done
     
     return 1
 }
@@ -369,8 +377,21 @@ apply_bhserver_patch() {
     # Create a backup
     cp "$binary" "${binary}.backup"
     
-    # Find the method
-    local method_addr=$(find_method_address "$binary" "match:didReceiveData:fromPlayer:")
+    # Find the method - try different variations
+    local method_names=(
+        "match:didReceiveData:fromPlayer:"
+        "match didReceiveData fromPlayer"
+        "matchDidReceiveDataFromPlayer"
+    )
+    
+    local method_addr=""
+    for method_name in "${method_names[@]}"; do
+        method_addr=$(find_method_address "$binary" "$method_name")
+        if [ -n "$method_addr" ]; then
+            break
+        fi
+    done
+    
     if [ -z "$method_addr" ]; then
         print_warning "BHServer method not found"
         return 1
