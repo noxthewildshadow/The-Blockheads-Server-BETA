@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# THE BLOCKHEADS SERVER MANAGER - ENHANCED UI VERSION WITH INTERACTIVE MENU
+# THE BLOCKHEADS SERVER MANAGER - ENHANCED UI VERSION
 # =============================================================================
 
 # Load common functions
@@ -8,41 +8,38 @@ if [ -f blockheads_common.sh ]; then
     source blockheads_common.sh
 else
     # Fallback color codes if common file is missing
-    RED='\033[1;91m'
-    GREEN='\033[1;92m'
-    YELLOW='\033[1;93m'
-    BLUE='\033[1;94m'
-    CYAN='\033[1;96m'
-    MAGENTA='\033[1;95m'
-    ORANGE='\033[1;33m'
-    PURPLE='\033[1;35m'
-    BOLD='\033[1m'
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    CYAN='\033[0;36m'
+    MAGENTA='\033[0;35m'
     NC='\033[0m'
     
     print_error() {
-        echo -e "${RED}✗ ${NC}${BOLD}$1${NC}"
+        echo -e "${RED}[ERROR]${NC} $1"
     }
     
     print_success() {
-        echo -e "${GREEN}✓ ${NC}${BOLD}$1${NC}"
+        echo -e "${GREEN}[SUCCESS]${NC} $1"
     }
     
     print_warning() {
-        echo -e "${YELLOW}⚠ ${NC}${BOLD}$1${NC}"
+        echo -e "${YELLOW}[WARNING]${NC} $1"
     }
     
     print_status() {
-        echo -e "${BLUE}ℹ ${NC}${BOLD}$1${NC}"
+        echo -e "${BLUE}[INFO]${NC} $1"
     }
     
     print_step() {
-        echo -e "${CYAN}→${NC} ${BOLD}$1${NC}"
+        echo -e "${CYAN}[STEP]${NC} $1"
     }
     
     print_header() {
-        echo -e "${PURPLE}╔══════════════════════════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${PURPLE}║${NC}${BOLD} $1${NC}"
-        echo -e "${PURPLE}╚══════════════════════════════════════════════════════════════════════════════════╝${NC}"
+        echo -e "${MAGENTA}================================================================================${NC}"
+        echo -e "${MAGENTA}$1${NC}"
+        echo -e "${MAGENTA}================================================================================${NC}"
     }
     
     screen_session_exists() {
@@ -92,6 +89,28 @@ free_port() {
     
     sleep 2
     ! is_port_in_use "$port"
+}
+
+# Function to start superadmins monitor
+start_superadmins_monitor() {
+    if ! pgrep -f "superadmins_monitor.sh" > /dev/null; then
+        print_step "Starting superadmins monitor..."
+        ./superadmins_monitor.sh &
+        MONITOR_PID=$!
+        echo "$MONITOR_PID" > superadmins_monitor.pid
+        print_success "Superadmins monitor started with PID: $MONITOR_PID"
+    else
+        print_status "Superadmins monitor is already running"
+    fi
+}
+
+# Function to stop superadmins monitor
+stop_superadmins_monitor() {
+    if [ -f "superadmins_monitor.pid" ]; then
+        MONITOR_PID=$(cat superadmins_monitor.pid)
+        kill $MONITOR_PID 2>/dev/null && print_success "Stopped superadmins monitor"
+        rm -f superadmins_monitor.pid
+    fi
 }
 
 # Function to start server
@@ -202,6 +221,9 @@ EOF
         ./anticheat_secure.sh '$log_file' '$port'
     "
     
+    # Start superadmins monitor
+    start_superadmins_monitor
+    
     local server_started=0
     bot_started=0
     anticheat_started=0
@@ -250,6 +272,11 @@ stop_server() {
         
         pkill -f "$SERVER_BINARY" 2>/dev/null || true
         
+        # Stop superadmins monitor if no servers are running
+        if [ -z "$(screen -list | grep "blockheads_server_")" ]; then
+            stop_superadmins_monitor
+        fi
+        
         print_success "Cleanup completed for all servers."
     else
         print_header "STOPPING SERVER ON PORT $port"
@@ -281,6 +308,11 @@ stop_server() {
         fi
         
         pkill -f "$SERVER_BINARY.*$port" 2>/dev/null || true
+        
+        # Stop superadmins monitor if no servers are running
+        if [ -z "$(screen -list | grep "blockheads_server_")" ]; then
+            stop_superadmins_monitor
+        fi
         
         print_success "Cleanup completed for port $port."
     fi
@@ -391,7 +423,6 @@ show_usage() {
     echo -e " ${CYAN}status${NC} [PORT] - Show server status"
     echo -e " ${YELLOW}list${NC} - List all running servers"
     echo -e " ${YELLOW}help${NC} - Show this help"
-    echo -e " ${MAGENTA}menu${NC} - Show interactive menu"
     echo ""
     print_status "Examples:"
     echo -e " ${GREEN}$0 start MyWorld 12153${NC}"
@@ -401,70 +432,9 @@ show_usage() {
     echo -e " ${CYAN}$0 status${NC} (shows status of all servers)"
     echo -e " ${CYAN}$0 status 12153${NC} (shows status of server on port 12153)"
     echo -e " ${YELLOW}$0 list${NC} (lists all running servers)"
-    echo -e " ${MAGENTA}$0 menu${NC} (shows interactive menu)"
     echo ""
     print_warning "First create a world: ./blockheads_server171 -n"
     print_warning "After creating the world, press CTRL+C to exit"
-}
-
-# Interactive menu function
-show_menu() {
-    while true; do
-        clear
-        print_header "THE BLOCKHEADS SERVER MANAGER - INTERACTIVE MENU"
-        echo ""
-        print_status "Please select an option:"
-        echo ""
-        echo -e "  ${GREEN}1${NC}) Start server"
-        echo -e "  ${RED}2${NC}) Stop server"
-        echo -e "  ${CYAN}3${NC}) Server status"
-        echo -e "  ${YELLOW}4${NC}) List running servers"
-        echo -e "  ${MAGENTA}5${NC}) Create new world"
-        echo -e "  ${BLUE}6${NC}) List existing worlds"
-        echo -e "  ${ORANGE}7${NC}) Exit"
-        echo ""
-        read -p "Enter your choice [1-7]: " choice
-        
-        case $choice in
-            1)
-                read -p "Enter world name: " world_name
-                read -p "Enter port [12153]: " port
-                port=${port:-12153}
-                start_server "$world_name" "$port"
-                ;;
-            2)
-                read -p "Enter port to stop (leave empty for all): " port
-                stop_server "$port"
-                ;;
-            3)
-                read -p "Enter port to check status (leave empty for all): " port
-                show_status "$port"
-                ;;
-            4)
-                list_servers
-                ;;
-            5)
-                print_header "CREATING NEW WORLD"
-                ./blockheads_server171 -n
-                echo ""
-                print_warning "After creating the world, press CTRL+C to exit"
-                ;;
-            6)
-                print_header "EXISTING WORLDS"
-                ./blockheads_server171 -l
-                ;;
-            7)
-                print_success "Goodbye!"
-                exit 0
-                ;;
-            *)
-                print_error "Invalid option!"
-                ;;
-        esac
-        
-        echo ""
-        read -p "Press Enter to continue..."
-    done
 }
 
 # Main execution
@@ -481,9 +451,6 @@ case "$1" in
         ;;
     list)
         list_servers
-        ;;
-    menu|--menu|-m)
-        show_menu
         ;;
     help|--help|-h|*)
         show_usage
