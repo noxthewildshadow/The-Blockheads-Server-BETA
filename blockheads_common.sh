@@ -146,13 +146,3 @@ find_library() {
     [ -z "$LIBRARY" ] && return 1
     printf '%s' "$LIBRARY"
 }
-
-# Function to check if player is super admin
-is_super_admin() {
-    local player_name="$1"
-    local super_admin_file="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/superadminslist.txt"
-    if [ ! -f "$super_admin_file" ]; then
-        return 1
-    fi
-    grep -q -i "^[[:space:]]*$player_name[[:space:]]*$" "$super_admin_file"
-}
