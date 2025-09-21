@@ -1,13 +1,7 @@
 #!/bin/bash
 # =============================================================================
-# THE BLOCKHEADS SERVER MANAGER - ENHANCED UI VERSION WITH SECURITY PATCHES
+# THE BLOCKHEADS SERVER MANAGER - ENHANCED UI VERSION
 # =============================================================================
-
-# Load security patches
-if [ -f "./blockheads_patch.so" ]; then
-    export LD_PRELOAD=./blockheads_patch.so
-    echo "Security patches loaded successfully"
-fi
 
 # Load common functions
 if [ -f blockheads_common.sh ]; then
@@ -136,19 +130,11 @@ start_server() {
     
     echo "$world_id" > "world_id_$port.txt"
     
-    # Script de inicio con parches de seguridad
     cat > /tmp/start_server_$$.sh << EOF
 #!/bin/bash
 cd '$PWD'
-
-# Cargar parches de seguridad si existen
-if [ -f "./blockheads_patch.so" ]; then
-    export LD_PRELOAD=./blockheads_patch.so
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Security patches loaded"
-fi
-
 while true; do
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting server with security patches..."
+    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting server..."
     if ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'; then
         echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server closed normally"
     else
@@ -226,7 +212,6 @@ EOF
         print_success "World: $world_id"
         print_success "Port: $port"
         echo ""
-        print_status "Security patches: ${GREEN}ACTIVE${NC}"
         print_status "To view server console: ${CYAN}screen -r $SCREEN_SERVER${NC}"
         print_status "To view bot: ${CYAN}screen -r $SCREEN_BOT${NC}"
         print_status "To view anticheat: ${CYAN}screen -r $SCREEN_ANTICHEAT${NC}"
@@ -351,13 +336,6 @@ show_status() {
                     local WORLD_ID=$(cat "world_id_$server_port.txt" 2>/dev/null)
                     print_status "World for port $server_port: ${CYAN}$WORLD_ID${NC}"
                 fi
-                
-                # Verificar parches de seguridad
-                if [ -f "./blockheads_patch.so" ]; then
-                    print_status "Security patches: ${GREEN}AVAILABLE${NC}"
-                else
-                    print_warning "Security patches: ${RED}MISSING${NC}"
-                fi
                 echo ""
             done <<< "$servers"
         fi
@@ -386,13 +364,6 @@ show_status() {
             local WORLD_ID=$(cat "world_id_$port.txt" 2>/dev/null)
             print_status "Current world: ${CYAN}$WORLD_ID${NC}"
             
-            # Verificar parches de seguridad
-            if [ -f "./blockheads_patch.so" ]; then
-                print_status "Security patches: ${GREEN}ACTIVE${NC}"
-            else
-                print_warning "Security patches: ${RED}MISSING${NC}"
-            fi
-            
             if screen_session_exists "blockheads_server_$port"; then
                 print_status "To view console: ${CYAN}screen -r blockheads_server_$port${NC}"
                 print_status "To view bot: ${CYAN}screen -r blockheads_bot_$port${NC}"
@@ -417,11 +388,6 @@ show_usage() {
     echo -e " ${CYAN}status${NC} [PORT] - Show server status"
     echo -e " ${YELLOW}list${NC} - List all running servers"
     echo -e " ${YELLOW}help${NC} - Show this help"
-    echo ""
-    print_status "Security features:"
-    echo -e " ${GREEN}✓ BHServer patch${NC}: Prevents crashes from malformed packets"
-    echo -e " ${GREEN}✓ FreightCar patch${NC}: Prevents initialization crashes"
-    echo -e " ${GREEN}✓ Dynamic protection${NC}: Runtime security monitoring"
     echo ""
     print_status "Examples:"
     echo -e " ${GREEN}$0 start MyWorld 12153${NC}"
