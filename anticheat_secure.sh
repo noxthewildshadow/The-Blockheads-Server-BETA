@@ -21,6 +21,7 @@ PLAYERS_LOG="$LOG_DIR/players.log"
 SCREEN_SERVER="blockheads_server_$PORT"
 IP_CHANGE_ATTEMPTS_FILE="$LOG_DIR/ip_change_attempts.json"
 PASSWORD_CHANGE_ATTEMPTS_FILE="$LOG_DIR/password_change_attempts.json"
+SUPER_ADMINS_FILE="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/superadminslist.txt"
 
 # Track player messages for spam detection
 declare -A player_message_times
@@ -39,6 +40,24 @@ declare -A ip_mismatch_announced
 
 # Track grace period timer PIDs to cancel them on verification
 declare -A grace_period_pids
+
+# Function to read super admins list
+read_super_admins() {
+    local super_admins=()
+    if [[ -f "$SUPER_ADMINS_FILE" ]]; then
+        while IFS= read -r super_admin || [[ -n "$super_admin" ]]; do
+            super_admin=$(echo "$super_admin" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            [[ -n "$super_admin" ]] && super_admins+=("$super_admin")
+        done < "$SUPER_ADMINS_FILE"
+    fi
+    printf '%s\n' "${super_admins[@]}"
+}
+
+# Function to check if player is super admin
+is_super_admin() {
+    local player_name="$1"
+    read_super_admins | grep -q -x "$player_name"
+}
 
 # Function to check if a player name is valid (only letters, numbers, and underscores)
 is_valid_player_name() {
@@ -613,6 +632,13 @@ check_dangerous_activity() {
 handle_unauthorized_command() {
     local player_name="$1" command="$2" target_player="$3"
     local player_ip=$(get_ip_by_name "$player_name")
+    
+    # Check if target is a super admin and prevent action
+    if is_super_admin "$target_player"; then
+        print_error "Cannot take action against super admin: $target_player"
+        send_server_command "$SCREEN_SERVER" "WARNING: $player_name attempted to take action against SUPER ADMIN $target_player!"
+        return
+    fi
     
     if [ "$(get_player_rank "$player_name")" = "ADMIN" ]; then
         print_error "UNAUTHORIZED COMMAND: Admin $player_name attempted to use $command on $target_player"
