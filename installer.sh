@@ -2,90 +2,65 @@
 set -e
 
 # =============================================================================
-# THE BLOCKHEADS LINUX SERVER INSTALLER - ENHANCED UI VERSION
+# THE BLOCKHEADS LINUX SERVER INSTALLER - OPTIMIZED VERSION
 # =============================================================================
 
-# Color codes for output with more vibrant colors
-RED='\033[1;91m'
-GREEN='\033[1;92m'
-YELLOW='\033[1;93m'
-BLUE='\033[1;94m'
-CYAN='\033[1;96m'
-MAGENTA='\033[1;95m'
-ORANGE='\033[1;33m'
-PURPLE='\033[1;35m'
+# Color codes for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+ORANGE='\033[0;33m'
+PURPLE='\033[0;35m'
 BOLD='\033[1m'
-UNDERLINE='\033[4m'
 NC='\033[0m'
 
-# Function definitions with better formatting
+# Function definitions
 print_status() {
-    echo -e "${BLUE}ℹ ${NC}${BOLD}$1${NC}";
+    echo -e "${BLUE}[INFO]${NC} $1";
 }
 
 print_success() {
-    echo -e "${GREEN}✓ ${NC}${BOLD}$1${NC}";
+    echo -e "${GREEN}[SUCCESS]${NC} $1";
 }
 
 print_warning() {
-    echo -e "${YELLOW}⚠ ${NC}${BOLD}$1${NC}";
+    echo -e "${YELLOW}[WARNING]${NC} $1";
 }
 
 print_error() {
-    echo -e "${RED}✗ ${NC}${BOLD}$1${NC}";
+    echo -e "${RED}[ERROR]${NC} $1";
 }
 
 print_header() {
-    echo -e "${PURPLE}╔══════════════════════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${PURPLE}║${NC}${BOLD} $1${NC}"
-    echo -e "${PURPLE}╚══════════════════════════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "${PURPLE}================================================================================${NC}"
+    echo -e "${PURPLE}$1${NC}"
+    echo -e "${PURPLE}================================================================================${NC}"
 }
 
 print_step() {
-    echo -e "${CYAN}→${NC} ${BOLD}$1${NC}";
+    echo -e "${CYAN}[STEP]${NC} $1";
 }
 
 print_progress() {
-    echo -e "${MAGENTA}⌛${NC} ${BOLD}$1${NC}";
+    echo -e "${MAGENTA}[PROGRESS]${NC} $1";
 }
 
-print_divider() {
-    echo -e "${BLUE}──────────────────────────────────────────────────────────────────────────────────────${NC}"
-}
-
-# Función para mostrar una barra de progreso animada
+# Función para mostrar una barra de progreso simple
 progress_bar() {
-    local duration=${1:-5}
-    local steps=30
+    local duration=${1}
+    local steps=20
     local step_delay=$(echo "scale=3; $duration/$steps" | bc)
-    local colors=("${BLUE}" "${CYAN}" "${GREEN}" "${YELLOW}")
     
-    echo -ne "["
+    echo -n "["
     for ((i=0; i<steps; i++)); do
-        color_idx=$((i % 4))
-        echo -ne "${colors[color_idx]}"
-        echo -ne "█"
+        echo -n "▰"
         sleep $step_delay
     done
-    echo -e "${NC}]"
-}
-
-# Función para mostrar un spinner
-spinner() {
-    local pid=$1
-    local message=$2
-    local delay=0.1
-    local spinstr='|/-\'
-    
-    echo -ne " ${message} "
-    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
-        local temp=${spinstr#?}
-        printf " [%c]  " "$spinstr"
-        local spinstr=$temp${spinstr%"$temp"}
-        sleep $delay
-        printf "\b\b\b\b\b\b"
-    done
-    printf "    \b\b\b\b"
+    echo -n "]"
+    echo
 }
 
 # Función para limpiar carpetas problemáticas
@@ -110,8 +85,8 @@ clean_problematic_dirs() {
 # Limpiar carpetas problemáticas al inicio
 clean_problematic_dirs
 
-# Wget options for downloads with progress
-WGET_OPTIONS="--timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --read-timeout=30 --show-progress"
+# Wget options for silent downloads
+WGET_OPTIONS="--timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --read-timeout=30 -q --show-progress"
 
 # Check if running as root
 [ "$EUID" -ne 0 ] && print_error "This script requires root privileges." && exit 1
@@ -130,66 +105,21 @@ SCRIPTS=(
     "server_bot.sh"
     "anticheat_secure.sh"
     "blockheads_common.sh"
+    "superadmins_monitor.sh"
 )
 
 # Package lists for different distributions
-declare -A PACKAGES_DEBIAN=(
-    ['git']='Git version control system'
-    ['cmake']='CMake build system'
-    ['ninja-build']='Ninja build system'
-    ['clang']='Clang compiler'
-    ['systemtap-sdt-dev']='SystemTap development files'
-    ['libbsd-dev']='BSD library development files'
-    ['linux-libc-dev']='Linux kernel headers'
-    ['curl']='cURL command line tool'
-    ['tar']='Tar archiving utility'
-    ['grep']='Grep pattern matching utility'
-    ['mawk']='AWK implementation'
-    ['patchelf']='ELF binary patcher'
-    ['libgnustep-base-dev']='GNUstep Base library development files'
-    ['libobjc4']='Objective-C runtime library'
-    ['libgnutls28-dev']='GnuTLS development files'
-    ['libgcrypt20-dev']='Libgcrypt development files'
-    ['libxml2']='LibXML2 library'
-    ['libffi-dev']='LibFFI development files'
-    ['libnsl-dev']='Network Services Library development files'
-    ['zlib1g']='Zlib compression library'
-    ['libicu-dev']='ICU development files'
-    ['libstdc++6']='GNU Standard C++ Library'
-    ['libgcc-s1']='GCC support library'
-    ['wget']='Wget download utility'
-    ['jq']='jq JSON processor'
-    ['screen']='Screen terminal multiplexer'
-    ['lsof']='LiSt Open Files utility'
+declare -a PACKAGES_DEBIAN=(
+    'git' 'cmake' 'ninja-build' 'clang' 'systemtap-sdt-dev' 'libbsd-dev' 'linux-libc-dev'
+    'curl' 'tar' 'grep' 'mawk' 'patchelf' 'libgnustep-base-dev' 'libobjc4' 'libgnutls28-dev'
+    'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev' 'zlib1g' 'libicu-dev' 'libicu-dev'
+    'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof'
 )
 
-declare -A PACKAGES_ARCH=(
-    ['base-devel']='Basic development tools'
-    ['git']='Git version control system'
-    ['cmake']='CMake build system'
-    ['ninja']='Ninja build system'
-    ['clang']='Clang compiler'
-    ['systemtap']='SystemTap'
-    ['libbsd']='BSD library'
-    ['curl']='cURL command line tool'
-    ['tar']='Tar archiving utility'
-    ['grep']='Grep pattern matching utility'
-    ['gawk']='GNU AWK implementation'
-    ['patchelf']='ELF binary patcher'
-    ['gnustep-base']='GNUstep Base library'
-    ['gcc-libs']='GCC runtime libraries'
-    ['gnutls']='GnuTLS library'
-    ['libgcrypt']='Libgcrypt library'
-    ['libxml2']='LibXML2 library'
-    ['libffi']='LibFFI library'
-    ['libnsl']='Network Services Library'
-    ['zlib']='Zlib compression library'
-    ['icu']='ICU library'
-    ['libdispatch']='Libdispatch library'
-    ['wget']='Wget download utility'
-    ['jq']='jq JSON processor'
-    ['screen']='Screen terminal multiplexer'
-    ['lsof']='LiSt Open Files utility'
+declare -a PACKAGES_ARCH=(
+    'base-devel' 'git' 'cmake' 'ninja' 'clang' 'systemtap' 'libbsd' 'curl' 'tar' 'grep' 'gawk'
+    'patchelf' 'gnustep-base' 'gcc-libs' 'gnutls' 'libgcrypt' 'libxml2' 'libffi' 'libnsl' 'zlib'
+    'icu' 'libdispatch' 'wget' 'jq' 'screen' 'lsof'
 )
 
 print_header "THE BLOCKHEADS LINUX SERVER INSTALLER"
@@ -253,33 +183,30 @@ build_libdispatch() {
         return 1
     fi
     
-    cd "${DIR}" || return 1
+    cd "${DIR" || return 1
     # Limpiar después de la instalación exitosa
     clean_problematic_dirs
     ldconfig
     return 0
 }
 
-# Function to install packages with better output
+# Function to install packages
 install_packages() {
     [ ! -f /etc/os-release ] && print_error "Could not detect the operating system" && return 1
     
     source /etc/os-release
     
     case $ID in
-        debian|ubuntu|pop|linuxmint|zorin|elementary|kali|parrot)
-            print_step "Installing packages for Debian/Ubuntu based systems..."
+        debian|ubuntu|pop)
+            print_step "Installing packages for Debian/Ubuntu..."
             if ! apt-get update >/dev/null 2>&1; then
                 print_error "Failed to update package list"
                 return 1
             fi
             
-            for package in "${!PACKAGES_DEBIAN[@]}"; do
-                print_progress "Installing ${PACKAGES_DEBIAN[$package]} ($package)"
+            for package in "${PACKAGES_DEBIAN[@]}"; do
                 if ! apt-get install -y "$package" >/dev/null 2>&1; then
                     print_warning "Failed to install $package"
-                else
-                    echo -e "${GREEN}  ✓ ${package} installed${NC}"
                 fi
             done
             
@@ -290,68 +217,12 @@ install_packages() {
                 fi
             fi
             ;;
-        arch|manjaro|endeavouros)
-            print_step "Installing packages for Arch Linux based systems..."
-            if ! pacman -Sy --noconfirm --needed >/dev/null 2>&1; then
-                print_error "Failed to sync package databases"
+        arch)
+            print_step "Installing packages for Arch Linux..."
+            if ! pacman -Sy --noconfirm --needed "${PACKAGES_ARCH[@]}" >/dev/null 2>&1; then
+                print_error "Failed to install Arch Linux packages"
                 return 1
             fi
-            
-            for package in "${!PACKAGES_ARCH[@]}"; do
-                print_progress "Installing ${PACKAGES_ARCH[$package]} ($package)"
-                if ! pacman -S --noconfirm --needed "$package" >/dev/null 2>&1; then
-                    print_warning "Failed to install $package"
-                else
-                    echo -e "${GREEN}  ✓ ${package} installed${NC}"
-                fi
-            done
-            ;;
-        fedora|rhel|centos|almalinux|rocky)
-            print_step "Installing packages for Fedora/RHEL based systems..."
-            if ! dnf check-update -y >/dev/null 2>&1; then
-                print_error "Failed to update package list"
-                return 1
-            fi
-            
-            # Convert Arch packages to Fedora equivalents
-            declare -A PACKAGES_FEDORA=(
-                ['git']='git'
-                ['cmake']='cmake'
-                ['ninja-build']='ninja-build'
-                ['clang']='clang'
-                ['systemtap-sdt-dev']='systemtap-sdt-devel'
-                ['libbsd-dev']='libbsd-devel'
-                ['linux-libc-dev']='kernel-headers'
-                ['curl']='curl'
-                ['tar']='tar'
-                ['grep']='grep'
-                ['mawk']='gawk'
-                ['patchelf']='patchelf'
-                ['libgnustep-base-dev']='gnustep-base-devel'
-                ['libobjc4']='libobjc'
-                ['libgnutls28-dev']='gnutls-devel'
-                ['libgcrypt20-dev']='libgcrypt-devel'
-                ['libxml2']='libxml2'
-                ['libffi-dev']='libffi-devel'
-                ['libnsl-dev']='libnsl'
-                ['zlib1g']='zlib'
-                ['libicu-dev']='libicu-devel'
-                ['libstdc++6']='libstdc++'
-                ['libgcc-s1']='libgcc'
-                ['wget']='wget'
-                ['jq']='jq'
-                ['screen']='screen'
-                ['lsof']='lsof'
-            )
-            
-            for package in "${!PACKAGES_FEDORA[@]}"; do
-                print_progress "Installing ${PACKAGES_FEDORA[$package]}"
-                if ! dnf install -y "${PACKAGES_FEDORA[$package]}" >/dev/null 2>&1; then
-                    print_warning "Failed to install ${PACKAGES_FEDORA[$package]}"
-                else
-                    echo -e "${GREEN}  ✓ ${PACKAGES_FEDORA[$package]} installed${NC}"
-                fi
-            done
             ;;
         *)
             print_error "Unsupported operating system: $ID"
@@ -384,19 +255,6 @@ download_script() {
     
     return 1
 }
-
-# Function to check internet connection
-check_internet() {
-    print_step "Checking internet connection..."
-    if ! ping -c 1 -W 3 google.com >/dev/null 2>&1 && ! ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1; then
-        print_error "No internet connection detected"
-        return 1
-    fi
-    return 0
-}
-
-# Check internet connection
-check_internet || exit 1
 
 print_step "[1/8] Installing required packages..."
 if ! install_packages; then
@@ -489,8 +347,8 @@ done
 print_success "Compatibility patches applied"
 
 print_step "[6/8] Set ownership and permissions"
-chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
-chmod 755 server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
+chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh superadmins_monitor.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
+chmod 755 server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh superadmins_monitor.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
 
 print_step "[7/8] Create economy data file"
 sudo -u "$ORIGINAL_USER" bash -c 'echo "{\"players\": {}, \"transactions\": []}" > economy_data.json' || true
@@ -521,9 +379,3 @@ print_warning "After creating the world, press CTRL+C to exit"
 print_header "INSTALLATION COMPLETE"
 echo -e "${GREEN}Your Blockheads server is now ready to use!${NC}"
 echo -e "${YELLOW}Don't forget to check the server manager for more options.${NC}"
-echo ""
-echo -e "${BOLD}Next steps:${NC}"
-echo -e " 1. ${CYAN}./blockheads_server171 -n${NC}   (Create a new world)"
-echo -e " 2. ${CYAN}./blockheads_server171 -l${NC}   (List your worlds)"
-echo -e " 3. ${CYAN}./server_manager.sh start WORLD_ID${NC}   (Start your server)"
-echo ""
