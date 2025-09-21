@@ -55,6 +55,10 @@ fi
 SERVER_BINARY="./blockheads_server171"
 DEFAULT_PORT=12153
 
+# Security patches
+PACKET_PATCH="./packet_patch.so"
+FREIGHTCAR_PATCH="./freightcar_patch.so"
+
 # Function to check if world exists
 check_world_exists() {
     local world_id="$1"
@@ -130,12 +134,35 @@ start_server() {
     
     echo "$world_id" > "world_id_$port.txt"
     
+    # Prepare LD_PRELOAD with security patches
+    local LD_PRELOAD_CMD=""
+    if [ -f "$PACKET_PATCH" ]; then
+        LD_PRELOAD_CMD="$PACKET_PATCH"
+        print_status "Packet validation patch enabled"
+    fi
+    
+    if [ -f "$FREIGHTCAR_PATCH" ]; then
+        if [ -n "$LD_PRELOAD_CMD" ]; then
+            LD_PRELOAD_CMD="$LD_PRELOAD_CMD:$FREIGHTCAR_PATCH"
+        else
+            LD_PRELOAD_CMD="$FREIGHTCAR_PATCH"
+        fi
+        print_status "Freight car anti-duplication patch enabled"
+    fi
+    
+    if [ -n "$LD_PRELOAD_CMD" ]; then
+        print_success "Security patches loaded: $LD_PRELOAD_CMD"
+        LD_PRELOAD_CMD="LD_PRELOAD=$LD_PRELOAD_CMD"
+    else
+        print_warning "No security patches found - server may be vulnerable"
+    fi
+    
     cat > /tmp/start_server_$$.sh << EOF
 #!/bin/bash
 cd '$PWD'
 while true; do
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting server..."
-    if ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'; then
+    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting server with security patches..."
+    if $LD_PRELOAD_CMD ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'; then
         echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server closed normally"
     else
         exit_code=\$?
