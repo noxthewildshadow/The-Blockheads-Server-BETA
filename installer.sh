@@ -2,65 +2,90 @@
 set -e
 
 # =============================================================================
-# THE BLOCKHEADS LINUX SERVER INSTALLER - OPTIMIZED VERSION
+# THE BLOCKHEADS LINUX SERVER INSTALLER - ENHANCED UI VERSION
 # =============================================================================
 
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
-ORANGE='\033[0;33m'
-PURPLE='\033[0;35m'
+# Color codes for output with more vibrant colors
+RED='\033[1;91m'
+GREEN='\033[1;92m'
+YELLOW='\033[1;93m'
+BLUE='\033[1;94m'
+CYAN='\033[1;96m'
+MAGENTA='\033[1;95m'
+ORANGE='\033[1;33m'
+PURPLE='\033[1;35m'
 BOLD='\033[1m'
+UNDERLINE='\033[4m'
 NC='\033[0m'
 
-# Function definitions
+# Function definitions with better formatting
 print_status() {
-    echo -e "${BLUE}[INFO]${NC} $1";
+    echo -e "${BLUE}ℹ ${NC}${BOLD}$1${NC}";
 }
 
 print_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1";
+    echo -e "${GREEN}✓ ${NC}${BOLD}$1${NC}";
 }
 
 print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1";
+    echo -e "${YELLOW}⚠ ${NC}${BOLD}$1${NC}";
 }
 
 print_error() {
-    echo -e "${RED}[ERROR]${NC} $1";
+    echo -e "${RED}✗ ${NC}${BOLD}$1${NC}";
 }
 
 print_header() {
-    echo -e "${PURPLE}================================================================================${NC}"
-    echo -e "${PURPLE}$1${NC}"
-    echo -e "${PURPLE}================================================================================${NC}"
+    echo -e "${PURPLE}╔══════════════════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${PURPLE}║${NC}${BOLD} $1${NC}"
+    echo -e "${PURPLE}╚══════════════════════════════════════════════════════════════════════════════════╝${NC}"
 }
 
 print_step() {
-    echo -e "${CYAN}[STEP]${NC} $1";
+    echo -e "${CYAN}→${NC} ${BOLD}$1${NC}";
 }
 
 print_progress() {
-    echo -e "${MAGENTA}[PROGRESS]${NC} $1";
+    echo -e "${MAGENTA}⌛${NC} ${BOLD}$1${NC}";
 }
 
-# Función para mostrar una barra de progreso simple
+print_divider() {
+    echo -e "${BLUE}──────────────────────────────────────────────────────────────────────────────────────${NC}"
+}
+
+# Función para mostrar una barra de progreso animada
 progress_bar() {
-    local duration=${1}
-    local steps=20
+    local duration=${1:-5}
+    local steps=30
     local step_delay=$(echo "scale=3; $duration/$steps" | bc)
+    local colors=("${BLUE}" "${CYAN}" "${GREEN}" "${YELLOW}")
     
-    echo -n "["
+    echo -ne "["
     for ((i=0; i<steps; i++)); do
-        echo -n "▰"
+        color_idx=$((i % 4))
+        echo -ne "${colors[color_idx]}"
+        echo -ne "█"
         sleep $step_delay
     done
-    echo -n "]"
-    echo
+    echo -e "${NC}]"
+}
+
+# Función para mostrar un spinner
+spinner() {
+    local pid=$1
+    local message=$2
+    local delay=0.1
+    local spinstr='|/-\'
+    
+    echo -ne " ${message} "
+    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
+        local temp=${spinstr#?}
+        printf " [%c]  " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+        printf "\b\b\b\b\b\b"
+    done
+    printf "    \b\b\b\b"
 }
 
 # Función para limpiar carpetas problemáticas
@@ -85,8 +110,8 @@ clean_problematic_dirs() {
 # Limpiar carpetas problemáticas al inicio
 clean_problematic_dirs
 
-# Wget options for silent downloads
-WGET_OPTIONS="--timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --read-timeout=30 -q --show-progress"
+# Wget options for downloads with progress
+WGET_OPTIONS="--timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --read-timeout=30 --show-progress"
 
 # Check if running as root
 [ "$EUID" -ne 0 ] && print_error "This script requires root privileges." && exit 1
@@ -108,17 +133,63 @@ SCRIPTS=(
 )
 
 # Package lists for different distributions
-declare -a PACKAGES_DEBIAN=(
-    'git' 'cmake' 'ninja-build' 'clang' 'systemtap-sdt-dev' 'libbsd-dev' 'linux-libc-dev'
-    'curl' 'tar' 'grep' 'mawk' 'patchelf' 'libgnustep-base-dev' 'libobjc4' 'libgnutls28-dev'
-    'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev' 'zlib1g' 'libicu-dev' 'libicu-dev'
-    'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof' 'libobjc-10-dev'
+declare -A PACKAGES_DEBIAN=(
+    ['git']='Git version control system'
+    ['cmake']='CMake build system'
+    ['ninja-build']='Ninja build system'
+    ['clang']='Clang compiler'
+    ['systemtap-sdt-dev']='SystemTap development files'
+    ['libbsd-dev']='BSD library development files'
+    ['linux-libc-dev']='Linux kernel headers'
+    ['curl']='cURL command line tool'
+    ['tar']='Tar archiving utility'
+    ['grep']='Grep pattern matching utility'
+    ['mawk']='AWK implementation'
+    ['patchelf']='ELF binary patcher'
+    ['libgnustep-base-dev']='GNUstep Base library development files'
+    ['libobjc4']='Objective-C runtime library'
+    ['libgnutls28-dev']='GnuTLS development files'
+    ['libgcrypt20-dev']='Libgcrypt development files'
+    ['libxml2']='LibXML2 library'
+    ['libffi-dev']='LibFFI development files'
+    ['libnsl-dev']='Network Services Library development files'
+    ['zlib1g']='Zlib compression library'
+    ['libicu-dev']='ICU development files'
+    ['libstdc++6']='GNU Standard C++ Library'
+    ['libgcc-s1']='GCC support library'
+    ['wget']='Wget download utility'
+    ['jq']='jq JSON processor'
+    ['screen']='Screen terminal multiplexer'
+    ['lsof']='LiSt Open Files utility'
 )
 
-declare -a PACKAGES_ARCH=(
-    'base-devel' 'git' 'cmake' 'ninja' 'clang' 'systemtap' 'libbsd' 'curl' 'tar' 'grep' 'gawk'
-    'patchelf' 'gnustep-base' 'gcc-libs' 'gnutls' 'libgcrypt' 'libxml2' 'libffi' 'libnsl' 'zlib'
-    'icu' 'libdispatch' 'wget' 'jq' 'screen' 'lsof' 'libobjc4'
+declare -A PACKAGES_ARCH=(
+    ['base-devel']='Basic development tools'
+    ['git']='Git version control system'
+    ['cmake']='CMake build system'
+    ['ninja']='Ninja build system'
+    ['clang']='Clang compiler'
+    ['systemtap']='SystemTap'
+    ['libbsd']='BSD library'
+    ['curl']='cURL command line tool'
+    ['tar']='Tar archiving utility'
+    ['grep']='Grep pattern matching utility'
+    ['gawk']='GNU AWK implementation'
+    ['patchelf']='ELF binary patcher'
+    ['gnustep-base']='GNUstep Base library'
+    ['gcc-libs']='GCC runtime libraries'
+    ['gnutls']='GnuTLS library'
+    ['libgcrypt']='Libgcrypt library'
+    ['libxml2']='LibXML2 library'
+    ['libffi']='LibFFI library'
+    ['libnsl']='Network Services Library'
+    ['zlib']='Zlib compression library'
+    ['icu']='ICU library'
+    ['libdispatch']='Libdispatch library'
+    ['wget']='Wget download utility'
+    ['jq']='jq JSON processor'
+    ['screen']='Screen terminal multiplexer'
+    ['lsof']='LiSt Open Files utility'
 )
 
 print_header "THE BLOCKHEADS LINUX SERVER INSTALLER"
@@ -189,23 +260,26 @@ build_libdispatch() {
     return 0
 }
 
-# Function to install packages
+# Function to install packages with better output
 install_packages() {
     [ ! -f /etc/os-release ] && print_error "Could not detect the operating system" && return 1
     
     source /etc/os-release
     
     case $ID in
-        debian|ubuntu|pop)
-            print_step "Installing packages for Debian/Ubuntu..."
+        debian|ubuntu|pop|linuxmint|zorin|elementary|kali|parrot)
+            print_step "Installing packages for Debian/Ubuntu based systems..."
             if ! apt-get update >/dev/null 2>&1; then
                 print_error "Failed to update package list"
                 return 1
             fi
             
-            for package in "${PACKAGES_DEBIAN[@]}"; do
+            for package in "${!PACKAGES_DEBIAN[@]}"; do
+                print_progress "Installing ${PACKAGES_DEBIAN[$package]} ($package)"
                 if ! apt-get install -y "$package" >/dev/null 2>&1; then
                     print_warning "Failed to install $package"
+                else
+                    echo -e "${GREEN}  ✓ ${package} installed${NC}"
                 fi
             done
             
@@ -216,12 +290,68 @@ install_packages() {
                 fi
             fi
             ;;
-        arch)
-            print_step "Installing packages for Arch Linux..."
-            if ! pacman -Sy --noconfirm --needed "${PACKAGES_ARCH[@]}" >/dev/null 2>&1; then
-                print_error "Failed to install Arch Linux packages"
+        arch|manjaro|endeavouros)
+            print_step "Installing packages for Arch Linux based systems..."
+            if ! pacman -Sy --noconfirm --needed >/dev/null 2>&1; then
+                print_error "Failed to sync package databases"
                 return 1
             fi
+            
+            for package in "${!PACKAGES_ARCH[@]}"; do
+                print_progress "Installing ${PACKAGES_ARCH[$package]} ($package)"
+                if ! pacman -S --noconfirm --needed "$package" >/dev/null 2>&1; then
+                    print_warning "Failed to install $package"
+                else
+                    echo -e "${GREEN}  ✓ ${package} installed${NC}"
+                fi
+            done
+            ;;
+        fedora|rhel|centos|almalinux|rocky)
+            print_step "Installing packages for Fedora/RHEL based systems..."
+            if ! dnf check-update -y >/dev/null 2>&1; then
+                print_error "Failed to update package list"
+                return 1
+            fi
+            
+            # Convert Arch packages to Fedora equivalents
+            declare -A PACKAGES_FEDORA=(
+                ['git']='git'
+                ['cmake']='cmake'
+                ['ninja-build']='ninja-build'
+                ['clang']='clang'
+                ['systemtap-sdt-dev']='systemtap-sdt-devel'
+                ['libbsd-dev']='libbsd-devel'
+                ['linux-libc-dev']='kernel-headers'
+                ['curl']='curl'
+                ['tar']='tar'
+                ['grep']='grep'
+                ['mawk']='gawk'
+                ['patchelf']='patchelf'
+                ['libgnustep-base-dev']='gnustep-base-devel'
+                ['libobjc4']='libobjc'
+                ['libgnutls28-dev']='gnutls-devel'
+                ['libgcrypt20-dev']='libgcrypt-devel'
+                ['libxml2']='libxml2'
+                ['libffi-dev']='libffi-devel'
+                ['libnsl-dev']='libnsl'
+                ['zlib1g']='zlib'
+                ['libicu-dev']='libicu-devel'
+                ['libstdc++6']='libstdc++'
+                ['libgcc-s1']='libgcc'
+                ['wget']='wget'
+                ['jq']='jq'
+                ['screen']='screen'
+                ['lsof']='lsof'
+            )
+            
+            for package in "${!PACKAGES_FEDORA[@]}"; do
+                print_progress "Installing ${PACKAGES_FEDORA[$package]}"
+                if ! dnf install -y "${PACKAGES_FEDORA[$package]}" >/dev/null 2>&1; then
+                    print_warning "Failed to install ${PACKAGES_FEDORA[$package]}"
+                else
+                    echo -e "${GREEN}  ✓ ${PACKAGES_FEDORA[$package]} installed${NC}"
+                fi
+            done
             ;;
         *)
             print_error "Unsupported operating system: $ID"
@@ -255,6 +385,19 @@ download_script() {
     return 1
 }
 
+# Function to check internet connection
+check_internet() {
+    print_step "Checking internet connection..."
+    if ! ping -c 1 -W 3 google.com >/dev/null 2>&1 && ! ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1; then
+        print_error "No internet connection detected"
+        return 1
+    fi
+    return 0
+}
+
+# Check internet connection
+check_internet || exit 1
+
 print_step "[1/8] Installing required packages..."
 if ! install_packages; then
     print_warning "Falling back to basic package installation..."
@@ -263,7 +406,7 @@ if ! install_packages; then
         exit 1
     fi
     
-    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common libobjc4 >/dev/null 2>&1; then
+    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common >/dev/null 2>&1; then
         print_error "Failed to install essential packages"
         exit 1
     fi
@@ -345,177 +488,20 @@ done
 
 print_success "Compatibility patches applied"
 
-print_step "[6/8] Creating and applying security patches..."
+print_step "[6/8] Set ownership and permissions"
+chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
+chmod 755 server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
 
-# Create packet validation patch
-cat > packet_patch.c << 'EOF'
-#define _GNU_SOURCE
-#include <dlfcn.h>
-#include <sys/socket.h>
-#include <stdio.h>
-#include <string.h>
-#include <errno.h>
-
-// Original function pointer
-static ssize_t (*original_recv)(int, void *, size_t, int) = NULL;
-
-ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
-    // Initialize original function if not already done
-    if (!original_recv) {
-        original_recv = dlsym(RTLD_NEXT, "recv");
-        if (!original_recv) {
-            fprintf(stderr, "Error getting original recv function: %s\n", dlerror());
-            return -1;
-        }
-    }
-    
-    // Call original function
-    ssize_t result = original_recv(sockfd, buf, len, flags);
-    
-    // Validate packet length to prevent crashes
-    if (result <= 0) {
-        // Connection closed or error, let the server handle it
-        return result;
-    }
-    
-    // Log suspicious packets (zero-length or malformed)
-    if (result == 0) {
-        fprintf(stderr, "[WARNING] Received zero-length packet, potential crash attempt prevented\n");
-    }
-    
-    return result;
-}
-EOF
-
-# Create enhanced freight car patch
-cat > freightcar_patch.c << 'EOF'
-#define _GNU_SOURCE
-#include <stdio.h>
-#include <dlfcn.h>
-#include <string.h>
-#include <objc/objc.h>
-#include <objc/runtime.h>
-
-// Function prototypes for the original methods
-static id (*orig_initWithWorld_dynamicWorld_atPosition_cache_saveDict_placedByClient)(id, SEL, id, id, void*, id, id, id) = NULL;
-static id (*orig_initWithWorld_dynamicWorld_cache_netData)(id, SEL, id, id, id, id) = NULL;
-static id (*orig_initWithWorld_dynamicWorld_saveDict_chestSaveDict_cache)(id, SEL, id, id, id, id, id) = NULL;
-
-// Patched methods that prevent freight car creation
-id patched_initWithWorld_dynamicWorld_atPosition_cache_saveDict_placedByClient(id self, SEL _cmd, id world, id dynamicWorld, void* position, id cache, id saveDict, id clientID) {
-    printf("[FreightCarPatch] BLOCKED: Freight car creation attempt prevented (method 1)\n");
-    printf("[FreightCarPatch] This action would have caused item duplication\n");
-    return nil;
-}
-
-id patched_initWithWorld_dynamicWorld_cache_netData(id self, SEL _cmd, id world, id dynamicWorld, id cache, id netData) {
-    printf("[FreightCarPatch] BLOCKED: Freight car creation attempt prevented (method 2)\n");
-    printf("[FreightCarPatch] This action would have caused item duplication\n");
-    return nil;
-}
-
-id patched_initWithWorld_dynamicWorld_saveDict_chestSaveDict_cache(id self, SEL _cmd, id world, id dynamicWorld, id saveDict, id chestSaveDict, id cache) {
-    printf("[FreightCarPatch] BLOCKED: Freight car creation attempt prevented (method 3)\n");
-    printf("[FreightCarPatch] This action would have caused item duplication\n");
-    return nil;
-}
-
-// Constructor to apply the patches
-__attribute__((constructor)) void apply_freightcar_patch() {
-    printf("[FreightCarPatch] Loading enhanced freight car prevention system...\n");
-    
-    // Get the FreightCar class
-    Class freightCarClass = objc_getClass("FreightCar");
-    if (!freightCarClass) {
-        printf("[FreightCarPatch] ERROR: Could not find FreightCar class\n");
-        return;
-    }
-    
-    // Replace the methods using method swizzling
-    Method originalMethod1 = class_getInstanceMethod(freightCarClass, 
-        sel_registerName("initWithWorld:dynamicWorld:atPosition:cache:saveDict:placedByClient:"));
-    Method originalMethod2 = class_getInstanceMethod(freightCarClass, 
-        sel_registerName("initWithWorld:dynamicWorld:cache:netData:"));
-    Method originalMethod3 = class_getInstanceMethod(freightCarClass, 
-        sel_registerName("initWithWorld:dynamicWorld:saveDict:chestSaveDict:cache:"));
-    
-    if (originalMethod1) {
-        orig_initWithWorld_dynamicWorld_atPosition_cache_saveDict_placedByClient = 
-            (id (*)(id, SEL, id, id, void*, id, id, id))method_getImplementation(originalMethod1);
-        method_setImplementation(originalMethod1, 
-            (IMP)patched_initWithWorld_dynamicWorld_atPosition_cache_saveDict_placedByClient);
-        printf("[FreightCarPatch] Successfully patched method 1\n");
-    } else {
-        printf("[FreightCarPatch] WARNING: Could not find method 1\n");
-    }
-    
-    if (originalMethod2) {
-        orig_initWithWorld_dynamicWorld_cache_netData = 
-            (id (*)(id, SEL, id, id, id, id))method_getImplementation(originalMethod2);
-        method_setImplementation(originalMethod2, 
-            (IMP)patched_initWithWorld_dynamicWorld_cache_netData);
-        printf("[FreightCarPatch] Successfully patched method 2\n");
-    } else {
-        printf("[FreightCarPatch] WARNING: Could not find method 2\n");
-    }
-    
-    if (originalMethod3) {
-        orig_initWithWorld_dynamicWorld_saveDict_chestSaveDict_cache = 
-            (id (*)(id, SEL, id, id, id, id, id))method_getImplementation(originalMethod3);
-        method_setImplementation(originalMethod3, 
-            (IMP)patched_initWithWorld_dynamicWorld_saveDict_chestSaveDict_cache);
-        printf("[FreightCarPatch] Successfully patched method 3\n");
-    } else {
-        printf("[FreightCarPatch] WARNING: Could not find method 3\n");
-    }
-    
-    printf("[FreightCarPatch] All freight car creation methods have been blocked\n");
-    printf("[FreightCarPatch] Item duplication exploit has been patched\n");
-}
-EOF
-
-# Compile packet patch
-if gcc -shared -fPIC -o packet_patch.so packet_patch.c -ldl; then
-    print_success "Packet validation patch compiled successfully"
-else
-    print_warning "Failed to compile packet validation patch"
-    rm -f packet_patch.c packet_patch.so
-fi
-
-# Compile freight car patch
-if gcc -shared -fPIC -o freightcar_patch.so freightcar_patch.c -ldl -lobjc; then
-    print_success "Enhanced freight car patch compiled successfully"
-else
-    print_warning "Failed to compile enhanced freight car patch"
-    # Try without objc library
-    if gcc -shared -fPIC -o freightcar_patch.so freightcar_patch.c -ldl; then
-        print_success "Freight car patch compiled successfully (without objc)"
-    else
-        print_warning "Failed to compile freight car patch completely"
-        rm -f freightcar_patch.c freightcar_patch.so
-    fi
-fi
-
-print_step "[7/8] Set ownership and permissions"
-chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json ./*.so 2>/dev/null || true
-chmod 755 server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json ./*.so 2>/dev/null || true
-
-print_step "[8/8] Create economy data file"
+print_step "[7/8] Create economy data file"
 sudo -u "$ORIGINAL_USER" bash -c 'echo "{\"players\": {}, \"transactions\": []}" > economy_data.json' || true
 chown "$ORIGINAL_USER:$ORIGINAL_USER" economy_data.json 2>/dev/null || true
 
-rm -f "$TEMP_FILE" packet_patch.c freightcar_patch.c
+rm -f "$TEMP_FILE"
 
 # Limpieza final de carpetas problemáticas
 clean_problematic_dirs
 
-print_step "[9/9] Installation completed successfully"
-echo ""
-
-print_header "SECURITY PATCHES APPLIED"
-echo -e "${GREEN}✓ Packet validation patch${NC} - Prevents server crashes from malformed packets"
-echo -e "${GREEN}✓ Enhanced freight car patch${NC} - Prevents item duplication exploits"
-echo -e "${YELLOW}Note:${NC} Patches are loaded automatically when starting the server"
+print_step "[8/8] Installation completed successfully"
 echo ""
 
 print_header "BINARY INSTRUCTIONS"
@@ -535,3 +521,9 @@ print_warning "After creating the world, press CTRL+C to exit"
 print_header "INSTALLATION COMPLETE"
 echo -e "${GREEN}Your Blockheads server is now ready to use!${NC}"
 echo -e "${YELLOW}Don't forget to check the server manager for more options.${NC}"
+echo ""
+echo -e "${BOLD}Next steps:${NC}"
+echo -e " 1. ${CYAN}./blockheads_server171 -n${NC}   (Create a new world)"
+echo -e " 2. ${CYAN}./blockheads_server171 -l${NC}   (List your worlds)"
+echo -e " 3. ${CYAN}./server_manager.sh start WORLD_ID${NC}   (Start your server)"
+echo ""
