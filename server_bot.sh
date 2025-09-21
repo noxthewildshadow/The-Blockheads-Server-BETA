@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# THE BLOCKHEADS SERVER ECONOMY BOT WITH RANK UPDATES AND SUPER ADMIN SUPPORT
+# THE BLOCKHEADS SERVER ECONOMY BOT WITH RANK UPDATES
 # =============================================================================
 
 # Load common functions
@@ -18,54 +18,8 @@ LOG_DIR=$(dirname "$1")
 ECONOMY_FILE="$LOG_DIR/economy_data_$PORT.json"
 SCREEN_SERVER="blockheads_server_$PORT"
 PLAYERS_LOG="$LOG_DIR/players.log"
-SUPER_ADMINS_FILE="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/superadminslist.txt"
-
-# Track super admins and their last check time
-declare -A super_admins
-declare -A last_super_admin_check
-
-# Function to read super admins list
-read_super_admins() {
-    local current_time=$(date +%s)
-    # Only read the file once every 0.5 seconds to avoid excessive I/O
-    if [[ -z "${last_super_admin_check['global']}" ]] || 
-       [[ $((current_time - last_super_admin_check['global'])) -ge 0.5 ]]; then
-        super_admins=()
-        if [[ -f "$SUPER_ADMINS_FILE" ]]; then
-            while IFS= read -r super_admin || [[ -n "$super_admin" ]]; do
-                super_admin=$(echo "$super_admin" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-                [[ -n "$super_admin" ]] && super_admins["$super_admin"]=1
-            done < "$SUPER_ADMINS_FILE"
-        fi
-        last_super_admin_check['global']=$current_time
-    fi
-}
-
-# Function to check if player is super admin
-is_super_admin() {
-    local player_name="$1"
-    read_super_admins
-    [[ -n "${super_admins[$player_name]}" ]]
-}
-
-# Function to ensure super admins have ADMIN rank
-ensure_super_admin_ranks() {
-    read_super_admins
-    for super_admin in "${!super_admins[@]}"; do
-        local player_info=$(get_player_info "$super_admin")
-        if [[ -n "$player_info" ]]; then
-            local rank=$(echo "$player_info" | cut -d'|' -f4)
-            if [[ "$rank" != "ADMIN" ]]; then
-                print_warning "Super admin $super_admin doesn't have ADMIN rank. Fixing..."
-                update_player_rank "$super_admin" "ADMIN"
-            fi
-        else
-            # Add super admin to players.log if not present
-            print_warning "Super admin $super_admin not found in players.log. Adding..."
-            update_player_info "$super_admin" "unknown" "unknown" "NONE" "ADMIN" "NO" "NO"
-        fi
-    done
-}
+SAVES_DIR="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
+SUPERADMINS_FILE="$SAVES_DIR/../superadminslist.txt"
 
 # Function to initialize economy
 initialize_economy() {
@@ -230,11 +184,6 @@ show_welcome_message() {
     
     # 30-second cooldown for welcome messages
     [ "$force_send" -eq 1 ] || [ "$last_welcome_time" -eq 0 ] || [ $((current_time - last_welcome_time)) -ge 30 ] && {
-        # Check if player is super admin and announce it
-        if is_super_admin "$player_name"; then
-            send_server_command "$SCREEN_SERVER" "SUPER ADMIN $player_name has entered the server!"
-        fi
-        
         [ "$is_new_player" = "true" ] && {
             send_server_command "$SCREEN_SERVER" "Hello $player_name! Welcome to the server. Type !help to check available commands."
         } || {
@@ -287,12 +236,6 @@ process_give_rank() {
         return 1
     }
     
-    # Don't allow giving ranks to super admins (they already have ADMIN)
-    if is_super_admin "$target_player"; then
-        send_server_command "$SCREEN_SERVER" "$giver_name, $target_player is a SUPER ADMIN and cannot receive rank gifts."
-        return 1
-    fi
-    
     local new_tickets=$((giver_tickets - cost))
     current_data=$(echo "$current_data" | jq --arg player "$giver_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
     
@@ -342,12 +285,6 @@ process_message() {
             send_server_command "$SCREEN_SERVER" "$player_name, you have $player_tickets tickets."
             ;;
         "!buy_mod")
-            # Don't allow super admins to buy mod rank
-            if is_super_admin "$player_name"; then
-                send_server_command "$SCREEN_SERVER" "$player_name, you are a SUPER ADMIN and cannot purchase ranks."
-                return
-            fi
-            
             (has_purchased "$player_name" "mod" || is_player_in_list "$player_name" "mod") && {
                 send_server_command "$SCREEN_SERVER" "$player_name, you already have MOD rank."
             } || [ "$player_tickets" -ge 50 ] && {
@@ -373,12 +310,6 @@ process_message() {
             } || send_server_command "$SCREEN_SERVER" "$player_name, you need $((50 - player_tickets)) more tickets to buy MOD rank."
             ;;
         "!buy_admin")
-            # Don't allow super admins to buy admin rank
-            if is_super_admin "$player_name"; then
-                send_server_command "$SCREEN_SERVER" "$player_name, you are a SUPER ADMIN and cannot purchase ranks."
-                return
-            fi
-            
             (has_purchased "$player_name" "admin" || is_player_in_list "$player_name" "admin") && {
                 send_server_command "$SCREEN_SERVER" "$player_name, you already have ADMIN rank."
             } || [ "$player_tickets" -ge 100 ] && {
@@ -463,13 +394,6 @@ process_admin_command() {
     elif [[ "$command" =~ ^!set_mod\ ([a-zA-Z0-9_]+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
         ! is_valid_player_name "$player_name" && print_error "Invalid player name: $player_name" && return 1
-        
-        # Don't allow setting mod rank for super admins
-        if is_super_admin "$player_name"; then
-            print_error "Cannot set MOD rank for super admin: $player_name"
-            send_server_command "$SCREEN_SERVER" "ERROR: $player_name is a SUPER ADMIN and cannot be demoted to MOD."
-            return 1
-        fi
         
         print_success "Setting $player_name as MOD"
         
@@ -634,9 +558,6 @@ monitor_log() {
 
     # Start monitoring the log
     tail -n 0 -F "$log_file" 2>/dev/null | filter_server_log | while read -r line; do
-        # Check super admin ranks every 0.5 seconds
-        ensure_super_admin_ranks
-        
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}" player_ip="${BASH_REMATCH[2]}" player_hash="${BASH_REMATCH[3]}"
             player_name=$(extract_real_name "$player_name")
@@ -649,6 +570,11 @@ monitor_log() {
             }
 
             print_success "Player connected: $player_name (IP: $player_ip)"
+
+            # Check if player is in superadminslist.txt
+            if [ -f "$SUPERADMINS_FILE" ] && grep -q "^$player_name$" "$SUPERADMINS_FILE"; then
+                send_server_command "$SCREEN_SERVER" "SUPER ADMIN $player_name has joined the server!"
+            fi
 
             local is_new_player="false"
             add_player_if_new "$player_name" "$player_ip" && is_new_player="true"
