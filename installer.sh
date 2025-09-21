@@ -105,7 +105,6 @@ SCRIPTS=(
     "server_bot.sh"
     "anticheat_secure.sh"
     "blockheads_common.sh"
-    "superadmins_monitor.sh"
 )
 
 # Package lists for different distributions
@@ -251,7 +250,6 @@ download_script() {
         if [ $attempts -lt $max_attempts ]; then
             sleep 2
         fi
-        sleep 1
     done
     
     return 1
@@ -348,8 +346,8 @@ done
 print_success "Compatibility patches applied"
 
 print_step "[6/8] Set ownership and permissions"
-chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh superadmins_monitor.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
-chmod 755 server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh superadmins_monitor.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
+chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
+chmod 755 server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
 
 print_step "[7/8] Create economy data file"
 sudo -u "$ORIGINAL_USER" bash -c 'echo "{\"players\": {}, \"transactions\": []}" > economy_data.json' || true
