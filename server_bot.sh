@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# THE BLOCKHEADS SERVER ECONOMY BOT WITH RANK UPDATES AND SUPERADMINS FEATURE
+# THE BLOCKHEADS SERVER ECONOMY BOT WITH RANK UPDATES AND SUPERADMINS FEATURES
 # =============================================================================
 
 # Load common functions
@@ -18,8 +18,11 @@ LOG_DIR=$(dirname "$1")
 ECONOMY_FILE="$LOG_DIR/economy_data_$PORT.json"
 SCREEN_SERVER="blockheads_server_$PORT"
 PLAYERS_LOG="$LOG_DIR/players.log"
-SUPERADMINS_LIST="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/superadminslist.txt"
-SUPERADMINS_PID=""
+SUPERADMINS_FILE="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/superadminslist.txt"
+SAVES_DIR="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
+
+# Ensure superadminslist.txt exists
+[ ! -f "$SUPERADMINS_FILE" ] && touch "$SUPERADMINS_FILE"
 
 # Function to initialize economy
 initialize_economy() {
@@ -469,57 +472,6 @@ server_sent_welcome_recently() {
     return 1
 }
 
-# Function to check if player is superadmin
-is_superadmin() {
-    local player_name="$1"
-    [ ! -f "$SUPERADMINS_LIST" ] && return 1
-    
-    while IFS= read -r line || [ -n "$line" ]; do
-        line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        [[ -z "$line" || "$line" =~ ^# ]] && continue
-        if [ "$line" = "$player_name" ]; then
-            return 0
-        fi
-    done < "$SUPERADMINS_LIST"
-    
-    return 1
-}
-
-# Function to check and enforce superadmins
-check_superadmins() {
-    while true; do
-        if [ -f "$SUPERADMINS_LIST" ]; then
-            while IFS= read -r superadmin || [ -n "$superadmin" ]; do
-                superadmin=$(echo "$superadmin" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-                [[ -z "$superadmin" || "$superadmin" =~ ^# ]] && continue
-                
-                # Ensure superadmin has ADMIN rank
-                local player_info=$(get_player_info "$superadmin")
-                if [ -n "$player_info" ]; then
-                    local current_rank=$(echo "$player_info" | cut -d'|' -f4)
-                    if [ "$current_rank" != "ADMIN" ]; then
-                        print_warning "Superadmin $superadmin missing ADMIN rank, fixing..."
-                        local first_ip=$(echo "$player_info" | cut -d'|' -f1)
-                        local current_ip=$(echo "$player_info" | cut -d'|' -f2)
-                        local password=$(echo "$player_info" | cut -d'|' -f3)
-                        local whitelisted=$(echo "$player_info" | cut -d'|' -f5)
-                        local blacklisted=$(echo "$player_info" | cut -d'|' -f6)
-                        update_player_info "$superadmin" "$current_ip" "ADMIN" "$password"
-                    fi
-                else
-                    # Add superadmin to players.log if not exists
-                    print_warning "Superadmin $superadmin not found in players.log, adding..."
-                    update_player_info "$superadmin" "unknown" "ADMIN" "NONE"
-                fi
-            done < "$SUPERADMINS_LIST"
-        else
-            # Create superadmins list file if it doesn't exist
-            touch "$SUPERADMINS_LIST"
-        fi
-        sleep 0.5
-    done
-}
-
 # Function to filter server log - only show relevant information
 filter_server_log() {
     while read -r line; do
@@ -547,12 +499,73 @@ filter_server_log() {
     done
 }
 
+# Function to monitor superadmins
+monitor_superadmins() {
+    while true; do
+        sleep 0.5
+        [ ! -f "$SUPERADMINS_FILE" ] && continue
+        
+        # Read superadmins list
+        mapfile -t superadmins < <(grep -v "^[[:space:]]*$" "$SUPERADMINS_FILE" 2>/dev/null | tr -d '\r')
+        
+        # Ensure all superadmins have ADMIN rank in players.log
+        for player in "${superadmins[@]}"; do
+            player=$(echo "$player" | xargs)
+            [ -z "$player" ] && continue
+            
+            # Check if player exists in players.log with ADMIN rank
+            local player_info=$(get_player_info "$player")
+            if [ -n "$player_info" ]; then
+                local current_rank=$(echo "$player_info" | cut -d'|' -f4)
+                if [ "$current_rank" != "ADMIN" ]; then
+                    print_warning "Superadmin $player does not have ADMIN rank. Updating..."
+                    local first_ip=$(echo "$player_info" | cut -d'|' -f1)
+                    local current_ip=$(echo "$player_info" | cut -d'|' -f2)
+                    local password=$(echo "$player_info" | cut -d'|' -f3)
+                    local whitelisted=$(echo "$player_info" | cut -d'|' -f5)
+                    local blacklisted=$(echo "$player_info" | cut -d'|' -f6)
+                    update_player_info "$player" "$current_ip" "ADMIN" "$password"
+                fi
+            else
+                # Player not found, add with ADMIN rank
+                print_warning "Superadmin $player not found in players.log. Adding..."
+                update_player_info "$player" "unknown" "ADMIN" "NONE"
+            fi
+        done
+    done
+}
+
+# Function to handle superadmin connections
+handle_superadmin_connection() {
+    local player_name="$1" player_ip="$2"
+    
+    # Check if player is in superadmins list
+    if [ -f "$SUPERADMINS_FILE" ] && grep -q "^$player_name$" "$SUPERADMINS_FILE" 2>/dev/null; then
+        # Send welcome message after 1.0 second
+        (
+            sleep 1.0
+            send_server_command "$SCREEN_SERVER" "SUPER ADMIN $player_name has joined the server!"
+        ) &
+        
+        # Check password after 5.0 seconds
+        (
+            sleep 5.0
+            local player_info=$(get_player_info "$player_name")
+            if [ -n "$player_info" ]; then
+                local password=$(echo "$player_info" | cut -d'|' -f3)
+                if [ "$password" = "NONE" ]; then
+                    send_server_command "$SCREEN_SERVER" "REMINDER: $player_name, please set your password with !ip_psw to secure your account."
+                fi
+            fi
+        ) &
+    fi
+}
+
 # Function to cleanup
 cleanup() {
     print_status "Cleaning up..."
     rm -f "$admin_pipe" 2>/dev/null
     kill $(jobs -p) 2>/dev/null
-    [ -n "$SUPERADMINS_PID" ] && kill "$SUPERADMINS_PID" 2>/dev/null
     rm -f "${ECONOMY_FILE}.lock" 2>/dev/null
     exit 0
 }
@@ -562,14 +575,11 @@ monitor_log() {
     local log_file="$1"
     LOG_FILE="$log_file"
 
-    # Create directory for superadmins list if it doesn't exist
-    mkdir -p "$(dirname "$SUPERADMINS_LIST")"
-
     initialize_economy
 
-    # Start superadmin monitoring in background
-    check_superadmins &
-    SUPERADMINS_PID=$!
+    # Start superadmins monitor in background
+    monitor_superadmins &
+    local superadmins_pid=$!
 
     trap cleanup EXIT INT TERM
 
@@ -612,7 +622,7 @@ monitor_log() {
     if [ ! -f "$log_file" ]; then
         print_error "Log file never appeared: $log_file"
         kill $(jobs -p) 2>/dev/null
-        [ -n "$SUPERADMINS_PID" ] && kill "$SUPERADMINS_PID" 2>/dev/null
+        kill $superadmins_pid 2>/dev/null
         exit 1
     fi
 
@@ -631,13 +641,11 @@ monitor_log() {
 
             print_success "Player connected: $player_name (IP: $player_ip)"
 
-            # Check if player is superadmin and announce after 1 second
-            if is_superadmin "$player_name"; then
-                (sleep 1; send_server_command "$SCREEN_SERVER" "SUPER ADMIN $player_name has joined the server!") &
-            fi
-
             local is_new_player="false"
             add_player_if_new "$player_name" "$player_ip" && is_new_player="true"
+
+            # Handle superadmin connection
+            handle_superadmin_connection "$player_name" "$player_ip"
 
             sleep 3
 
@@ -688,6 +696,7 @@ monitor_log() {
         # print_status "Other log line: $line"
     done
 
+    kill $superadmins_pid 2>/dev/null
     rm -f "$admin_pipe"
 }
 
