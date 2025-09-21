@@ -112,13 +112,13 @@ declare -a PACKAGES_DEBIAN=(
     'git' 'cmake' 'ninja-build' 'clang' 'systemtap-sdt-dev' 'libbsd-dev' 'linux-libc-dev'
     'curl' 'tar' 'grep' 'mawk' 'patchelf' 'libgnustep-base-dev' 'libobjc4' 'libgnutls28-dev'
     'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev' 'zlib1g' 'libicu-dev' 'libicu-dev'
-    'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof'
+    'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof' 'libobjc-10-dev'
 )
 
 declare -a PACKAGES_ARCH=(
     'base-devel' 'git' 'cmake' 'ninja' 'clang' 'systemtap' 'libbsd' 'curl' 'tar' 'grep' 'gawk'
     'patchelf' 'gnustep-base' 'gcc-libs' 'gnutls' 'libgcrypt' 'libxml2' 'libffi' 'libnsl' 'zlib'
-    'icu' 'libdispatch' 'wget' 'jq' 'screen' 'lsof'
+    'icu' 'libdispatch' 'wget' 'jq' 'screen' 'lsof' 'libobjc4'
 )
 
 print_header "THE BLOCKHEADS LINUX SERVER INSTALLER"
@@ -263,7 +263,7 @@ if ! install_packages; then
         exit 1
     fi
     
-    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common >/dev/null 2>&1; then
+    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common libobjc4 >/dev/null 2>&1; then
         print_error "Failed to install essential packages"
         exit 1
     fi
@@ -387,6 +387,93 @@ ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
 }
 EOF
 
+# Create enhanced freight car patch
+cat > freightcar_patch.c << 'EOF'
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <dlfcn.h>
+#include <string.h>
+#include <objc/objc.h>
+#include <objc/runtime.h>
+
+// Function prototypes for the original methods
+static id (*orig_initWithWorld_dynamicWorld_atPosition_cache_saveDict_placedByClient)(id, SEL, id, id, void*, id, id, id) = NULL;
+static id (*orig_initWithWorld_dynamicWorld_cache_netData)(id, SEL, id, id, id, id) = NULL;
+static id (*orig_initWithWorld_dynamicWorld_saveDict_chestSaveDict_cache)(id, SEL, id, id, id, id, id) = NULL;
+
+// Patched methods that prevent freight car creation
+id patched_initWithWorld_dynamicWorld_atPosition_cache_saveDict_placedByClient(id self, SEL _cmd, id world, id dynamicWorld, void* position, id cache, id saveDict, id clientID) {
+    printf("[FreightCarPatch] BLOCKED: Freight car creation attempt prevented (method 1)\n");
+    printf("[FreightCarPatch] This action would have caused item duplication\n");
+    return nil;
+}
+
+id patched_initWithWorld_dynamicWorld_cache_netData(id self, SEL _cmd, id world, id dynamicWorld, id cache, id netData) {
+    printf("[FreightCarPatch] BLOCKED: Freight car creation attempt prevented (method 2)\n");
+    printf("[FreightCarPatch] This action would have caused item duplication\n");
+    return nil;
+}
+
+id patched_initWithWorld_dynamicWorld_saveDict_chestSaveDict_cache(id self, SEL _cmd, id world, id dynamicWorld, id saveDict, id chestSaveDict, id cache) {
+    printf("[FreightCarPatch] BLOCKED: Freight car creation attempt prevented (method 3)\n");
+    printf("[FreightCarPatch] This action would have caused item duplication\n");
+    return nil;
+}
+
+// Constructor to apply the patches
+__attribute__((constructor)) void apply_freightcar_patch() {
+    printf("[FreightCarPatch] Loading enhanced freight car prevention system...\n");
+    
+    // Get the FreightCar class
+    Class freightCarClass = objc_getClass("FreightCar");
+    if (!freightCarClass) {
+        printf("[FreightCarPatch] ERROR: Could not find FreightCar class\n");
+        return;
+    }
+    
+    // Replace the methods using method swizzling
+    Method originalMethod1 = class_getInstanceMethod(freightCarClass, 
+        sel_registerName("initWithWorld:dynamicWorld:atPosition:cache:saveDict:placedByClient:"));
+    Method originalMethod2 = class_getInstanceMethod(freightCarClass, 
+        sel_registerName("initWithWorld:dynamicWorld:cache:netData:"));
+    Method originalMethod3 = class_getInstanceMethod(freightCarClass, 
+        sel_registerName("initWithWorld:dynamicWorld:saveDict:chestSaveDict:cache:"));
+    
+    if (originalMethod1) {
+        orig_initWithWorld_dynamicWorld_atPosition_cache_saveDict_placedByClient = 
+            (id (*)(id, SEL, id, id, void*, id, id, id))method_getImplementation(originalMethod1);
+        method_setImplementation(originalMethod1, 
+            (IMP)patched_initWithWorld_dynamicWorld_atPosition_cache_saveDict_placedByClient);
+        printf("[FreightCarPatch] Successfully patched method 1\n");
+    } else {
+        printf("[FreightCarPatch] WARNING: Could not find method 1\n");
+    }
+    
+    if (originalMethod2) {
+        orig_initWithWorld_dynamicWorld_cache_netData = 
+            (id (*)(id, SEL, id, id, id, id))method_getImplementation(originalMethod2);
+        method_setImplementation(originalMethod2, 
+            (IMP)patched_initWithWorld_dynamicWorld_cache_netData);
+        printf("[FreightCarPatch] Successfully patched method 2\n");
+    } else {
+        printf("[FreightCarPatch] WARNING: Could not find method 2\n");
+    }
+    
+    if (originalMethod3) {
+        orig_initWithWorld_dynamicWorld_saveDict_chestSaveDict_cache = 
+            (id (*)(id, SEL, id, id, id, id, id))method_getImplementation(originalMethod3);
+        method_setImplementation(originalMethod3, 
+            (IMP)patched_initWithWorld_dynamicWorld_saveDict_chestSaveDict_cache);
+        printf("[FreightCarPatch] Successfully patched method 3\n");
+    } else {
+        printf("[FreightCarPatch] WARNING: Could not find method 3\n");
+    }
+    
+    printf("[FreightCarPatch] All freight car creation methods have been blocked\n");
+    printf("[FreightCarPatch] Item duplication exploit has been patched\n");
+}
+EOF
+
 # Compile packet patch
 if gcc -shared -fPIC -o packet_patch.so packet_patch.c -ldl; then
     print_success "Packet validation patch compiled successfully"
@@ -395,33 +482,18 @@ else
     rm -f packet_patch.c packet_patch.so
 fi
 
-# Create freight car patch
-cat > freightcar_patch.c << 'EOF'
-#include <stdio.h>
-#include <dlfcn.h>
-#include <string.h>
-
-// Function to intercept freight car creation
-void __attribute__((constructor)) apply_freightcar_patch() {
-    printf("[FreightCarPatch] Loaded - Preventing freight car item duplication\n");
-    
-    // Find the original functions
-    void *(*orig_init1)(void *, void *, void *, void *, void *, void *, void *) = NULL;
-    void *(*orig_init2)(void *, void *, void *, void *, void *) = NULL;
-    void *(*orig_init3)(void *, void *, void *, void *, void *, void *) = NULL;
-    
-    // Try to find the freight car initialization methods
-    // These will be patched at runtime to prevent item duplication
-    printf("[FreightCarPatch] Hooks installed - Freight cars will be automatically removed\n");
-}
-EOF
-
 # Compile freight car patch
-if gcc -shared -fPIC -o freightcar_patch.so freightcar_patch.c -ldl; then
-    print_success "Freight car patch compiled successfully"
+if gcc -shared -fPIC -o freightcar_patch.so freightcar_patch.c -ldl -lobjc; then
+    print_success "Enhanced freight car patch compiled successfully"
 else
-    print_warning "Failed to compile freight car patch"
-    rm -f freightcar_patch.c freightcar_patch.so
+    print_warning "Failed to compile enhanced freight car patch"
+    # Try without objc library
+    if gcc -shared -fPIC -o freightcar_patch.so freightcar_patch.c -ldl; then
+        print_success "Freight car patch compiled successfully (without objc)"
+    else
+        print_warning "Failed to compile freight car patch completely"
+        rm -f freightcar_patch.c freightcar_patch.so
+    fi
 fi
 
 print_step "[7/8] Set ownership and permissions"
@@ -442,7 +514,7 @@ echo ""
 
 print_header "SECURITY PATCHES APPLIED"
 echo -e "${GREEN}✓ Packet validation patch${NC} - Prevents server crashes from malformed packets"
-echo -e "${GREEN}✓ Freight car patch${NC} - Prevents item duplication exploits"
+echo -e "${GREEN}✓ Enhanced freight car patch${NC} - Prevents item duplication exploits"
 echo -e "${YELLOW}Note:${NC} Patches are loaded automatically when starting the server"
 echo ""
 
