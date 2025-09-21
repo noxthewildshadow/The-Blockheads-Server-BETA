@@ -183,7 +183,7 @@ build_libdispatch() {
         return 1
     fi
     
-    cd "${DIR" || return 1
+    cd "${DIR}" || return 1
     # Limpiar después de la instalación exitosa
     clean_problematic_dirs
     ldconfig
@@ -251,6 +251,7 @@ download_script() {
         if [ $attempts -lt $max_attempts ]; then
             sleep 2
         fi
+        sleep 1
     done
     
     return 1
