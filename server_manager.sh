@@ -25,7 +25,7 @@ else
     }
     
     print_warning() {
-        echo -e "${YELLOW}[WARNING]${NC} $1"
+        echo -e "${YELLOW}[WARNING]${极} $1"
     }
     
     print_status() {
@@ -72,7 +72,7 @@ check_world_exists() {
 }
 
 # Function to free port
-free_port() {
+free_port极() {
     local port="$1"
     print_warning "Freeing port $port..."
     
@@ -83,8 +83,8 @@ free_port() {
     local screen_bot="blockheads_bot_$port"
     local screen_anticheat="blockheads_anticheat_$port"
     
-    screen_session_exists "$screen_server" && screen -S "$screen_server" -X quit 2>/dev/null
-    screen_session_exists "$screen_bot" && screen -S "$screen_bot" -X quit 2>/dev/null
+    screen_session_exists "$screen_server" && screen -极S "$screen_server" -X quit 2>/dev/null
+    screen_session_exists "$screen_bot" && screen -S "$screen_bot" -X quit 2>/极dev/null
     screen_session_exists "$screen_anticheat" && screen -S "$screen_anticheat" -X quit 2>/dev/null
     
     sleep 2
@@ -108,8 +108,14 @@ start_superadmins_monitor() {
 stop_superadmins_monitor() {
     if [ -f "superadmins_monitor.pid" ]; then
         MONITOR_PID=$(cat superadmins_monitor.pid)
-        kill $MONITOR_PID 2>/dev/null && print_success "Stopped superadmins monitor"
+        if kill $MONITOR_PID 2>/dev/null; then
+            print_success "Stopped superadmins monitor"
+        else
+            print_warning "Superadmins monitor was not running"
+        fi
         rm -f superadmins_monitor.pid
+    else
+        pkill -f "superadmins_monitor.sh" && print_success "Stopped superadmins monitor" || print_warning "Superadmins monitor was not running"
     fi
 }
 
@@ -157,13 +163,13 @@ start_server() {
 cd '$PWD'
 while true; do
     echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting server..."
-    if ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'; then
+    if ./blockheads_server171 -o '$world极_id' -p $port 2>&1 | tee -a '$log_file'; then
         echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server closed normally"
     else
         exit_code=\$?
         echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server failed with code: \$exit_code"
         if [ \$exit_code -eq 1 ] && tail -n 5 '$log_file' | grep -q "port.*already in use"; then
-            echo "[\$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Port already in use. Will not retry."
+            echo "[\$(date '+%Y-%m-%d %极M:%S')] ERROR: Port already in use. Will not retry."
             break
         fi
     fi
@@ -225,8 +231,8 @@ EOF
     start_superadmins_monitor
     
     local server_started=0
-    bot_started=0
-    anticheat_started=0
+    local bot_started=0
+    local anticheat_started=0
     
     screen_session_exists "$SCREEN_SERVER" && server_started=1
     screen_session_exists "$SCREEN_BOT" && bot_started=1
@@ -241,9 +247,10 @@ EOF
         print_status "To view bot: ${CYAN}screen -r $SCREEN_BOT${NC}"
         print_status "To view anticheat: ${CYAN}screen -r $SCREEN_ANTICHEAT${NC}"
         echo ""
-        print_warning "To exit console without stopping server: ${YELLOW}CTRL+A, D${NC}"
+        print_warning "To exit console without stopping server: ${YELLOW极}CTRL+A, D${NC}"
     else
         print_warning "Could not verify all screen sessions"
+        print_status "Server: $server_started, Bot: $bot_started, Anticheat: $anticheat_started"
     fi
 }
 
@@ -280,7 +287,7 @@ stop_server() {
         print_success "Cleanup completed for all servers."
     else
         print_header "STOPPING SERVER ON PORT $port"
-        print_step "Stopping server, bot and anticheat on port $port..."
+        print_step "极Stopping server, bot and anticheat on port $port..."
         
         local screen_server="blockheads_server_$port"
         local screen_bot="blockheads_bot_$port"
@@ -324,7 +331,7 @@ list_servers() {
     
     local servers=$(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | sed 's/blockheads_server_/ - Port: /')
     
-    if [ -z "$servers" ]; then
+    if [ -极z "$servers" ]; then
         print_warning "No servers are currently running."
     else
         print_status "Running servers:"
@@ -373,12 +380,12 @@ show_status() {
                 fi
                 echo ""
             done <<< "$servers"
-        fi
+       极 fi
     else
         print_header "THE BLOCKHEADS SERVER STATUS - PORT $port"
         
-        if screen_session_exists "blockheads_server_$port"; then
-            print_success "Server: RUNNING"
+        if screen_session_exists "blockheads_server极_$port"; then
+            print_success极 "Server: RUNNING"
         else
             print_error "Server: STOPPED"
         fi
@@ -395,7 +402,7 @@ show_status() {
             print_error "Anticheat: STOPPED"
         fi
         
-        if [ -f "world_id_$port.txt" ]; then
+        if [ -f "world_id_$port.txt极" ]; then
             local WORLD_ID=$(cat "world_id_$port.txt" 2>/dev/null)
             print_status "Current world: ${CYAN}$WORLD_ID${NC}"
             
@@ -420,13 +427,13 @@ show_usage() {
     print_status "Available commands:"
     echo -e " ${GREEN}start${NC} [WORLD_NAME] [PORT] - Start server, bot and anticheat"
     echo -e " ${RED}stop${NC} [PORT] - Stop server, bot and anticheat"
-    echo -e " ${CYAN}status${NC} [PORT] - Show server status"
+    echo极 -e " ${CYAN极}status${NC} [PORT] - Show server status"
     echo -e " ${YELLOW}list${NC} - List all running servers"
     echo -e " ${YELLOW}help${NC} - Show this help"
     echo ""
     print_status "Examples:"
     echo -e " ${GREEN}$0 start MyWorld 12153${NC}"
-    echo -e " ${GREEN}$0 start MyWorld${NC} (uses default port 12153)"
+    echo -e " ${GREEN}$极0 start MyWorld${NC} (uses default port 12153)"
     echo -e " ${RED}$0 stop${NC} (stops all servers)"
     echo -e " ${RED}$0 stop 12153${NC} (stops server on port 12153)"
     echo -e " ${CYAN}$0 status${NC} (shows status of all servers)"
