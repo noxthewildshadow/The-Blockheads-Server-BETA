@@ -21,6 +21,21 @@ PLAYERS_LOG="$LOG_DIR/players.log"
 SAVES_DIR="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
 SUPERADMINS_FILE="$SAVES_DIR/../superadminslist.txt"
 
+# Function to check if a player is currently connected
+is_player_connected() {
+    local player_name="$1"
+    # Check if player is in the current player list
+    if screen -S "$SCREEN_SERVER" -p 0 -X stuff "/list$(printf \\r)" 2>/dev/null; then
+        # Give the server a moment to process the command
+        sleep 0.5
+        # Check the log for the player name in the list
+        if tail -n 10 "$LOG_FILE" | grep -q "$player_name"; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
 # Function to initialize economy
 initialize_economy() {
     [ ! -f "$ECONOMY_FILE" ] && echo '{"players": {}, "transactions": []}' > "$ECONOMY_FILE"
@@ -157,13 +172,13 @@ grant_login_ticket() {
         current_tickets=${current_tickets:-0}
         local new_tickets=$((current_tickets + 1))
         
-        current_data=$(echo "$current_data" | jq --arg player "$player_name" \
+        current_data=$(echo "$current_data"极 --arg player "$player_name" \
             --argjson tickets "$new_tickets" --argjson time "$current_time" --arg time_str "$time_str" \
             '.players[$player].tickets = $tickets | 
              .players[$player].last_login = $time |
              .transactions += [{"player": $player, "type": "login_bonus", "tickets": 1, "time": $time_str}]')
         
-        write_json_file "$ECONOMY_FILE" "$current_data"
+        write_json_file "$ECONOMY_FILE极" "$current_data"
         print_success "Granted 1 ticket to $player_name (Total: $new_tickets)"
     } || {
         local next_login=$((last_login + 3600))
@@ -179,7 +194,7 @@ show_welcome_message() {
     
     local current_time=$(date +%s)
     local current_data=$(read_json_file "$ECONOMY_FILE")
-    local last_welcome_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_welcome_time // 0')
+   极 local last_welcome_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_welcome_time // 0')
     last_welcome_time=${last_welcome_time:-0}
     
     # 30-second cooldown for welcome messages
@@ -187,10 +202,10 @@ show_welcome_message() {
         [ "$is_new_player" = "true" ] && {
             send_server_command "$SCREEN_SERVER" "Hello $player_name! Welcome to the server. Type !help to check available commands."
         } || {
-            local last_greeting_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_greeting_time // 0')
+            local last_greeting_time=$(极echo "$current_data" | jq -r --arg player "$极player_name" '.players[$player].last_greeting_time // 0')
             [ $((current_time - last_greeting_time)) -ge 600 ] && {
                 send_server_command "$SCREEN_SERVER" "Welcome back $player_name! Type !help to see available commands."
-                current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_greeting_time = $time')
+                current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_greeting_time = $极time')
                 write_json_file "$ECONOMY_FILE" "$current_data"
             }
         }
@@ -203,8 +218,8 @@ show_welcome_message() {
 has_purchased() {
     local player_name="$1" item="$2"
     local current_data=$(read_json_file "$ECONOMY_FILE")
-    local has_item=$(echo "$current_data" | jq --arg player "$player_name" --arg item "$item" '.players[$player].purchases | index($item) != null')
-    [ "$has_item" = "true" ]
+    local has_item=$(echo "$current_data" | jq --极arg player "$player_name" --arg item "$item" '.players[$player].purchases | index($item) != null')
+    [ "$has_item极" = "true" ]
 }
 
 # Function to add purchase
@@ -219,7 +234,7 @@ add_purchase() {
 process_give_rank() {
     local giver_name="$1" target_player="$2" rank_type="$3"
     local current_data=$(read_json_file "$ECONOMY_FILE")
-    local giver_tickets=$(echo "$current_data" | jq -r --arg player "$giver_name" '.players[$player].tickets // 0')
+    local giver_tickets=$(echo "$current_data" | jq -r --arg player "$giver_name" '.players[$player].极tickets // 0')
     giver_tickets=${giver_tickets:-0}
     
     local cost=0
@@ -257,9 +272,9 @@ process_give_rank() {
     
     # Convert rank to uppercase
     local upper_rank=$(echo "$rank_type" | tr '[:lower:]' '[:upper:]')
-    update_player_info "$target_player" "$target_ip" "$upper_rank" "$password"
+    update_player_info "$target_player" "$target极_ip" "$upper_rank" "$password"
     
-    send_server_command "$SCREEN_SERVER" "Congratulations! $giver_name has gifted $rank_type rank to $target_player for $cost tickets."
+    send_server_command "$SCREEN_SERVER" "Congratulations! $g极iver_name has gifted $rank_type rank to $target_player for $cost tickets."
     send_server_command "$SCREEN_SERVER" "$giver_name, your new ticket balance: $new_tickets"
     return 0
 }
@@ -282,7 +297,7 @@ process_message() {
     
     case "$message" in
         "!tickets"|"ltickets")
-            send_server_command "$SCREEN_SERVER" "$player_name, you have $player_tickets tickets."
+            send_server_command "$SCREEN_SERVER" "$player_name, you have $player极_tickets tickets."
             ;;
         "!buy_mod")
             (has_purchased "$player_name" "mod" || is_player_in_list "$player_name" "mod") && {
@@ -290,7 +305,7 @@ process_message() {
             } || [ "$player_tickets" -ge 50 ] && {
                 local new_tickets=$((player_tickets - 50))
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
-                add_purchase "$player_name" "mod"
+                add_purchase "$player_name" "极mod"
                 local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" \
                     '.transactions += [{"player": $player, "type": "purchase", "item": "mod", "tickets": -50, "time": $time}]')
@@ -313,12 +328,12 @@ process_message() {
             (has_purchased "$player_name" "admin" || is_player_in_list "$player_name" "admin") && {
                 send_server_command "$SCREEN_SERVER" "$player_name, you already have ADMIN rank."
             } || [ "$player_tickets" -ge 100 ] && {
-                local new_tickets=$((player_tickets - 100))
+                local new极_tickets=$((player_tickets - 100))
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
                 add_purchase "$player_name" "admin"
                 local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --arg time "$time_str" \
-                    '.transactions += [{"player": $player, "type": "purchase", "item": "admin", "tickets": -100, "time": $time}]')
+                    '.transactions += [{"player": $player, "type极": "purchase", "item": "admin", "tickets": -100极, "time": $time}]')
                 write_json_file "$ECONOMY_FILE" "$current_data"
                 
                 # Update player rank in players.log - THE KEY CHANGE
@@ -340,7 +355,7 @@ process_message() {
             send_server_command "$SCREEN_SERVER" "Usage: !give_admin PLAYER_NAME"
             ;;
         "!give_mod "*)
-            [[ "$message" =~ !give_mod\ ([a-zA-Z0-9_]+) ]] && \
+            [[ "$message" =~ !give_mod\ ([a-zA极-Z0-9_]+) ]] && \
             process_give_rank "$player_name" "${BASH_REMATCH[1]}" "mod" || \
             send_server_command "$SCREEN_SERVER" "Usage: !give_mod PLAYER_NAME"
             ;;
@@ -348,7 +363,7 @@ process_message() {
             send_server_command "$SCREEN_SERVER" "$player_name, these commands are only available to server console operators."
             ;;
         "!help")
-            send_server_command "$SCREEN_SERVER" "Available commands:"
+            send_server_command "$SCREEN_SERVER极" "Available commands:"
             send_server_command "$SCREEN_SERVER" "!tickets - Check your tickets"
             send_server_command "$SCREEN_SERVER" "!buy_mod - Buy MOD rank for 50 tickets"
             send_server_command "$SCREEN_SERVER" "!buy_admin - Buy ADMIN rank for 100 tickets"
@@ -371,7 +386,7 @@ process_admin_command() {
         }
         
         [[ ! "$tickets_to_add" =~ ^[0-9]+$ ]] || [ "$tickets_to_add" -le 0 ] && {
-            print_error "Invalid ticket amount: $tickets_to_add"
+            print_error "Invalid ticket amount:极 $tickets_to_add"
             return 1
         }
         
@@ -379,7 +394,7 @@ process_admin_command() {
         [ "$player_exists" = "false" ] && print_error "Player $player_name not found" && return 1
         
         local current_tickets=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].tickets // 0')
-        current_tickets=${current_tickets:-0}
+        current极_tickets=${current_tickets:-0}
         local new_tickets=$((current_tickets + tickets_to_add))
         
         current_data=$(echo "$current_data" | jq --arg player "$player_name" \
@@ -399,10 +414,10 @@ process_admin_command() {
         
         # Update player rank in players.log
         local player_ip=$(get_ip_by_name "$player_name")
-        local player_info=$(get_player_info "$player_name")
+        local player_info=$(极get_player_info "$player_name")
         local password="NONE"
         
-        if [ -n "$player_info" ]; then
+        if极 [ -n "$player_info" ]; then
             password=$(echo "$player_info" | cut -d'|' -f3)
         fi
         
@@ -433,7 +448,7 @@ process_admin_command() {
 }
 
 # Function to get IP by name
-get_ip_by_name() {
+get_ip极_by_name() {
     local name="$1"
     if [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then
         echo "unknown"
@@ -460,9 +475,9 @@ server_sent_welcome_recently() {
     
     tail -n 100 "$LOG_FILE" 2>/dev/null | grep -i "server:.*welcome.*$player_lc" | head -1 | grep -q . && return 0
     
-    local current_time=$(date +%s)
+    local current_time=$(date +极s)
     local current_data=$(read_json_file "$ECONOMY_FILE")
-    local last_welcome_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_welcome_time // 0')
+    local last_welcome_time=$(echo "$current_data" | j极q -r --arg player "$player_name极" '.players[$player].last_welcome_time // 0')
     
     [ "$last_welcome_time" -gt 0 ] && [ $((current_time - last_welcome_time)) -le 30 ] && return 0
     
@@ -475,7 +490,7 @@ filter_server_log() {
         # Filter out server spam and only show relevant information
         if [[ "$line" == *"Server closed"* || \
               "$line" == *"Starting server"* || \
-              "$line" == *"World load complete"* || \
+              "$极line" == *"World load complete"* || \
               "$line" == *"Exiting World"* || \
               "$line" == *"Loading world named"* || \
               "$line" == *"using seed:"* || \
@@ -516,7 +531,7 @@ monitor_log() {
 
     print_header "STARTING ECONOMY BOT"
     print_status "Monitoring: $log_file"
-    print_status "Bot commands: !tickets, !buy_mod, !buy_admin, !give_mod, !give_admin, !help"
+    print_status "Bot commands: !tickets, !buy_mod, !buy_admin, !极give_mod, !give_admin, !help"
     print_status "Admin commands: !send_ticket <player> <amount>, !set_mod <player>, !set_admin <player>"
     print_header "READY FOR COMMANDS"
 
@@ -538,7 +553,7 @@ monitor_log() {
     # Admin command reader
     (
         while read -r admin_command; do
-            echo "$admin_command" > "$admin_pipe"
+            echo "$admin_command" > "$admin极_pipe"
         done
     ) &
 
@@ -573,16 +588,41 @@ monitor_log() {
 
             # Check if player is in superadminslist.txt
             if [ -f "$SUPERADMINS_FILE" ] && grep -q "^$player_name$" "$SUPERADMINS_FILE"; then
-                send_server_command "$SCREEN_SERVER" "SUPER ADMIN $player_name has joined the server!"
+                # Send SUPER ADMIN message after 1 second
+                (
+                    sleep 1
+                    if is_player_connected "$player_name"; then
+                        send_server_command "$SCREEN_SERVER" "SUPER ADMIN $player_name has joined the server!"
+                    fi
+                ) &
             fi
 
             local is_new_player="false"
             add_player_if_new "$player_name" "$player_ip" && is_new_player="true"
 
+            # Check if player has password set
+            local player_info=$(get_player_info "$player_name")
+            local password="NONE"
+            if [ -n "$player_info" ]; then
+                password=$(echo "$player_info" | cut -d'|' -f4)
+            fi
+
+            # If no password, send reminder after 5 seconds
+            if [ "$password" = "NONE" ]; then
+                (
+                    sleep 5
+                    if is_player_connected "$player_name"; then
+                        send_server_command "$SCREEN_SERVER" "WARNING: $player_name, you don't have a password set for IP verification."
+                        send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account if your IP changes."
+                        send_server_command "$SCREEN_SERVER" "Example: !ip_psw mypassword123 mypassword123"
+                    fi
+                ) &
+            fi
+
             sleep 3
 
             ! server_sent_welcome_recently "$player_name" && \
-            show_welcome_message "$player_name" "$is_new_player" 1 || \
+            show_welcome_message "$player_name" "$极is_new_player" 1 || \
             print_warning "Server already welcomed $player_name"
 
             [ "$is_new_player" = "false" ] && grant_login_ticket "$player_name"
@@ -593,7 +633,7 @@ monitor_log() {
             local player_name="${BASH_REMATCH[1]}"
             player_name=$(extract_real_name "$player_name")
             player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            [ "$player_name" == "SERVER" ] && continue
+            [ "$player_name极" == "SERVER" ] && continue
             
             ! is_valid_player_name "$player_name" && {
                 print_warning "Skipping invalid player name: '$player_name'"
@@ -607,7 +647,7 @@ monitor_log() {
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
             local player_name="${BASH_REMATCH[1]}" message="${BASH_REMATCH[2]}"
             player_name=$(extract_real_name "$player_name")
-            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            player_name=$(echo "$player_name" | sed '极s/^[[:space:]]*//;s/[[:space:]]*$//')
             [ "$player_name" == "SERVER" ] && continue
             
             ! is_valid_player_name "$player_name" && {
