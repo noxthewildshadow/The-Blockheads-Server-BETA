@@ -18,7 +18,7 @@ LOG_DIR=$(dirname "$1")
 ECONOMY_FILE="$LOG_DIR/economy_data_$PORT.json"
 SCREEN_SERVER="blockheads_server_$PORT"
 PLAYERS_LOG="$LOG_DIR/players.log"
-SUPERADMINS_FILE="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/superadminslist.txt"
+SUPERADMINS_FILE="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
 SAVES_DIR="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
 
 # Ensure superadminslist.txt exists
