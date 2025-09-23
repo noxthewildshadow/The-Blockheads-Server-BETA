@@ -20,7 +20,6 @@ SCREEN_SERVER="blockheads_server_$PORT"
 PLAYERS_LOG="$LOG_DIR/players.log"
 SUPERADMINS_FILE="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
 SAVES_DIR="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
-NOTIFICATION_FILE="$LOG_DIR/anticheat_notifications.txt"
 
 # Ensure superadminslist.txt exists
 [ ! -f "$SUPERADMINS_FILE" ] && touch "$SUPERADMINS_FILE"
@@ -109,9 +108,6 @@ update_player_rank() {
         local blacklisted=$(echo "$player_info" | cut -d'|' -f6)
         update_player_info "$player_name" "$current_ip" "$new_rank" "$password"
         print_success "Updated player rank in registry: $player_name -> $new_rank"
-        
-        # Notify anticheat system about the rank change
-        notify_anticheat_rank_change "$player_name" "$new_rank"
     else
         print_error "Player $player_name not found in registry. Cannot update rank."
     fi
@@ -224,13 +220,6 @@ add_purchase() {
     write_json_file "$ECONOMY_FILE" "$current_data"
 }
 
-# Function to notify anticheat system about rank change
-notify_anticheat_rank_change() {
-    local player_name="$1" new_rank="$2"
-    echo "MANUAL_RANK_CHANGE:$player_name:$new_rank" >> "$NOTIFICATION_FILE"
-    print_status "Notified anticheat about rank change: $player_name -> $new_rank"
-}
-
 # Function to process give rank command
 process_give_rank() {
     local giver_name="$1" target_player="$2" rank_type="$3"
@@ -273,7 +262,9 @@ process_give_rank() {
     
     # Convert rank to uppercase
     local upper_rank=$(echo "$rank_type" | tr '[:lower:]' '[:upper:]')
-    update_player_rank "$target_player" "$upper_rank"
+    update_player_info "$target_player" "$target_ip" "$upper_rank" "$password"
+    
+    # The anticheat system will automatically handle list updates via players.log monitoring
     
     send_server_command "$SCREEN_SERVER" "Congratulations! $giver_name has gifted $rank_type rank to $target_player for $cost tickets."
     send_server_command "$SCREEN_SERVER" "$giver_name, your new ticket balance: $new_tickets"
@@ -320,7 +311,7 @@ process_message() {
                     password=$(echo "$player_info" | cut -d'|' -f3)
                 fi
                 
-                update_player_rank "$player_name" "MOD"
+                update_player_info "$player_name" "$player_ip" "MOD" "$password"
                 
                 send_server_command "$SCREEN_SERVER" "Congratulations $player_name! You have been promoted to MOD for 50 tickets. Remaining tickets: $new_tickets"
             } || send_server_command "$SCREEN_SERVER" "$player_name, you need $((50 - player_tickets)) more tickets to buy MOD rank."
@@ -345,7 +336,7 @@ process_message() {
                     password=$(echo "$player_info" | cut -d'|' -f3)
                 fi
                 
-                update_player_rank "$player_name" "ADMIN"
+                update_player_info "$player_name" "$player_ip" "ADMIN" "$password"
                 
                 send_server_command "$SCREEN_SERVER" "Congratulations $player_name! You have been promoted to ADMIN for 100 tickets. Remaining tickets: $new_tickets"
             } || send_server_command "$SCREEN_SERVER" "$player_name, you need $((100 - player_tickets)) more tickets to buy ADMIN rank."
@@ -418,7 +409,7 @@ process_admin_command() {
             password=$(echo "$player_info" | cut -d'|' -f3)
         fi
         
-        update_player_rank "$player_name" "MOD"
+        update_player_info "$player_name" "$player_ip" "MOD" "$password"
         
         send_server_command "$SCREEN_SERVER" "$player_name has been set as MOD by server console!"
     elif [[ "$command" =~ ^!set_admin\ ([a-zA-Z0-9_]+)$ ]]; then
@@ -436,27 +427,9 @@ process_admin_command() {
             password=$(echo "$player_info" | cut -d'|' -f3)
         fi
         
-        update_player_rank "$player_name" "ADMIN"
+        update_player_info "$player_name" "$player_ip" "ADMIN" "$password"
         
         send_server_command "$SCREEN_SERVER" "$player_name has been set as ADMIN by server console!"
-    elif [[ "$command" =~ ^!set_super\ ([a-zA-Z0-9_]+)$ ]]; then
-        local player_name="${BASH_REMATCH[1]}"
-        ! is_valid_player_name "$player_name" && print_error "Invalid player name: $player_name" && return 1
-        
-        print_success "Setting $player_name as SUPER"
-        
-        # Update player rank in players.log
-        local player_ip=$(get_ip_by_name "$player_name")
-        local player_info=$(get_player_info "$player_name")
-        local password="NONE"
-        
-        if [ -n "$player_info" ]; then
-            password=$(echo "$player_info" | cut -d'|' -f3)
-        fi
-        
-        update_player_rank "$player_name" "SUPER"
-        
-        send_server_command "$SCREEN_SERVER" "$player_name has been set as SUPER by server console!"
     else
         print_error "Unknown admin command: $command"
     fi
@@ -528,39 +501,34 @@ filter_server_log() {
 
 # Function to monitor superadmins
 monitor_superadmins() {
-    while true; do
-        sleep 0.5
-        [ ! -f "$SUPERADMINS_FILE" ] && continue
+    [ ! -f "$SUPERADMINS_FILE" ] && return
+    
+    # Read superadmins list
+    mapfile -t superadmins < <(grep -v "^[[:space:]]*$" "$SUPERADMINS_FILE" 2>/dev/null | tr -d '\r')
+    
+    # Ensure all superadmins have SUPER rank in players.log
+    for player in "${superadmins[@]}"; do
+        player=$(echo "$player" | xargs)
+        [ -z "$player" ] && continue
         
-        # Read superadmins list
-        mapfile -t superadmins < <(grep -v "^[[:space:]]*$" "$SUPERADMINS_FILE" 2>/dev/null | tr -d '\r')
-        
-        # Ensure all superadmins have ADMIN rank in players.log
-        for player in "${superadmins[@]}"; do
-            player=$(echo "$player" | xargs)
-            [ -z "$player" ] && continue
-            
-            # Check if player exists in players.log with ADMIN rank
-            local player_info=$(get_player_info "$player")
-            if [ -n "$player_info" ]; then
-                local current_rank=$(echo "$player_info" | cut -d'|' -f4)
-                if [ "$current_rank" != "ADMIN" ] && [ "$current_rank" != "SUPER" ]; then
-                    print_warning "Superadmin $player does not have ADMIN/SUPER rank. Updating..."
-                    local first_ip=$(echo "$player_info" | cut -d'|' -f1)
-                    local current_ip=$(echo "$player_info" | cut -d'|' -f2)
-                    local password=$(echo "$player_info" | cut -d'|' -f3)
-                    local whitelisted=$(echo "$player_info" | cut -d'|' -f5)
-                    local blacklisted=$(echo "$player_info" | cut -d'|' -f6)
-                    update_player_info "$player" "$current_ip" "SUPER" "$password"
-                    notify_anticheat_rank_change "$player" "SUPER"
-                fi
-            else
-                # Player not found, add with SUPER rank
-                print_warning "Superadmin $player not found in players.log. Adding..."
-                update_player_info "$player" "unknown" "SUPER" "NONE"
-                notify_anticheat_rank_change "$player" "SUPER"
+        # Check if player exists in players.log with SUPER rank
+        local player_info=$(get_player_info "$player")
+        if [ -n "$player_info" ]; then
+            local current_rank=$(echo "$player_info" | cut -d'|' -f4)
+            if [ "$current_rank" != "SUPER" ]; then
+                print_warning "Superadmin $player does not have SUPER rank. Updating..."
+                local first_ip=$(echo "$player_info" | cut -d'|' -f1)
+                local current_ip=$(echo "$player_info" | cut -d'|' -f2)
+                local password=$(echo "$player_info" | cut -d'|' -f3)
+                local whitelisted=$(echo "$player_info" | cut -d'|' -f5)
+                local blacklisted=$(echo "$player_info" | cut -d'|' -f6)
+                update_player_info "$player" "$current_ip" "SUPER" "$password"
             fi
-        done
+        else
+            # Player not found, add with SUPER rank
+            print_warning "Superadmin $player not found in players.log. Adding..."
+            update_player_info "$player" "unknown" "SUPER" "NONE"
+        fi
     done
 }
 
@@ -603,7 +571,12 @@ monitor_log() {
     initialize_economy
 
     # Start superadmins monitor in background
-    monitor_superadmins &
+    (
+        while true; do
+            sleep 0.5
+            monitor_superadmins
+        done
+    ) &
     local superadmins_pid=$!
 
     trap cleanup EXIT INT TERM
@@ -622,7 +595,7 @@ monitor_log() {
     (
         while read -r admin_command < "$admin_pipe"; do
             print_status "Processing admin command: $admin_command"
-            [[ "$admin_command" == "!send_ticket "* || "$admin_command" == "!set_mod "* || "$admin_command" == "!set_admin "* || "$admin_command" == "!set_super "* ]] && \
+            [[ "$admin_command" == "!send_ticket "* || "$admin_command" == "!set_mod "* || "$admin_command" == "!set_admin "* ]] && \
             process_admin_command "$admin_command" || \
             print_error "Unknown admin command"
             print_header "READY FOR NEXT COMMAND"
