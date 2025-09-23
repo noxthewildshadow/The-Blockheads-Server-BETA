@@ -29,7 +29,7 @@ initialize_economy() {
     [ ! -f "$ECONOMY_FILE" ] && echo '{"players": {}, "transactions": []}' > "$ECONOMY_FILE"
 }
 
-# Function to check if player is in list using players.log
+# Function to check if player is in list using players.log (MODIFIED FOR COMPATIBILITY)
 is_player_in_list() {
     local player_name="$1" list_type="$2"
     local player_info=$(get_player_info "$player_name")
@@ -44,7 +44,7 @@ is_player_in_list() {
     return 1
 }
 
-# Function to update player info in players.log (7-field format)
+# Function to update player info in players.log (7-field format) - COMPATIBLE WITH NEW SYSTEM
 update_player_info() {
     local player_name="$1" player_ip="$2" player_rank="$3" player_password="${4:-NONE}"
     local whitelisted="NO" blacklisted="NO"
@@ -81,7 +81,7 @@ update_player_info() {
     fi
 }
 
-# Function to get player info from players.log (7-field format)
+# Function to get player info from players.log (7-field format) - COMPATIBLE
 get_player_info() {
     local player_name="$1"
     if [ -f "$PLAYERS_LOG" ]; then
@@ -95,7 +95,7 @@ get_player_info() {
     echo ""
 }
 
-# Function to update player rank in players.log
+# Function to update player rank in players.log - COMPATIBLE
 update_player_rank() {
     local player_name="$1" new_rank="$2"
     local player_info=$(get_player_info "$player_name")
