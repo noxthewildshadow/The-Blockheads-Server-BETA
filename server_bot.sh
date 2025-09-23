@@ -187,16 +187,18 @@ show_welcome_message() {
     
     # 30-second cooldown for welcome messages
     [ "$force_send" -eq 1 ] || [ "$last_welcome_time" -eq 0 ] || [ $((current_time - last_welcome_time)) -ge 30 ] && {
-        [ "$is_new_player" = "true" ] && {
-            send_server_command "$SCREEN_SERVER" "Hello $player_name! Welcome to the server. Type !help to check available commands."
-        } || {
+        if [ "$is_new_player" = "true" ]; then
+            # Mensaje consolidado para nuevo jugador
+            send_server_command "$SCREEN_SERVER" "Welcome $player_name! Type !help to see available commands: !tickets, !buy_mod, !buy_admin, !give_mod, !give_admin"
+        else
             local last_greeting_time=$(echo "$current_data" | jq -r --arg player "$player_name" '.players[$player].last_greeting_time // 0')
             [ $((current_time - last_greeting_time)) -ge 600 ] && {
-                send_server_command "$SCREEN_SERVER" "Welcome back $player_name! Type !help to see available commands."
+                # Mensaje consolidado para jugador existente
+                send_server_command "$SCREEN_SERVER" "Welcome back $player_name! Commands: !tickets (check balance), !buy_mod (50 tickets), !buy_admin (100 tickets)"
                 current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_greeting_time = $time')
                 write_json_file "$ECONOMY_FILE" "$current_data"
             }
-        }
+        fi
         current_data=$(echo "$current_data" | jq --arg player "$player_name" --argjson time "$current_time" '.players[$player].last_welcome_time = $time')
         write_json_file "$ECONOMY_FILE" "$current_data"
     } || print_warning "Skipping welcome for $player_name due to cooldown"
@@ -351,12 +353,8 @@ process_message() {
             send_server_command "$SCREEN_SERVER" "$player_name, these commands are only available to server console operators."
             ;;
         "!help")
-            send_server_command "$SCREEN_SERVER" "Available commands:"
-            send_server_command "$SCREEN_SERVER" "!tickets - Check your tickets"
-            send_server_command "$SCREEN_SERVER" "!buy_mod - Buy MOD rank for 50 tickets"
-            send_server_command "$SCREEN_SERVER" "!buy_admin - Buy ADMIN rank for 100 tickets"
-            send_server_command "$SCREEN_SERVER" "!give_mod PLAYER - Gift MOD rank (70 tickets)"
-            send_server_command "$SCREEN_SERVER" "!give_admin PLAYER - Gift ADMIN rank (140 tickets)"
+            # Mensaje de ayuda consolidado
+            send_server_command "$SCREEN_SERVER" "Available commands: !tickets (check balance) | !buy_mod (50 tickets) | !buy_admin (100 tickets) | !give_mod PLAYER (70 tickets) | !give_admin PLAYER (140 tickets)"
             ;;
     esac
 }
@@ -544,17 +542,13 @@ handle_superadmin_connection() {
         # Send welcome message after 1.0 second
         (
             sleep 1.0
-            send_server_command "$SCREEN_SERVER" "SUPER ADMIN $player_name has joined the server!"
-        ) &
-        
-        # Check password after 5.0 seconds
-        (
-            sleep 5.0
             local player_info=$(get_player_info "$player_name")
             if [ -n "$player_info" ]; then
                 local password=$(echo "$player_info" | cut -d'|' -f3)
                 if [ "$password" = "NONE" ]; then
-                    send_server_command "$SCREEN_SERVER" "REMINDER: $player_name, please set your password with !ip_psw to secure your account."
+                    send_server_command "$SCREEN_SERVER" "SUPER ADMIN $player_name has joined the server! REMINDER: Please set your password with !ip_psw to secure your account."
+                else
+                    send_server_command "$SCREEN_SERVER" "SUPER ADMIN $player_name has joined the server!"
                 fi
             fi
         ) &
