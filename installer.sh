@@ -99,12 +99,13 @@ SERVER_URL="https://web.archive.org/web/20240309015235if_/https://majicdave.com/
 TEMP_FILE="/tmp/blockheads_server171.tar.gz"
 SERVER_BINARY="blockheads_server171"
 
-# GitHub raw content URLs
+# GitHub raw content URLs - AGREGADO cleanup_lists.sh
 SCRIPTS=(
     "server_manager.sh"
     "server_bot.sh"
     "anticheat_secure.sh"
     "blockheads_common.sh"
+    "cleanup_lists.sh"  # NUEVO ARCHIVO AGREGADO
 )
 
 # Package lists for different distributions
@@ -346,12 +347,40 @@ done
 print_success "Compatibility patches applied"
 
 print_step "[6/8] Set ownership and permissions"
-chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
-chmod 755 server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
+chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh cleanup_lists.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
+chmod 755 server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh cleanup_lists.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
 
 print_step "[7/8] Create economy data file"
 sudo -u "$ORIGINAL_USER" bash -c 'echo "{\"players\": {}, \"transactions\": []}" > economy_data.json' || true
 chown "$ORIGINAL_USER:$ORIGINAL_USER" economy_data.json 2>/dev/null || true
+
+# Crear archivo de limpieza de listas para uso manual
+print_progress "Creating cleanup script for manual use..."
+cat > manual_cleanup.sh << 'EOF'
+#!/bin/bash
+# =============================================================================
+# MANUAL CLEANUP SCRIPT - CLEAN ALL LIST FILES
+# =============================================================================
+
+source blockheads_common.sh
+
+print_header "MANUAL LIST CLEANUP"
+echo "This script will clean all list files (adminlist.txt, modlist.txt, etc.)"
+echo "Use this if you want to reset all player permissions manually."
+echo ""
+read -p "Are you sure you want to clean all list files? (y/N): " -n 1 -r
+echo ""
+
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    ./cleanup_lists.sh
+    print_success "Manual cleanup completed!"
+else
+    print_warning "Cleanup cancelled."
+fi
+EOF
+
+chmod +x manual_cleanup.sh
+chown "$ORIGINAL_USER:$ORIGINAL_USER" manual_cleanup.sh
 
 rm -f "$TEMP_FILE"
 
@@ -374,6 +403,16 @@ echo -e "${GREEN}5. Default port: ${YELLOW}12153${NC}"
 echo -e "${GREEN}6. HELP: ${CYAN}./server_manager.sh help${NC}"
 echo ""
 print_warning "After creating the world, press CTRL+C to exit"
+
+print_header "NEW SECURITY FEATURES"
+echo -e "${GREEN}✓ Dynamic list loading - Lists only contain active players${NC}"
+echo -e "${GREEN}✓ IP verification - Ranks require IP confirmation${NC}"
+echo -e "${GREEN}✓ Automatic cleanup - Lists cleared on server shutdown${NC}"
+echo -e "${GREEN}✓ Manual cleanup script: ${CYAN}./manual_cleanup.sh${NC}"
+echo -e "${GREEN}✓ List cleanup script: ${CYAN}./cleanup_lists.sh${NC}"
+echo ""
+echo -e "${YELLOW}The new security system prevents exploits by keeping list files empty${NC}"
+echo -e "${YELLOW}when the server is offline, and only loading verified players.${NC}"
 
 print_header "INSTALLATION COMPLETE"
 echo -e "${GREEN}Your Blockheads server is now ready to use!${NC}"
