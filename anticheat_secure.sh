@@ -246,6 +246,34 @@ get_ip_by_name() {
     ' "$LOG_FILE"
 }
 
+# Function to handle password reminders for players with IP changes
+handle_ip_change_reminder() {
+    local player_name="$1" reminder_type="$2"
+    
+    case "$reminder_type" in
+        "ip_changed_no_password")
+            # Mensaje consolidado para cambio de IP sin contraseña
+            send_server_command "$SCREEN_SERVER" "WARNING: $player_name, your IP has changed but you don't have a password set. Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account. Example: !ip_psw mypassword123 mypassword123"
+            ;;
+        "new_player_no_password")
+            # Mensaje consolidado para jugador nuevo sin contraseña
+            send_server_command "$SCREEN_SERVER" "REMINDER: $player_name, please set your password with !ip_psw to secure your account. Example: !ip_psw mypassword123 mypassword123"
+            ;;
+        "superadmin_reminder")
+            # Mensaje consolidado para superadmin
+            local player_info=$(get_player_info "$player_name")
+            if [ -n "$player_info" ]; then
+                local password=$(echo "$player_info" | cut -d'|' -f3)
+                if [ "$password" = "NONE" ]; then
+                    send_server_command "$SCREEN_SERVER" "SUPER ADMIN $player_name has joined the server! REMINDER: Please set your password with !ip_psw to secure your account."
+                else
+                    send_server_command "$SCREEN_SERVER" "SUPER ADMIN $player_name has joined the server!"
+                fi
+            fi
+            ;;
+    esac
+}
+
 # Function to start IP change grace period
 start_ip_change_grace_period() {
     local player_name="$1" player_ip="$2"
@@ -267,13 +295,11 @@ start_ip_change_grace_period() {
     ) &
     grace_period_pids["$player_name"]=$!
     
-    # Send warning message to player after 5 seconds
+    # Send consolidated warning message to player after 3 seconds
     (
-        sleep 5
+        sleep 3
         if is_player_connected "$player_name" && is_in_grace_period "$player_name"; then
-            send_server_command "$SCREEN_SERVER" "WARNING: $player_name, your IP has changed from the registered one!"
-            send_server_command "$SCREEN_SERVER" "You have 30 seconds to verify your identity with: !ip_change YOUR_CURRENT_PASSWORD"
-            send_server_command "$SCREEN_SERVER" "If you don't verify, you will be kicked from the server."
+            send_server_command "$SCREEN_SERVER" "SECURITY ALERT: $player_name, your IP has changed! Verify with: !ip_change YOUR_PASSWORD within 30 seconds or you will be kicked."
         fi
     ) &
 }
@@ -461,7 +487,7 @@ check_username_theft() {
         if [ "$registered_current_ip" != "$player_ip" ]; then
             # IP doesn't match - check if player has password
             if [ "$registered_password" = "NONE" ]; then
-                # No password set - remind player to set one after 5 seconds (only once)
+                # No password set - send consolidated reminder after 5 seconds (only once)
                 print_warning "IP changed for $player_name but no password set (old IP: $registered_current_ip, new IP: $player_ip)"
                 # Only show announcement once per player connection
                 if [[ -z "${ip_mismatch_announced[$player_name]}" ]]; then
@@ -470,9 +496,7 @@ check_username_theft() {
                         sleep 5
                         # Check if player is still connected before sending message
                         if is_player_connected "$player_name"; then
-                            send_server_command "$SCREEN_SERVER" "WARNING: $player_name, your IP has changed but you don't have a password set."
-                            send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account."
-                            send_server_command "$SCREEN_SERVER" "Example: !ip_psw mypassword123 mypassword123"
+                            handle_ip_change_reminder "$player_name" "ip_changed_no_password"
                         fi
                     ) &
                 fi
@@ -499,16 +523,14 @@ check_username_theft() {
         update_player_info "$player_name" "$player_ip" "$player_ip" "NONE" "$rank" "NO" "NO"
         print_success "Added new player to registry: $player_name ($player_ip) with rank: $rank"
         
-        # Remind player to set password after 5 seconds (only once)
+        # Send consolidated reminder after 5 seconds (only once)
         if [[ -z "${ip_mismatch_announced[$player_name]}" ]]; then
             ip_mismatch_announced["$player_name"]=1
             (
                 sleep 5
                 # Check if player is still connected before sending message
                 if is_player_connected "$player_name"; then
-                    send_server_command "$SCREEN_SERVER" "WARNING: $player_name, you don't have a password set for IP verification."
-                    send_server_command "$SCREEN_SERVER" "Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account if your IP changes."
-                    send_server_command "$SCREEN_SERVER" "Example: !ip_psw mypassword123 mypassword123"
+                    handle_ip_change_reminder "$player_name" "new_player_no_password"
                 fi
             ) &
         fi
