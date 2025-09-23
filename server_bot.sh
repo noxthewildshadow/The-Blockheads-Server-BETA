@@ -39,6 +39,8 @@ is_player_in_list() {
             return 0
         elif [ "$list_type" = "mod" ] && [ "$rank" = "MOD" ]; then
             return 0
+        elif [ "$list_type" = "super" ] && [ "$rank" = "SUPER" ]; then
+            return 0
         fi
     fi
     return 1
@@ -241,6 +243,12 @@ process_give_rank() {
         return 1
     }
     
+    # Check if target player is SUPER admin (cannot be gifted ranks)
+    if is_player_in_list "$target_player" "super"; then
+        send_server_command "$SCREEN_SERVER" "$giver_name, cannot gift rank to $target_player - player is a SUPER ADMIN."
+        return 1
+    fi
+    
     local new_tickets=$((giver_tickets - cost))
     current_data=$(echo "$current_data" | jq --arg player "$giver_name" --argjson tickets "$new_tickets" '.players[$player].tickets = $tickets')
     
@@ -290,6 +298,12 @@ process_message() {
             send_server_command "$SCREEN_SERVER" "$player_name, you have $player_tickets tickets."
             ;;
         "!buy_mod")
+            # Check if player is SUPER admin (cannot buy ranks)
+            if is_player_in_list "$player_name" "super"; then
+                send_server_command "$SCREEN_SERVER" "$player_name, you are a SUPER ADMIN and cannot purchase lower ranks."
+                return
+            fi
+            
             (has_purchased "$player_name" "mod" || is_player_in_list "$player_name" "mod") && {
                 send_server_command "$SCREEN_SERVER" "$player_name, you already have MOD rank."
             } || [ "$player_tickets" -ge 50 ] && {
@@ -315,6 +329,12 @@ process_message() {
             } || send_server_command "$SCREEN_SERVER" "$player_name, you need $((50 - player_tickets)) more tickets to buy MOD rank."
             ;;
         "!buy_admin")
+            # Check if player is SUPER admin (cannot buy ranks)
+            if is_player_in_list "$player_name" "super"; then
+                send_server_command "$SCREEN_SERVER" "$player_name, you are a SUPER ADMIN and cannot purchase lower ranks."
+                return
+            fi
+            
             (has_purchased "$player_name" "admin" || is_player_in_list "$player_name" "admin") && {
                 send_server_command "$SCREEN_SERVER" "$player_name, you already have ADMIN rank."
             } || [ "$player_tickets" -ge 100 ] && {
@@ -396,6 +416,13 @@ process_admin_command() {
         local player_name="${BASH_REMATCH[1]}"
         ! is_valid_player_name "$player_name" && print_error "Invalid player name: $player_name" && return 1
         
+        # Check if player is SUPER admin (cannot be demoted)
+        if is_player_in_list "$player_name" "super"; then
+            print_error "Cannot set MOD rank for SUPER ADMIN: $player_name"
+            send_server_command "$SCREEN_SERVER" "ERROR: $player_name is a SUPER ADMIN and cannot be set to MOD."
+            return 1
+        fi
+        
         print_success "Setting $player_name as MOD"
         
         # Update player rank in players.log
@@ -414,6 +441,13 @@ process_admin_command() {
         local player_name="${BASH_REMATCH[1]}"
         ! is_valid_player_name "$player_name" && print_error "Invalid player name: $player_name" && return 1
         
+        # Check if player is SUPER admin (cannot be demoted)
+        if is_player_in_list "$player_name" "super"; then
+            print_error "Cannot set ADMIN rank for SUPER ADMIN: $player_name"
+            send_server_command "$SCREEN_SERVER" "ERROR: $player_name is a SUPER ADMIN and cannot be set to ADMIN."
+            return 1
+        fi
+        
         print_success "Setting $player_name as ADMIN"
         
         # Update player rank in players.log
@@ -428,6 +462,30 @@ process_admin_command() {
         update_player_info "$player_name" "$player_ip" "ADMIN" "$password"
         
         send_server_command "$SCREEN_SERVER" "$player_name has been set as ADMIN by server console!"
+    elif [[ "$command" =~ ^!set_super\ ([a-zA-Z0-9_]+)$ ]]; then
+        local player_name="${BASH_REMATCH[1]}"
+        ! is_valid_player_name "$player_name" && print_error "Invalid player name: $player_name" && return 1
+        
+        print_success "Setting $player_name as SUPER"
+        
+        # Update player rank in players.log
+        local player_ip=$(get_ip_by_name "$player_name")
+        local player_info=$(get_player_info "$player_name")
+        local password="NONE"
+        
+        if [ -n "$player_info" ]; then
+            password=$(echo "$player_info" | cut -d'|' -f3)
+        fi
+        
+        update_player_info "$player_name" "$player_ip" "SUPER" "$password"
+        
+        # Also add to cloudwideownedadminlist.txt
+        if [ -f "$SUPERADMINS_FILE" ] && ! grep -q "^$player_name$" "$SUPERADMINS_FILE"; then
+            echo "$player_name" >> "$SUPERADMINS_FILE"
+            print_success "Added $player_name to cloudwideownedadminlist.txt"
+        fi
+        
+        send_server_command "$SCREEN_SERVER" "$player_name has been set as SUPER ADMIN by server console!"
     else
         print_error "Unknown admin command: $command"
     fi
@@ -506,28 +564,28 @@ monitor_superadmins() {
         # Read superadmins list
         mapfile -t superadmins < <(grep -v "^[[:space:]]*$" "$SUPERADMINS_FILE" 2>/dev/null | tr -d '\r')
         
-        # Ensure all superadmins have ADMIN rank in players.log
+        # Ensure all superadmins have SUPER rank in players.log
         for player in "${superadmins[@]}"; do
             player=$(echo "$player" | xargs)
             [ -z "$player" ] && continue
             
-            # Check if player exists in players.log with ADMIN rank
+            # Check if player exists in players.log with SUPER rank
             local player_info=$(get_player_info "$player")
             if [ -n "$player_info" ]; then
                 local current_rank=$(echo "$player_info" | cut -d'|' -f4)
-                if [ "$current_rank" != "ADMIN" ]; then
-                    print_warning "Superadmin $player does not have ADMIN rank. Updating..."
+                if [ "$current_rank" != "SUPER" ]; then
+                    print_warning "Superadmin $player does not have SUPER rank. Updating..."
                     local first_ip=$(echo "$player_info" | cut -d'|' -f1)
                     local current_ip=$(echo "$player_info" | cut -d'|' -f2)
                     local password=$(echo "$player_info" | cut -d'|' -f3)
                     local whitelisted=$(echo "$player_info" | cut -d'|' -f5)
                     local blacklisted=$(echo "$player_info" | cut -d'|' -f6)
-                    update_player_info "$player" "$current_ip" "ADMIN" "$password"
+                    update_player_info "$player" "$current_ip" "SUPER" "$password"
                 fi
             else
-                # Player not found, add with ADMIN rank
+                # Player not found, add with SUPER rank
                 print_warning "Superadmin $player not found in players.log. Adding..."
-                update_player_info "$player" "unknown" "ADMIN" "NONE"
+                update_player_info "$player" "unknown" "SUPER" "NONE"
             fi
         done
     done
@@ -580,7 +638,7 @@ monitor_log() {
     print_header "STARTING ECONOMY BOT"
     print_status "Monitoring: $log_file"
     print_status "Bot commands: !tickets, !buy_mod, !buy_admin, !give_mod, !give_admin, !help"
-    print_status "Admin commands: !send_ticket <player> <amount>, !set_mod <player>, !set_admin <player>"
+    print_status "Admin commands: !send_ticket <player> <amount>, !set_mod <player>, !set_admin <player>, !set_super <player>"
     print_header "READY FOR COMMANDS"
 
     local admin_pipe="/tmp/blockheads_admin_pipe_$$"
@@ -591,7 +649,7 @@ monitor_log() {
     (
         while read -r admin_command < "$admin_pipe"; do
             print_status "Processing admin command: $admin_command"
-            [[ "$admin_command" == "!send_ticket "* || "$admin_command" == "!set_mod "* || "$admin_command" == "!set_admin "* ]] && \
+            [[ "$admin_command" == "!send_ticket "* || "$admin_command" == "!set_mod "* || "$admin_command" == "!set_admin "* || "$admin_command" == "!set_super "* ]] && \
             process_admin_command "$admin_command" || \
             print_error "Unknown admin command"
             print_header "READY FOR NEXT COMMAND"
