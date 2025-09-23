@@ -46,6 +46,9 @@ declare -A verified_players
 declare -A player_verification_time
 declare -A player_original_ranks
 
+# Track players already removed from lists to avoid spam
+declare -A players_already_removed
+
 # Function to check if a player name is valid (only letters, numbers, and underscores)
 is_valid_player_name() {
     local name="$1"
@@ -376,6 +379,7 @@ validate_ip_change() {
     if [ -n "${player_original_ranks[$player_name]}" ] && [ "${player_original_ranks[$player_name]}" != "NONE" ]; then
         update_player_rank "$player_name" "${player_original_ranks[$player_name]}"
         print_success "Restored original rank for $player_name: ${player_original_ranks[$player_name]}"
+        unset player_original_ranks["$player_name"]
     fi
     
     # Sync to lists immediately after verification
@@ -506,22 +510,51 @@ handle_password_change() {
     return 0
 }
 
-# Function to remove player from all list files
+# Function to remove player from all list files (IMPROVED TO PREVENT SPAM)
 remove_player_from_all_lists() {
     local player_name="$1"
     
-    remove_from_list_file "$player_name" "admin"
-    remove_from_list_file "$player_name" "mod"
-    remove_from_list_file "$player_name" "whitelist"
-    remove_from_list_file "$player_name" "blacklist"
-    remove_from_list_file "$player_name" "cloudwideownedadmin"
+    # Check if player was already removed recently (within last 10 seconds)
+    local current_time=$(date +%s)
+    local last_removal_time=${players_already_removed[$player_name]:-0}
     
-    # Also remove from server commands
-    send_server_command "$SCREEN_SERVER" "/unadmin $player_name"
-    send_server_command "$SCREEN_SERVER" "/unmod $player_name"
-    send_server_command "$SCREEN_SERVER" "/unban $player_name"
+    if [ $((current_time - last_removal_time)) -lt 10 ]; then
+        # Player was recently removed, skip to prevent spam
+        return 0
+    fi
     
-    print_warning "Removed $player_name from all lists"
+    local removed_something=0
+    
+    # Remove from list files
+    if remove_from_list_file "$player_name" "admin"; then
+        removed_something=1
+    fi
+    if remove_from_list_file "$player_name" "mod"; then
+        removed_something=1
+    fi
+    if remove_from_list_file "$player_name" "whitelist"; then
+        removed_something=1
+    fi
+    if remove_from_list_file "$player_name" "blacklist"; then
+        removed_something=1
+    fi
+    if remove_from_list_file "$player_name" "cloudwideownedadmin"; then
+        removed_something=1
+    fi
+    
+    # Only send server commands if we actually removed something
+    if [ $removed_something -eq 1 ]; then
+        # Send server commands (but don't spam if they were already removed)
+        send_server_command "$SCREEN_SERVER" "/unadmin $player_name"
+        send_server_command "$SCREEN_SERVER" "/unmod $player_name"
+        send_server_command "$SCREEN_SERVER" "/unban $player_name"
+        
+        # Mark as removed to prevent spam
+        players_already_removed["$player_name"]=$current_time
+        print_warning "Removed $player_name from all lists"
+    fi
+    
+    return 0
 }
 
 # Function to sync a single player to list files based on their status
@@ -543,20 +576,23 @@ sync_player_to_lists() {
     
     # Only add to lists if player is verified and has a password
     if [ "$password" != "NONE" ] && [ -n "${verified_players[$player_name]}" ]; then
-        # Remove player from all lists first
+        # Remove player from all lists first (to clean up any old entries)
         remove_player_from_all_lists "$player_name"
         
         # Add to appropriate lists based on rank and status
         case "$rank" in
             "ADMIN")
                 add_to_list_file "$player_name" "admin"
+                print_success "Added $player_name to admin list (verified)"
                 ;;
             "MOD")
                 add_to_list_file "$player_name" "mod"
+                print_success "Added $player_name to mod list (verified)"
                 ;;
             "SUPER")
                 add_to_list_file "$player_name" "cloudwideownedadmin"
                 add_to_list_file "$player_name" "admin"
+                print_success "Added $player_name to super admin list (verified)"
                 ;;
         esac
         
@@ -582,11 +618,14 @@ sync_player_to_lists() {
         print_success "Synced player $player_name to lists (Rank: $rank, Whitelisted: $whitelisted, Blacklisted: $blacklisted)"
     else
         # Player not verified or no password, remove from all lists
-        remove_player_from_all_lists "$player_name"
+        # But only if they were previously added (to prevent spam)
+        if [ -n "${verified_players[$player_name]}" ] || [ "$password" != "NONE" ]; then
+            remove_player_from_all_lists "$player_name"
+        fi
     fi
 }
 
-# Function to check for username theft with IP verification
+# Function to check for username theft with IP verification (IMPROVED)
 check_username_theft() {
     local player_name="$1" player_ip="$2"
     
@@ -613,7 +652,7 @@ check_username_theft() {
                 print_warning "IP mismatch for $player_name. Original rank ${player_original_ranks[$player_name]} stored, set to NONE until verification."
             fi
             
-            # check if player has password
+            # Check if player has password
             if [ "$registered_password" = "NONE" ]; then
                 # No password set - send consolidated reminder after 5 seconds (only once)
                 print_warning "IP changed for $player_name but no password set (old IP: $registered_current_ip, new IP: $player_ip)"
@@ -868,7 +907,10 @@ sync_players_log_to_lists() {
             sync_player_to_lists "$name"
         else
             # Player not connected or not verified, remove from lists
-            remove_player_from_all_lists "$name"
+            # But only if they were previously verified (to prevent spam)
+            if [ -n "${verified_players[$name]}" ] || [ "$password" != "NONE" ]; then
+                remove_player_from_all_lists "$name"
+            fi
         fi
     done < "$PLAYERS_LOG"
 }
@@ -933,10 +975,10 @@ monitor_log() {
     ) &
     local validation_pid=$!
     
-    # Start sync process in background
+    # Start sync process in background (REDUCED FREQUENCY)
     (
         while true; do
-            sleep 1
+            sleep 5  # Reduced from 1 second to 5 seconds to prevent spam
             sync_players_log_to_lists
         done
     ) &
@@ -1071,6 +1113,7 @@ monitor_log() {
             unset ip_change_grace_periods["$player_name"]
             unset ip_change_pending_players["$player_name"]
             unset ip_mismatch_announced["$player_name"]
+            unset players_already_removed["$player_name"]
             if [ -n "${grace_period_pids[$player_name]}" ]; then
                 kill "${grace_period_pids[$player_name]}" 2>/dev/null
                 unset grace_period_pids["$player_name"]
