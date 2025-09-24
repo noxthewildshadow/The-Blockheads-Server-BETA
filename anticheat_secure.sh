@@ -95,8 +95,10 @@ clean_all_list_files() {
     for list_type in "${lists[@]}"; do
         local list_file="$LOG_DIR/${list_type}.txt"
         if [ -f "$list_file" ]; then
-            > "$list_file"  # Empty the file
-            print_success "Cleared ${list_type}.txt"
+            # Remove empty lines and trim whitespace
+            sed -i '/^[[:space:]]*$/d' "$list_file"
+            sed -i 's/^[[:space:]]*//;s/[[:space:]]*$//' "$list_file"
+            print_success "Cleaned ${list_type}.txt"
         else
             touch "$list_file"
         fi
@@ -105,11 +107,13 @@ clean_all_list_files() {
     # Cloudwide admin list should only contain SUPER admins from players.log
     local superadmin_file="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
     if [ -f "$superadmin_file" ]; then
-        > "$superadmin_file"
-        print_success "Cleared cloudWideOwnedAdminlist.txt"
+        # Remove empty lines and trim whitespace
+        sed -i '/^[[:space:]]*$/d' "$superadmin_file"
+        sed -i 's/^[[:space:]]*//;s/[[:space:]]*$//' "$superadmin_file"
+        print_success "Cleaned cloudWideOwnedAdminlist.txt"
     fi
     
-    print_status "All list files cleared. They will be populated dynamically as players connect."
+    print_status "All list files cleaned. They will be populated dynamically as players connect."
 }
 
 # Function to validate authorization
@@ -152,6 +156,8 @@ remove_from_list_file() {
     local player_name="$1" list_type="$2"
     local list_file="$LOG_DIR/${list_type}.txt"
     [ ! -f "$list_file" ] && return 1
+    # Clean the player name
+    player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     if grep -q "^$player_name$" "$list_file" 2>/dev/null; then
         sed -i "/^$player_name$/d" "$list_file"
         print_success "Removed $player_name from ${list_type}.txt"
@@ -163,6 +169,8 @@ remove_from_list_file() {
 # Function to update player info in players.log
 update_player_info() {
     local player_name="$1" first_ip="$2" current_ip="$3" password="$4" rank="$5" whitelisted="${6:-NO}" blacklisted="${7:-NO}"
+    # Clean the player name
+    player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     if [ -f "$PLAYERS_LOG" ]; then
         # Remove existing entry
         sed -i "/^$player_name|/Id" "$PLAYERS_LOG"
@@ -175,9 +183,13 @@ update_player_info() {
 # Function to get player info from players.log
 get_player_info() {
     local player_name="$1"
+    # Clean the player name
+    player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     if [ -f "$PLAYERS_LOG" ]; then
         while IFS='|' read -r name first_ip current_ip password rank whitelisted blacklisted; do
-            if [ "$name" = "$player_name" ]; then
+            # Clean each name from the file
+            name_clean=$(echo "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            if [ "$name_clean" = "$player_name" ]; then
                 echo "$first_ip|$current_ip|$password|$rank|$whitelisted|$blacklisted"
                 return 0
             fi
@@ -219,6 +231,8 @@ send_delayed_uncommands() {
 is_player_in_list() {
     local player_name="$1" list_type="$2"
     local list_file="$LOG_DIR/${list_type}.txt"
+    # Clean the player name
+    player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     [ -f "$list_file" ] && grep -q "^$player_name$" "$list_file" 2>/dev/null
 }
 
@@ -509,7 +523,7 @@ load_verified_player_data() {
     fi
 }
 
-# Function to add player to a list file with 1-second cooldown
+# Function to add player to a list file with 1-second cooldown and proper formatting
 add_to_list() {
     local player_name="$1" list_type="$2"
     local list_file="$LOG_DIR/${list_type}.txt"
@@ -517,36 +531,52 @@ add_to_list() {
     # Create file if it doesn't exist
     [ ! -f "$list_file" ] && touch "$list_file"
     
-    # Add player if not already present (with 1-second cooldown)
-    if ! grep -q "^$player_name$" "$list_file" 2>/dev/null; then
-        sleep 1  # Cooldown de 1 segundo antes de agregar
-        echo "$player_name" >> "$list_file"
-        print_success "Added $player_name to ${list_type}.txt"
+    # Clean the player name
+    player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    
+    # Apply 1-second cooldown before any write operation
+    sleep 1
+    
+    # Remove any existing entries for this player to avoid duplicates
+    if grep -q "^$player_name$" "$list_file" 2>/dev/null; then
+        sed -i "/^$player_name$/d" "$list_file"
     fi
+    
+    # Add player with proper formatting (one per line)
+    echo "$player_name" >> "$list_file"
+    print_success "Added $player_name to ${list_type}.txt"
 }
 
-# Function to add SUPER admin to cloudwideownedadminlist with proper formatting
+# Function to add SUPER admin to cloudwideownedadminlist with proper formatting and cooldown
 add_super_to_cloudwide_list() {
     local player_name="$1"
     local superadmin_file="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
     
+    # Clean the player name
+    player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    
     # Create file if it doesn't exist
     [ ! -f "$superadmin_file" ] && touch "$superadmin_file"
+    
+    # Apply 1-second cooldown before any write operation
+    sleep 1
     
     # Remove any existing entry for this player (to avoid duplicates)
     if grep -q "^$player_name$" "$superadmin_file" 2>/dev/null; then
         sed -i "/^$player_name$/d" "$superadmin_file"
     fi
     
-    # Add player with 1-second cooldown
-    sleep 1  # Cooldown de 1 segundo antes de agregar
+    # Add player with proper formatting (one per line)
     echo "$player_name" >> "$superadmin_file"
     print_success "Added $player_name to cloudWideOwnedAdminlist.txt (SUPER admin)"
 }
 
-# Function to update all lists for a player
+# Function to update all lists for a player with cooldown protection
 update_lists_for_player() {
     local player_name="$1" rank="$2" whitelisted="$3" blacklisted="$4" player_ip="$5"
+    
+    # Apply global cooldown before any list operations
+    sleep 1
     
     # Remove player from all lists first
     remove_player_from_all_lists "$player_name"
@@ -747,7 +777,7 @@ monitor_players_log() {
     done
 }
 
-# Function to handle SUPER admin connection with restart
+# Function to handle SUPER admin connection with proper restart procedure
 handle_super_admin_connection() {
     local player_name="$1" player_ip="$2"
     
@@ -755,24 +785,27 @@ handle_super_admin_connection() {
     (
         sleep 3
         if is_player_connected "$player_name" && [ "$(get_player_rank "$player_name")" = "SUPER" ]; then
-            send_server_command "$SCREEN_SERVER" "SUPER ADMIN $player_name detected. Server will restart in 10 seconds to apply SUPER admin rank."
-            send_server_command "$SCREEN_SERVER" "$player_name must reconnect within 30 seconds after restart or SUPER rank will be lost."
+            send_server_command "$SCREEN_SERVER" "SUPER ADMIN $player_name detected. Player will be kicked in 10 seconds to apply SUPER admin rank."
+            send_server_command "$SCREEN_SERVER" "$player_name must reconnect within 15 seconds after kick or SUPER rank will be removed."
             
-            # Wait 10 seconds then stop server
+            # Wait 10 seconds then kick player (not stop server)
             sleep 10
             if is_player_connected "$player_name" && [ "$(get_player_rank "$player_name")" = "SUPER" ]; then
-                send_server_command "$SCREEN_SERVER" "/stop"
+                send_server_command "$SCREEN_SERVER" "/kick $player_name"
                 
-                # Schedule removal from cloudwideownedadminlist after 30 seconds if not reconnected
+                # Schedule removal from cloudwideownedadminlist after 15 seconds if not reconnected
                 super_restart_timers["$player_name"]=$( (
-                    sleep 30
+                    sleep 15
                     local superadmin_file="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
                     if [ -f "$superadmin_file" ] && grep -q "^$player_name$" "$superadmin_file"; then
                         if ! is_player_connected "$player_name"; then
                             sed -i "/^$player_name$/d" "$superadmin_file"
-                            print_success "Removed $player_name from cloudWideOwnedAdminlist.txt (did not reconnect within 30 seconds)"
+                            print_success "Removed $player_name from cloudWideOwnedAdminlist.txt (did not reconnect within 15 seconds)"
+                            
+                            # Also remove from adminlist.txt if not reconnected
+                            remove_from_list_file "$player_name" "adminlist"
                         else
-                            print_success "SUPER ADMIN $player_name reconnected successfully after restart"
+                            print_success "SUPER ADMIN $player_name reconnected successfully after kick"
                         fi
                     fi
                     unset super_restart_timers["$player_name"]
