@@ -22,11 +22,7 @@ SCREEN_SERVER="blockheads_server_$PORT"
 IP_CHANGE_ATTEMPTS_FILE="$LOG_DIR/ip_change_attempts.json"
 PASSWORD_CHANGE_ATTEMPTS_FILE="$LOG_DIR/password_change_attempts.json"
 
-# List files to manage
-BLACKLIST_FILE="$LOG_DIR/blacklist.txt"
-ADMINLIST_FILE="$LOG_DIR/adminlist.txt"
-MODLIST_FILE="$LOG_DIR/modlist.txt"
-WHITELIST_FILE="$LOG_DIR/whitelist.txt"
+# List files to manage - solo cloud admin se edita directamente
 CLOUD_ADMIN_FILE="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
 
 # Track player messages for spam detection
@@ -54,27 +50,34 @@ declare -A player_verification_timers
 # Track disconnect cooldown timers
 declare -A disconnect_timers
 
+# Track players that have been verified
+declare -A verified_players
+
+# Function to execute server command
+execute_server_command() {
+    local command="$1"
+    print_status "Executing server command: $command"
+    send_server_command "$SCREEN_SERVER" "$command"
+    sleep 0.1  # Pequeña pausa entre comandos
+}
+
 # Function to execute /load-lists command
 execute_load_lists() {
-    print_status "Executing /load-lists command to refresh server lists..."
-    send_server_command "$SCREEN_SERVER" "/load-lists"
-    sleep 0.5  # Give server time to process
-    print_success "Server lists refreshed with /load-lists"
+    print_status "Executing /LOAD-LISTS command to refresh server lists..."
+    execute_server_command "/LOAD-LISTS"
+    print_success "Server lists refreshed with /LOAD-LISTS"
 }
 
 # Function to cleanup list files on startup/shutdown
 cleanup_list_files() {
-    local lists=("$BLACKLIST_FILE" "$ADMINLIST_FILE" "$MODLIST_FILE" "$WHITELIST_FILE" "$CLOUD_ADMIN_FILE")
-    
-    for list_file in "${lists[@]}"; do
-        if [ -f "$list_file" ]; then
-            > "$list_file"  # Empty the file
-            print_success "Cleaned up: $(basename "$list_file")"
-        else
-            touch "$list_file"
-            print_status "Created empty: $(basename "$list_file")"
-        fi
-    done
+    # Solo limpiamos cloud admin file, los demás se manejan por comandos
+    if [ -f "$CLOUD_ADMIN_FILE" ]; then
+        > "$CLOUD_ADMIN_FILE"
+        print_success "Cleaned up: cloudWideOwnedAdminlist.txt"
+    else
+        touch "$CLOUD_ADMIN_FILE"
+        print_status "Created empty: cloudWideOwnedAdminlist.txt"
+    fi
 }
 
 # Function to check if a player name is valid (only letters, numbers, and underscores)
@@ -102,7 +105,7 @@ is_valid_player_name() {
 schedule_clear_and_messages() {
     local messages=("$@")
     # Clear chat immediately
-    screen -S "$SCREEN_SERVER" -p 0 -X stuff "/clear$(printf \\r)" 2>/dev/null
+    execute_server_command "/clear"
     # Send messages after 2 seconds
     (
         sleep 2
@@ -157,18 +160,6 @@ clear_admin_offenses() {
     write_json_file "$ADMIN_OFFENSES_FILE" "$offsets_data"
 }
 
-# Function to remove from list file
-remove_from_list_file() {
-    local player_name="$1" list_type="$2"
-    local list_file="$LOG_DIR/${list_type}list.txt"
-    [ ! -f "$list_file" ] && return 1
-    if grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"; then
-        sed -i "/^$player_name$/Id" "$list_file"
-        return 0
-    fi
-    return 1
-}
-
 # Function to update player info in players.log
 update_player_info() {
     local player_name="$1" first_ip="$2" current_ip="$3" password="$4" rank="$5" whitelisted="${6:-NO}" blacklisted="${7:-NO}"
@@ -179,16 +170,11 @@ update_player_info() {
         echo "$player_name|$first_ip|$current_ip|$password|$rank|$whitelisted|$blacklisted" >> "$PLAYERS_LOG"
         print_success "Updated player info in registry: $player_name -> First IP: $first_ip, Current IP: $current_ip, Password: $password, Rank: $rank, Whitelisted: $whitelisted, Blacklisted: $blacklisted"
         
-        # If player is connected, schedule sync after 2.5 seconds (reduced from 5 seconds)
-        if [ -n "${connected_players[$player_name]}" ]; then
-            (
-                sleep 2.5
-                sync_player_to_lists "$player_name"
-                # Wait 0.5 seconds after sync and then execute /load-lists
-                sleep 0.5
-                execute_load_lists
-            ) &
-        fi
+        # Schedule application of changes after 0.5 seconds
+        (
+            sleep 0.5
+            apply_player_changes "$player_name"
+        ) &
     fi
 }
 
@@ -222,24 +208,6 @@ update_player_rank() {
     else
         print_error "Player $player_name not found in registry. Cannot update rank."
     fi
-}
-
-# Function to send delayed uncommands
-send_delayed_uncommands() {
-    local target_player="$1" command_type="$2"
-    (
-        sleep 2; screen -S "$SCREEN_SERVER" -p 0 -X stuff "/un${command_type} $target_player$(printf \\r)" 2>/dev/null
-        sleep 2; screen -S "$SCREEN_SERVER" -p 0 -X stuff "/un${command_type} $target_player$(printf \\r)" 2>/dev/null
-        sleep 1; screen -S "$SCREEN_SERVER" -p 0 -X stuff "/un${command_type} $target_player$(printf \\r)" 2>/dev/null
-        remove_from_list_file "$target_player" "$command_type"
-    ) &
-}
-
-# Function to check if player is in list
-is_player_in_list() {
-    local player_name="$1" list_type="$2"
-    local list_file="$LOG_DIR/${list_type}list.txt"
-    [ -f "$list_file" ] && grep -v "^[[:space:]]*#" "$list_file" 2>/dev/null | grep -q -i "^$player_name$"
 }
 
 # Function to get player rank
@@ -279,15 +247,12 @@ handle_ip_change_reminder() {
     
     case "$reminder_type" in
         "ip_changed_no_password")
-            # Mensaje consolidado para cambio de IP sin contraseña
             send_server_command "$SCREEN_SERVER" "WARNING: $player_name, your IP has changed but you don't have a password set. Use !ip_psw PASSWORD CONFIRM_PASSWORD to set your password, or you may lose access to your account. Example: !ip_psw mypassword123 mypassword123"
             ;;
         "new_player_no_password")
-            # Mensaje consolidado para jugador nuevo sin contraseña
             send_server_command "$SCREEN_SERVER" "REMINDER: $player_name, please set your password with !ip_psw to secure your account. Example: !ip_psw mypassword123 mypassword123"
             ;;
         "superadmin_reminder")
-            # Mensaje consolidado para superadmin
             local player_info=$(get_player_info "$player_name")
             if [ -n "$player_info" ]; then
                 local password=$(echo "$player_info" | cut -d'|' -f3)
@@ -314,7 +279,7 @@ start_ip_change_grace_period() {
         sleep 30
         if [ -n "${ip_change_grace_periods[$player_name]}" ]; then
             print_warning "IP change grace period expired for $player_name - kicking player"
-            send_server_command "$SCREEN_SERVER" "/kick $player_name"
+            execute_server_command "/KICK $player_name"
             unset ip_change_grace_periods["$player_name"]
             unset ip_change_pending_players["$player_name"]
             unset grace_period_pids["$player_name"]
@@ -382,11 +347,13 @@ validate_ip_change() {
     unset ip_change_grace_periods["$player_name"]
     unset ip_change_pending_players["$player_name"]
     
-    # Sync player to lists after verification with minimal delay
+    # Mark player as verified
+    verified_players["$player_name"]=1
+    
+    # Apply player changes after 0.5 seconds
     (
-        sleep 0.5  # Reduced from 5 seconds to 0.5 seconds
-        sync_player_to_lists "$player_name"
-        # Execute /load-lists immediately after verification
+        sleep 0.5
+        apply_player_changes "$player_name"
         execute_load_lists
     ) &
     
@@ -435,14 +402,6 @@ handle_password_creation() {
         update_player_info "$player_name" "$player_ip" "$player_ip" "$password" "$rank" "NO" "NO"
     fi
 
-    # Sync player to lists after password creation with minimal delay
-    (
-        sleep 0.5  # Reduced from 5 seconds to 0.5 seconds
-        sync_player_to_lists "$player_name"
-        # Execute /load-lists immediately after password creation
-        execute_load_lists
-    ) &
-    
     schedule_clear_and_messages "SUCCESS: $player_name, your IP password has been set successfully." "You can now use !ip_change YOUR_PASSWORD if your IP changes."
     return 0
 }
@@ -508,12 +467,12 @@ handle_password_change() {
     return 0
 }
 
-# Function to sync a player to appropriate lists based on their status
-sync_player_to_lists() {
+# Function to apply player changes using server commands
+apply_player_changes() {
     local player_name="$1"
     
-    # Only sync if player is connected and verified
-    if [ -z "${connected_players[$player_name]}" ] || is_in_grace_period "$player_name"; then
+    # Only apply changes if player is verified
+    if [ -z "${verified_players[$player_name]}" ] && is_in_grace_period "$player_name"; then
         return 0
     fi
     
@@ -527,50 +486,58 @@ sync_player_to_lists() {
     local blacklisted=$(echo "$player_info" | cut -d'|' -f6)
     local current_ip=$(echo "$player_info" | cut -d'|' -f2)
     
-    # Remove player from all lists first
-    remove_player_from_all_lists "$player_name"
+    # Remove player from all roles first
+    execute_server_command "/UNADMIN \"$player_name\""
+    execute_server_command "/UNMOD $player_name"
+    execute_server_command "/UNBAN $player_name"
+    execute_server_command "/UNWHITELIST $current_ip"
     
-    # Add to appropriate lists based on status
+    # Apply changes based on player status
     if [ "$blacklisted" = "YES" ]; then
-        add_to_list "$player_name" "black"
-        send_server_command "$SCREEN_SERVER" "/ban $current_ip"
-        send_server_command "$SCREEN_SERVER" "/ban $player_name"
+        execute_server_command "/BAN $player_name"
+        execute_server_command "/BAN $current_ip"
+        print_success "Banned player: $player_name (IP: $current_ip)"
     elif [ "$whitelisted" = "YES" ]; then
-        add_to_list "$player_name" "white"
-        send_server_command "$SCREEN_SERVER" "/whitelist $current_ip"
+        execute_server_command "/WHITELIST $current_ip"
+        print_success "Whitelisted player: $player_name (IP: $current_ip)"
     fi
     
     if [ "$rank" = "ADMIN" ]; then
-        add_to_list "$player_name" "admin"
-        send_server_command "$SCREEN_SERVER" "/admin $player_name"
+        execute_server_command "/ADMIN \"$player_name\""
+        print_success "Set player as ADMIN: $player_name"
     elif [ "$rank" = "MOD" ]; then
-        add_to_list "$player_name" "mod"
-        send_server_command "$SCREEN_SERVER" "/mod $player_name"
+        execute_server_command "/MOD $player_name"
+        print_success "Set player as MOD: $player_name"
     elif [ "$rank" = "SUPER" ]; then
+        # Add to cloud admin list and set as admin
         add_to_cloud_admin_list "$player_name"
+        execute_server_command "/ADMIN \"$player_name\""
+        print_success "Set player as SUPER ADMIN: $player_name"
     fi
-    
-    print_success "Synced player $player_name to lists (Rank: $rank, Whitelisted: $whitelisted, Blacklisted: $blacklisted)"
     
     return 0
 }
 
-# Function to remove player from all lists
+# Function to remove player from all lists using server commands
 remove_player_from_all_lists() {
     local player_name="$1"
+    local player_info=$(get_player_info "$player_name")
+    local current_ip="unknown"
     
-    remove_from_list_file "$player_name" "admin"
-    remove_from_list_file "$player_name" "mod"
-    remove_from_list_file "$player_name" "black"
-    remove_from_list_file "$player_name" "white"
+    if [ -n "$player_info" ]; then
+        current_ip=$(echo "$player_info" | cut -d'|' -f2)
+    fi
+    
+    # Use server commands to remove from all roles
+    execute_server_command "/UNADMIN \"$player_name\""
+    execute_server_command "/UNMOD $player_name"
+    execute_server_command "/UNBAN $player_name"
+    execute_server_command "/UNWHITELIST $current_ip"
+    
+    # Remove from cloud admin list
     remove_from_cloud_admin_list "$player_name"
     
-    # Send uncommands to server
-    send_server_command "$SCREEN_SERVER" "/unadmin $player_name"
-    send_server_command "$SCREEN_SERVER" "/unmod $player_name"
-    send_server_command "$SCREEN_SERVER" "/unban $player_name"
-    
-    print_warning "Removed $player_name from all lists"
+    print_warning "Removed $player_name from all roles using server commands"
 }
 
 # Function to schedule player removal after 15 second cooldown
@@ -589,30 +556,17 @@ schedule_player_removal() {
             sleep 15
             # Check if player reconnected during cooldown
             if [ -z "${connected_players[$player_name]}" ]; then
-                print_warning "15-second cooldown expired for $player_name - removing from lists"
+                print_warning "15-second cooldown expired for $player_name - removing from roles"
                 remove_player_from_all_lists "$player_name"
                 execute_load_lists
             else
-                print_success "Player $player_name reconnected during cooldown - keeping in lists"
+                print_success "Player $player_name reconnected during cooldown - keeping in roles"
             fi
             unset disconnect_timers["$player_name"]
         ) &
         echo $!
     )
-    print_success "Scheduled removal of $player_name from lists in 15 seconds"
-}
-
-# Function to add player to list file
-add_to_list() {
-    local player_name="$1" list_type="$2"
-    local list_file="$LOG_DIR/${list_type}list.txt"
-    
-    [ ! -f "$list_file" ] && touch "$list_file"
-    
-    if ! grep -q "^$player_name$" "$list_file" 2>/dev/null; then
-        echo "$player_name" >> "$list_file"
-        print_success "Added $player_name to ${list_type}list"
-    fi
+    print_success "Scheduled removal of $player_name from roles in 15 seconds"
 }
 
 # Function to add player to cloud admin list
@@ -634,7 +588,7 @@ remove_from_cloud_admin_list() {
     [ -f "$CLOUD_ADMIN_FILE" ] && sed -i "/^$player_name$/d" "$CLOUD_ADMIN_FILE"
 }
 
-# Function to check for username theft with IP verification (MODIFICADO CON NUEVOS TIEMPOS)
+# Function to check for username theft with IP verification (2.5 seconds)
 check_username_theft() {
     local player_name="$1" player_ip="$2"
     
@@ -656,13 +610,13 @@ check_username_theft() {
         if [ "$registered_current_ip" != "$player_ip" ]; then
             # IP doesn't match - check if player has password
             if [ "$registered_password" = "NONE" ]; then
-                # No password set - send consolidated reminder after 2.5 seconds (reduced from 5 seconds)
+                # No password set - send consolidated reminder after 2.5 seconds (only once)
                 print_warning "IP changed for $player_name but no password set (old IP: $registered_current_ip, new IP: $player_ip)"
                 # Only show announcement once per player connection
                 if [[ -z "${ip_mismatch_announced[$player_name]}" ]]; then
                     ip_mismatch_announced["$player_name"]=1
                     (
-                        sleep 2.5  # Reduced from 5 seconds to 2.5 seconds
+                        sleep 2.5
                         # Check if player is still connected before sending message
                         if is_player_connected "$player_name"; then
                             handle_ip_change_reminder "$player_name" "ip_changed_no_password"
@@ -680,21 +634,25 @@ check_username_theft() {
                 fi
             fi
         else
-            # IP matches - update rank if needed and sync after 2.5 seconds (reduced from 5 seconds)
+            # IP matches - mark as verified and apply changes after 2.5 seconds
+            verified_players["$player_name"]=1
+            
+            # Update rank if needed
             local current_rank=$(get_player_rank "$player_name")
             if [ "$current_rank" != "$registered_rank" ]; then
                 update_player_info "$player_name" "$registered_first_ip" "$player_ip" "$registered_password" "$current_rank" "$registered_whitelisted" "$registered_blacklisted"
             fi
             
-            # Schedule sync after 2.5 seconds for verified players (reduced from 5 seconds)
+            # Schedule application of changes after 2.5 seconds
             if [[ -z "${player_verification_timers[$player_name]}" ]]; then
                 player_verification_timers["$player_name"]=1
                 (
-                    sleep 2.5  # Reduced from 5 seconds to 2.5 seconds
+                    sleep 2.5
                     if is_player_connected "$player_name" && ! is_in_grace_period "$player_name"; then
-                        sync_player_to_lists "$player_name"
-                        # Wait 0.5 seconds after sync and then execute /load-lists
+                        # Wait 0.5 seconds more before applying rank
                         sleep 0.5
+                        apply_player_changes "$player_name"
+                        # Execute /load-lists after applying changes
                         execute_load_lists
                     fi
                     unset player_verification_timers["$player_name"]
@@ -707,11 +665,22 @@ check_username_theft() {
         update_player_info "$player_name" "$player_ip" "$player_ip" "NONE" "$rank" "NO" "NO"
         print_success "Added new player to registry: $player_name ($player_ip) with rank: $rank"
         
-        # Send consolidated reminder after 2.5 seconds (reduced from 5 seconds)
+        # Mark as verified (new players don't need IP verification)
+        verified_players["$player_name"]=1
+        
+        # Apply changes after 2.5 seconds for new players
+        (
+            sleep 2.5
+            sleep 0.5
+            apply_player_changes "$player_name"
+            execute_load_lists
+        ) &
+        
+        # Send consolidated reminder after 2.5 seconds (only once)
         if [[ -z "${ip_mismatch_announced[$player_name]}" ]]; then
             ip_mismatch_announced["$player_name"]=1
             (
-                sleep 2.5  # Reduced from 5 seconds to 2.5 seconds
+                sleep 2.5
                 # Check if player is still connected before sending message
                 if is_player_connected "$player_name"; then
                     handle_ip_change_reminder "$player_name" "new_player_no_password"
@@ -773,7 +742,7 @@ check_dangerous_activity() {
             
             if [ $count -gt 2 ]; then
                 print_error "SPAM DETECTED: $player_name sent $count messages in 1 second"
-                send_server_command "$SCREEN_SERVER" "/ban $player_ip"
+                execute_server_command "/BAN $player_ip"
                 send_server_command "$SCREEN_SERVER" "WARNING: $player_name (IP: $player_ip) was banned for spamming"
                 return 1
             fi
@@ -801,7 +770,7 @@ check_dangerous_activity() {
                 local offense_count=$?
                 
                 if [ $offense_count -ge 2 ]; then
-                    send_server_command "$SCREEN_SERVER" "/ban $player_ip"
+                    execute_server_command "/BAN $player_ip"
                     send_server_command "$SCREEN_SERVER" "WARNING: $player_name (IP: $player_ip) was banned for attempting dangerous commands"
                     return 1
                 else
@@ -827,9 +796,7 @@ handle_unauthorized_command() {
         [ "$command" = "/admin" ] && command_type="admin"
         [ "$command" = "/mod" ] && command_type="mod"
         if [ -n "$command_type" ]; then
-            screen -S "$SCREEN_SERVER" -p 0 -X stuff "/un${command_type} $target_player$(printf \\r)" 2>/dev/null
-            remove_from_list_file "$target_player" "$command_type"
-            send_delayed_uncommands "$target_player" "$command_type"
+            execute_server_command "/UN${command_type} $target_player"
             # Update player rank in players.log
             update_player_rank "$target_player" "NONE"
         fi
@@ -841,10 +808,9 @@ handle_unauthorized_command() {
             send_server_command "$SCREEN_SERVER" "$player_name, this is your second warning! One more and you will be demoted to mod."
         elif [ "$offense_count" -ge 3 ]; then
             print_warning "THIRD OFFENSE: Admin $player_name is being demoted to mod"
-            # Remove from admin files
-            remove_from_list_file "$player_name" "admin"
-            screen -S "$SCREEN_SERVER" -p 0 -X stuff "/unadmin $player_name$(printf \\r)" 2>/dev/null
-            # Add to mod files by updating players.log
+            # Remove from admin role
+            execute_server_command "/UNADMIN \"$player_name\""
+            # Add to mod role by updating players.log
             update_player_rank "$player_name" "MOD"
             clear_admin_offenses "$player_name"
         fi
@@ -852,15 +818,11 @@ handle_unauthorized_command() {
         print_warning "Non-admin player $player_name attempted to use $command on $target_player"
         send_server_command "$SCREEN_SERVER" "$player_name, you don't have permission to assign ranks."
         if [ "$command" = "/admin" ]; then
-            screen -S "$SCREEN_SERVER" -p 0 -X stuff "/unadmin $target_player$(printf \\r)" 2>/dev/null
-            remove_from_list_file "$target_player" "admin"
-            send_delayed_uncommands "$target_player" "admin"
+            execute_server_command "/UNADMIN \"$target_player\""
             # Update player rank in players.log
             update_player_rank "$target_player" "NONE"
         elif [ "$command" = "/mod" ]; then
-            screen -S "$SCREEN_SERVER" -p 0 -X stuff "/unmod $target_player$(printf \\r)" 2>/dev/null
-            remove_from_list_file "$target_player" "mod"
-            send_delayed_uncommands "$target_player" "mod"
+            execute_server_command "/UNMOD $target_player"
             # Update player rank in players.log
             update_player_rank "$target_player" "NONE"
         fi
@@ -954,18 +916,18 @@ monitor_log() {
                 local safe_name=$(echo "$player_name" | sed 's/\\/\\\\/g')
                 
                 if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
-                    send_server_command "$SCREEN_SERVER" "/ban $player_ip"
+                    execute_server_command "/BAN $player_ip"
                     # Kick the player after banning
-                    send_server_command "$SCREEN_SERVER" "/kick $safe_name"
+                    execute_server_command "/KICK $safe_name"
                     (
                         sleep 5
-                        send_server_command "$SCREEN_SERVER" "/unban $player_ip"
+                        execute_server_command "/UNBAN $player_ip"
                         print_success "Unbanned IP: $player_ip"
                     ) &
                 else
                     # Fallback: ban by name if IP is not available
-                    send_server_command "$SCREEN_SERVER" "/ban $safe_name"
-                    send_server_command "$SCREEN_SERVER" "/kick $safe_name"
+                    execute_server_command "/BAN $safe_name"
+                    execute_server_command "/KICK $safe_name"
                 fi
                 continue
             fi
@@ -980,7 +942,7 @@ monitor_log() {
             # Add player to connected players list
             connected_players["$player_name"]="$player_ip"
             
-            # Check for username theft with IP verification
+            # Check for username theft with IP verification (2.5 seconds)
             if ! check_username_theft "$player_name" "$player_ip"; then
                 continue
             fi
@@ -1003,11 +965,11 @@ monitor_log() {
                 print_warning "Banning player with invalid name: '$command_user' (IP: $ipu)"
                 
                 if [ -n "$ipu" ] && [ "$ipu" != "unknown" ]; then
-                    send_server_command "$SCREEN_SERVER" "/ban $ipu"
-                    send_server_command "$SCREEN_SERVER" "/kick $command_user"
+                    execute_server_command "/BAN $ipu"
+                    execute_server_command "/KICK $command_user"
                 else
-                    send_server_command "$SCREEN_SERVER" "/ban $command_user"
-                    send_server_command "$SCREEN_SERVER" "/kick $command_user"
+                    execute_server_command "/BAN $command_user"
+                    execute_server_command "/KICK $command_user"
                 fi
                 continue
             fi
@@ -1038,7 +1000,7 @@ monitor_log() {
             # Remove player from connected players
             unset connected_players["$player_name"]
             
-            # Schedule removal from lists after 15 seconds instead of immediate removal
+            # Schedule removal from roles after 15 seconds instead of immediate removal
             schedule_player_removal "$player_name"
             
             # Clean up grace period and announcement tracking if player disconnects
