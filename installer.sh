@@ -48,22 +48,7 @@ print_progress() {
     echo -e "${MAGENTA}[PROGRESS]${NC} $1";
 }
 
-# Función para mostrar una barra de progreso simple
-progress_bar() {
-    local duration=${1}
-    local steps=20
-    local step_delay=$(echo "scale=3; $duration/$steps" | bc)
-    
-    echo -n "["
-    for ((i=0; i<steps; i++)); do
-        echo -n "▰"
-        sleep $step_delay
-    done
-    echo -n "]"
-    echo
-}
-
-# Función para limpiar carpetas problemáticas
+# Function to clean problematic directories
 clean_problematic_dirs() {
     local problematic_dirs=(
         "swift-corelibs-libdispatch"
@@ -73,16 +58,16 @@ clean_problematic_dirs() {
     
     for dir in "${problematic_dirs[@]}"; do
         if [ -d "$dir" ]; then
-            print_step "Eliminando carpeta problemática: $dir"
+            print_step "Removing problematic directory: $dir"
             rm -rf "$dir" 2>/dev/null || (
-                print_warning "No se pudo eliminar $dir, intentando con sudo..."
+                print_warning "Could not remove $dir, trying with sudo..."
                 sudo rm -rf "$dir"
             )
         fi
     done
 }
 
-# Limpiar carpetas problemáticas al inicio
+# Clean problematic directories at start
 clean_problematic_dirs
 
 # Wget options for silent downloads
@@ -94,19 +79,10 @@ WGET_OPTIONS="--timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --rea
 ORIGINAL_USER=${SUDO_USER:-$USER}
 USER_HOME=$(getent passwd "$ORIGINAL_USER" | cut -d: -f6)
 
-# URL for server download (updated to archive.org)
+# URL for server download
 SERVER_URL="https://web.archive.org/web/20240309015235if_/https://majicdave.com/share/blockheads_server171.tar.gz"
 TEMP_FILE="/tmp/blockheads_server171.tar.gz"
 SERVER_BINARY="blockheads_server171"
-
-# GitHub raw content URLs - AGREGADO cleanup_lists.sh
-SCRIPTS=(
-    "server_manager.sh"
-    "server_bot.sh"
-    "anticheat_secure.sh"
-    "blockheads_common.sh"
-    "cleanup_lists.sh"  # NUEVO ARCHIVO AGREGADO
-)
 
 # Package lists for different distributions
 declare -a PACKAGES_DEBIAN=(
@@ -151,7 +127,7 @@ build_libdispatch() {
     print_step "Building libdispatch from source..."
     local DIR=$(pwd)
     
-    # Limpiar cualquier carpeta existente antes de construir
+    # Clean any existing directories before building
     clean_problematic_dirs
     
     if ! git clone --depth 1 'https://github.com/swiftlang/swift-corelibs-libdispatch.git' "${DIR}/swift-corelibs-libdispatch" >/dev/null 2>&1; then
@@ -184,7 +160,7 @@ build_libdispatch() {
     fi
     
     cd "${DIR}" || return 1
-    # Limpiar después de la instalación exitosa
+    # Clean after successful installation
     clean_problematic_dirs
     ldconfig
     return 0
@@ -235,27 +211,6 @@ install_packages() {
     return 0
 }
 
-# Optimized function to download scripts
-download_script() {
-    local script_name=$1
-    local attempts=0
-    local max_attempts=3
-    
-    while [ $attempts -lt $max_attempts ]; do
-        if wget $WGET_OPTIONS -O "$script_name" \
-            "https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/$script_name"; then
-            return 0
-        fi
-        
-        attempts=$((attempts + 1))
-        if [ $attempts -lt $max_attempts ]; then
-            sleep 2
-        fi
-    done
-    
-    return 1
-}
-
 print_step "[1/8] Installing required packages..."
 if ! install_packages; then
     print_warning "Falling back to basic package installation..."
@@ -273,18 +228,7 @@ if ! install_packages; then
     check_flock
 fi
 
-print_step "[2/8] Downloading helper scripts from GitHub..."
-for script in "${SCRIPTS[@]}"; do
-    if download_script "$script"; then
-        print_success "Downloaded: $script"
-        chmod +x "$script"
-    else
-        print_error "Failed to download $script after multiple attempts"
-        exit 1
-    fi
-done
-
-print_step "[3/8] Downloading server archive from archive.org..."
+print_step "[2/8] Downloading server archive from archive.org..."
 print_progress "Downloading server binary (this may take a moment)..."
 if wget $WGET_OPTIONS "$SERVER_URL" -O "$TEMP_FILE"; then
     print_success "Download successful from archive.org"
@@ -293,7 +237,7 @@ else
     exit 1
 fi
 
-print_step "[4/8] Extracting files..."
+print_step "[3/8] Extracting files..."
 EXTRACT_DIR="/tmp/blockheads_extract_$$"
 mkdir -p "$EXTRACT_DIR"
 
@@ -319,7 +263,7 @@ fi
 
 chmod +x "$SERVER_BINARY"
 
-print_step "[5/8] Applying comprehensive patchelf compatibility patches..."
+print_step "[4/8] Applying comprehensive patchelf compatibility patches..."
 declare -A LIBS=(
     ["libgnustep-base.so.1.24"]="$(find_library 'libgnustep-base.so' || echo 'libgnustep-base.so.1.28')"
     ["libobjc.so.4.6"]="$(find_library 'libobjc.so' || echo 'libobjc.so.4')"
@@ -346,48 +290,20 @@ done
 
 print_success "Compatibility patches applied"
 
-print_step "[6/8] Set ownership and permissions"
-chown "$ORIGINAL_USER:$ORIGINAL_USER" server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh cleanup_lists.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
-chmod 755 server_manager.sh server_bot.sh anticheat_secure.sh blockheads_common.sh cleanup_lists.sh "$SERVER_BINARY" ./*.json 2>/dev/null || true
+print_step "[5/8] Setting ownership and permissions"
+chown "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" ./*.json 2>/dev/null || true
+chmod 755 "$SERVER_BINARY" ./*.json 2>/dev/null || true
 
-print_step "[7/8] Create economy data file"
+print_step "[6/8] Creating economy data file"
 sudo -u "$ORIGINAL_USER" bash -c 'echo "{\"players\": {}, \"transactions\": []}" > economy_data.json' || true
 chown "$ORIGINAL_USER:$ORIGINAL_USER" economy_data.json 2>/dev/null || true
 
-# Crear archivo de limpieza de listas para uso manual
-print_progress "Creating cleanup script for manual use..."
-cat > manual_cleanup.sh << 'EOF'
-#!/bin/bash
-# =============================================================================
-# MANUAL CLEANUP SCRIPT - CLEAN ALL LIST FILES
-# =============================================================================
-
-source blockheads_common.sh
-
-print_header "MANUAL LIST CLEANUP"
-echo "This script will clean all list files (adminlist.txt, modlist.txt, etc.)"
-echo "Use this if you want to reset all player permissions manually."
-echo ""
-read -p "Are you sure you want to clean all list files? (y/N): " -n 1 -r
-echo ""
-
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    ./cleanup_lists.sh
-    print_success "Manual cleanup completed!"
-else
-    print_warning "Cleanup cancelled."
-fi
-EOF
-
-chmod +x manual_cleanup.sh
-chown "$ORIGINAL_USER:$ORIGINAL_USER" manual_cleanup.sh
-
 rm -f "$TEMP_FILE"
 
-# Limpieza final de carpetas problemáticas
+# Final cleanup of problematic directories
 clean_problematic_dirs
 
-print_step "[8/8] Installation completed successfully"
+print_step "[7/8] Installation completed successfully"
 echo ""
 
 print_header "BINARY INSTRUCTIONS"
@@ -403,16 +319,6 @@ echo -e "${GREEN}5. Default port: ${YELLOW}12153${NC}"
 echo -e "${GREEN}6. HELP: ${CYAN}./server_manager.sh help${NC}"
 echo ""
 print_warning "After creating the world, press CTRL+C to exit"
-
-print_header "NEW SECURITY FEATURES"
-echo -e "${GREEN}✓ Dynamic list loading - Lists only contain active players${NC}"
-echo -e "${GREEN}✓ IP verification - Ranks require IP confirmation${NC}"
-echo -e "${GREEN}✓ Automatic cleanup - Lists cleared on server shutdown${NC}"
-echo -e "${GREEN}✓ Manual cleanup script: ${CYAN}./manual_cleanup.sh${NC}"
-echo -e "${GREEN}✓ List cleanup script: ${CYAN}./cleanup_lists.sh${NC}"
-echo ""
-echo -e "${YELLOW}The new security system prevents exploits by keeping list files empty${NC}"
-echo -e "${YELLOW}when the server is offline, and only loading verified players.${NC}"
 
 print_header "INSTALLATION COMPLETE"
 echo -e "${GREEN}Your Blockheads server is now ready to use!${NC}"
