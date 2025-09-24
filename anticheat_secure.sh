@@ -88,7 +88,7 @@ initialize_authorization_files() {
     clean_all_list_files
 }
 
-# Function to clean all list files
+# Function to clean all list files with proper formatting
 clean_all_list_files() {
     local lists=("adminlist" "modlist" "whitelist" "blacklist")
     
