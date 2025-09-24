@@ -244,7 +244,9 @@ echo ""
 
 print_header "SERVER BINARY INFORMATION"
 ./blockheads_server171 -h >/dev/null 2>&1 || print_warning "Server binary help command failed"
-
+echo ""
+./blockheads_server171 -h
+echo ""
 print_header "SERVER MANAGER INSTRUCTIONS"
 echo -e "${GREEN}1. Create a world: ${CYAN}./blockheads_server171 -n${NC}"
 echo -e "${GREEN}2. See world list: ${CYAN}./blockheads_server171 -l${NC}"
@@ -257,9 +259,9 @@ print_warning "After creating the world, press CTRL+C to exit the creation proce
 
 print_header "MULTI-SERVER SUPPORT"
 echo -e "${GREEN}You can run multiple servers simultaneously:${NC}"
-echo -e "${CYAN}./server_manager.sh start World1 12153${NC}"
-echo -e "${CYAN}./server_manager.sh start World2 12154${NC}"
-echo -e "${CYAN}./server_manager.sh start World3 12155${NC}"
+echo -e "${CYAN}./server_manager.sh start WorldID1 12153${NC}"
+echo -e "${CYAN}./server_manager.sh start WorldID2 12154${NC}"
+echo -e "${CYAN}./server_manager.sh start WorldID3 12155${NC}"
 echo ""
 echo -e "${YELLOW}Each server runs in its own screen session${NC}"
 
