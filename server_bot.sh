@@ -27,6 +27,14 @@ ADMINLIST_FILE="$LOG_DIR/adminlist.txt"
 MODLIST_FILE="$LOG_DIR/modlist.txt"
 WHITELIST_FILE="$LOG_DIR/whitelist.txt"
 
+# Function to execute /load-lists command
+execute_load_lists() {
+    print_status "Executing /load-lists command to refresh server lists..."
+    send_server_command "$SCREEN_SERVER" "/load-lists"
+    sleep 0.5  # Give server time to process
+    print_success "Server lists refreshed with /load-lists"
+}
+
 # Ensure superadminslist.txt exists
 [ ! -f "$SUPERADMINS_FILE" ] && touch "$SUPERADMINS_FILE"
 
@@ -132,6 +140,12 @@ update_player_rank() {
         local blacklisted=$(echo "$player_info" | cut -d'|' -f6)
         update_player_info "$player_name" "$current_ip" "$new_rank" "$password"
         print_success "Updated player rank in registry: $player_name -> $new_rank"
+        
+        # Execute /load-lists after rank update with minimal delay
+        (
+            sleep 0.5  # Reduced from 5 seconds to 0.5 seconds
+            execute_load_lists
+        ) &
     else
         print_error "Player $player_name not found in registry. Cannot update rank."
     fi
