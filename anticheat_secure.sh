@@ -376,7 +376,7 @@ validate_ip_change() {
     unset ip_change_grace_periods["$player_name"]
     unset ip_change_pending_players["$player_name"]
     
-    # Now load the player's privileges since IP is verified
+    # Now load the player's privileges since IP is verified (after 5 seconds)
     load_verified_player_data "$player_name" "$current_ip"
     
     # Send success message
@@ -489,38 +489,43 @@ handle_password_change() {
     return 0
 }
 
-# Function to load player data only if active and verified
+# Function to load player data only if active and verified after 5 seconds
 load_verified_player_data() {
     local player_name="$1"
     local player_ip="$2"
     
-    # Check if player is connected
-    if ! is_player_connected "$player_name"; then
-        remove_player_from_all_lists "$player_name"
-        return 1
-    fi
-    
-    local player_info=$(get_player_info "$player_name")
-    if [ -z "$player_info" ]; then
-        remove_player_from_all_lists "$player_name"
-        return 1
-    fi
-    
-    local registered_ip=$(echo "$player_info" | cut -d'|' -f2)
-    local rank=$(echo "$player_info" | cut -d'|' -f4)
-    local whitelisted=$(echo "$player_info" | cut -d'|' -f5)
-    local blacklisted=$(echo "$player_info" | cut -d'|' -f6)
-    
-    # Only load if IP matches or player is in grace period (being verified)
-    if [ "$player_ip" = "$registered_ip" ] || is_in_grace_period "$player_name"; then
-        # Load into appropriate lists based on rank and status
-        update_lists_for_player "$player_name" "$rank" "$whitelisted" "$blacklisted" "$player_ip"
-        return 0
-    else
-        # IP doesn't match and not in grace period - don't load privileges
-        remove_player_from_all_lists "$player_name"
-        return 1
-    fi
+    # Wait 5 seconds before applying ranks
+    (
+        sleep 5
+        
+        # Check if player is still connected after 5 seconds
+        if ! is_player_connected "$player_name"; then
+            remove_player_from_all_lists "$player_name"
+            return 1
+        fi
+        
+        local player_info=$(get_player_info "$player_name")
+        if [ -z "$player_info" ]; then
+            remove_player_from_all_lists "$player_name"
+            return 1
+        fi
+        
+        local registered_ip=$(echo "$player_info" | cut -d'|' -f2)
+        local rank=$(echo "$player_info" | cut -d'|' -f4)
+        local whitelisted=$(echo "$player_info" | cut -d'|' -f5)
+        local blacklisted=$(echo "$player_info" | cut -d'|' -f6)
+        
+        # Only load if IP matches or player is in grace period (being verified)
+        if [ "$player_ip" = "$registered_ip" ] || is_in_grace_period "$player_name"; then
+            # Load into appropriate lists based on rank and status
+            update_lists_for_player "$player_name" "$rank" "$whitelisted" "$blacklisted" "$player_ip"
+            return 0
+        else
+            # IP doesn't match and not in grace period - don't load privileges
+            remove_player_from_all_lists "$player_name"
+            return 1
+        fi
+    ) &
 }
 
 # Function to add player to a list file with 1-second cooldown and proper formatting
@@ -715,26 +720,21 @@ apply_players_log_changes() {
             local current_player_ip=$(get_ip_by_name "$name")
             
             if [ "$current_player_ip" != "unknown" ]; then
-                # Update lists for this player
-                load_verified_player_data "$name" "$current_player_ip"
+                # Update lists for this player (after 5 seconds)
+                (
+                    sleep 5
+                    load_verified_player_data "$name" "$current_player_ip"
+                ) &
                 
-                # Apply rank commands directly to the connected player
-                apply_rank_to_player "$name" "$rank" "$current_player_ip"
+                # Apply rank commands directly to the connected player (after 5 seconds)
+                (
+                    sleep 5
+                    apply_rank_to_player "$name" "$rank" "$current_player_ip"
+                ) &
                 
-                # Apply whitelist/blacklist status immediately
-                if [ "$whitelisted" = "YES" ]; then
-                    send_server_command "$SCREEN_SERVER" "/whitelist $current_player_ip"
-                else
-                    send_server_command "$SCREEN_SERVER" "/unwhitelist $current_player_ip"
-                fi
-                
-                if [ "$blacklisted" = "YES" ]; then
-                    send_server_command "$SCREEN_SERVER" "/ban $current_player_ip"
-                    send_server_command "$SCREEN_SERVER" "/ban $name"
-                else
-                    send_server_command "$SCREEN_SERVER" "/unban $current_player_ip"
-                    send_server_command "$SCREEN_SERVER" "/unban $name"
-                fi
+                # Apply whitelist/blacklist status immediately (or after 5 seconds?)
+                # Pero note: load_verified_player_data ya maneja whitelist/blacklist después de 5 segundos.
+                # Así que no necesitamos hacerlo aquí de nuevo.
             fi
         else
             # Player not connected - remove from all lists
@@ -865,7 +865,7 @@ check_username_theft() {
                 fi
             fi
         else
-            # IP matches - load verified player data
+            # IP matches - load verified player data (after 5 seconds)
             load_verified_player_data "$player_name" "$player_ip"
             
             # If player is SUPER, handle the super admin connection with restart
@@ -1100,7 +1100,7 @@ monitor_log() {
     local wait_time=0
     while [ ! -f "$log_file" ] && [ $wait_time -lt 30 ]; do
         sleep 1
-        ((wait_time++))
+        wait_time=$((wait_time + 1))
         [ $((wait_time % 5)) -eq 0 ] && print_status "Waiting for log file to be created..."
     done
     
@@ -1212,6 +1212,24 @@ monitor_log() {
             
             # Remove player from all lists when disconnected
             remove_player_from_all_lists "$player_name"
+            
+            # If the player is a SUPER admin, schedule removal from cloudwideownedadminlist after 15 seconds
+            local rank=$(get_player_rank "$player_name")
+            if [ "$rank" = "SUPER" ]; then
+                (
+                    sleep 15
+                    # Check if the player has reconnected during the 15 seconds
+                    if ! is_player_connected "$player_name"; then
+                        local superadmin_file="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
+                        if [ -f "$superadmin_file" ] && grep -q "^$player_name$" "$superadmin_file"; then
+                            sed -i "/^$player_name$/d" "$superadmin_file"
+                            print_success "Removed $player_name from cloudWideOwnedAdminlist.txt (did not reconnect within 15 seconds)"
+                        fi
+                    else
+                        print_success "SUPER ADMIN $player_name reconnected within 15 seconds, keeping in cloudWideOwnedAdminlist.txt"
+                    fi
+                ) &
+            fi
         fi
 
         # Check for chat messages and dangerous commands
@@ -1292,7 +1310,7 @@ if [ $# -eq 1 ] || [ $# -eq 2 ]; then
         local wait_time=0
         while [ ! -f "$LOG_FILE" ] && [ $wait_time -lt 30 ]; do
             sleep 1
-            ((wait_time++))
+            wait_time=$((wait_time + 1))
         done
         if [ ! -f "$LOG_FILE" ]; then
             print_error "Log file never appeared: $LOG_FILE"
