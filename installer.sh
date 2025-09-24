@@ -2,7 +2,7 @@
 set -e
 
 # =============================================================================
-# THE BLOCKHEADS LINUX SERVER INSTALLER - OPTIMIZED VERSION
+# THE BLOCKHEADS LINUX SERVER INSTALLER
 # =============================================================================
 
 # Color codes for output
@@ -12,12 +12,8 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
-ORANGE='\033[0;33m'
-PURPLE='\033[0;35m'
-BOLD='\033[1m'
 NC='\033[0m'
 
-# Function definitions
 print_status() {
     echo -e "${BLUE}[INFO]${NC} $1";
 }
@@ -35,73 +31,65 @@ print_error() {
 }
 
 print_header() {
-    echo -e "${PURPLE}================================================================================${NC}"
-    echo -e "${PURPLE}$1${NC}"
-    echo -e "${PURPLE}================================================================================${NC}"
+    echo -e "${MAGENTA}================================================================================${NC}"
+    echo -e "${MAGENTA}$1${NC}"
+    echo -e "${MAGENTA}================================================================================${NC}"
 }
 
 print_step() {
     echo -e "${CYAN}[STEP]${NC} $1";
 }
 
-print_progress() {
-    echo -e "${MAGENTA}[PROGRESS]${NC} $1";
-}
-
-# Function to clean problematic directories
-clean_problematic_dirs() {
-    local problematic_dirs=(
-        "swift-corelibs-libdispatch"
-        "swift-corelibs-libdispatch.build"
-        "libdispatch-build"
-    )
-    
-    for dir in "${problematic_dirs[@]}"; do
-        if [ -d "$dir" ]; then
-            print_step "Removing problematic directory: $dir"
-            rm -rf "$dir" 2>/dev/null || (
-                print_warning "Could not remove $dir, trying with sudo..."
-                sudo rm -rf "$dir"
-            )
-        fi
-    done
-}
-
-# Clean problematic directories at start
-clean_problematic_dirs
-
-# Wget options for silent downloads
-WGET_OPTIONS="--timeout=30 --tries=2 --dns-timeout=10 --connect-timeout=10 --read-timeout=30 -q --show-progress"
-
 # Check if running as root
 [ "$EUID" -ne 0 ] && print_error "This script requires root privileges." && exit 1
 
 ORIGINAL_USER=${SUDO_USER:-$USER}
-USER_HOME=$(getent passwd "$ORIGINAL_USER" | cut -d: -f6)
 
 # URL for server download
 SERVER_URL="https://web.archive.org/web/20240309015235if_/https://majicdave.com/share/blockheads_server171.tar.gz"
 TEMP_FILE="/tmp/blockheads_server171.tar.gz"
 SERVER_BINARY="blockheads_server171"
 
-# Package lists for different distributions
-declare -a PACKAGES_DEBIAN=(
-    'git' 'cmake' 'ninja-build' 'clang' 'systemtap-sdt-dev' 'libbsd-dev' 'linux-libc-dev'
-    'curl' 'tar' 'grep' 'mawk' 'patchelf' 'libgnustep-base-dev' 'libobjc4' 'libgnutls28-dev'
-    'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev' 'zlib1g' 'libicu-dev' 'libicu-dev'
-    'libstdc++6' 'libgcc-s1' 'wget' 'jq' 'screen' 'lsof'
-)
+# URL for server manager
+SERVER_MANAGER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/server_manager.sh"
 
-declare -a PACKAGES_ARCH=(
-    'base-devel' 'git' 'cmake' 'ninja' 'clang' 'systemtap' 'libbsd' 'curl' 'tar' 'grep' 'gawk'
-    'patchelf' 'gnustep-base' 'gcc-libs' 'gnutls' 'libgcrypt' 'libxml2' 'libffi' 'libnsl' 'zlib'
-    'icu' 'libdispatch' 'wget' 'jq' 'screen' 'lsof'
-)
+# Basic packages
+PACKAGES=('wget' 'tar' 'screen' 'lsof')
 
 print_header "THE BLOCKHEADS LINUX SERVER INSTALLER"
 echo -e "${CYAN}Welcome to The Blockheads Server Installation!${NC}"
-echo -e "${YELLOW}This script will install and configure everything you need.${NC}"
 echo
+
+# Function to install packages
+install_packages() {
+    print_step "Installing required packages..."
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get update >/dev/null 2>&1 || print_warning "Failed to update package list"
+        for package in "${PACKAGES[@]}"; do
+            apt-get install -y "$package" >/dev/null 2>&1 || print_warning "Failed to install $package"
+        done
+    elif command -v yum >/dev/null 2>&1; then
+        yum update -y >/dev/null 2>&1 || print_warning "Failed to update package list"
+        for package in "${PACKAGES[@]}"; do
+            yum install -y "$package" >/dev/null 2>&1 || print_warning "Failed to install $package"
+        done
+    else
+        print_warning "Could not detect package manager, trying to continue anyway"
+    fi
+}
+
+# Function to download server manager
+download_server_manager() {
+    print_step "Downloading server manager..."
+    if wget --timeout=30 --tries=3 -O "server_manager.sh" "$SERVER_MANAGER_URL" 2>/dev/null; then
+        chmod +x "server_manager.sh"
+        print_success "Server manager downloaded successfully"
+        return 0
+    else
+        print_error "Failed to download server manager"
+        return 1
+    fi
+}
 
 # Function to find library
 find_library() {
@@ -111,215 +99,63 @@ find_library() {
     printf '%s' "$LIBRARY"
 }
 
-# Function to check if flock is available
-check_flock() {
-    if command -v flock >/dev/null 2>&1; then
-        return 0
-    else
-        print_warning "flock not found. Locking mechanisms will be disabled."
-        print_warning "Some security features may not work properly."
-        return 1
-    fi
-}
+print_step "[1/5] Installing basic packages..."
+install_packages
 
-# Function to build libdispatch from source
-build_libdispatch() {
-    print_step "Building libdispatch from source..."
-    local DIR=$(pwd)
-    
-    # Clean any existing directories before building
-    clean_problematic_dirs
-    
-    if ! git clone --depth 1 'https://github.com/swiftlang/swift-corelibs-libdispatch.git' "${DIR}/swift-corelibs-libdispatch" >/dev/null 2>&1; then
-        print_error "Failed to clone libdispatch repository"
-        return 1
-    fi
-    
-    mkdir -p "${DIR}/swift-corelibs-libdispatch/build" || return 1
-    cd "${DIR}/swift-corelibs-libdispatch/build" || return 1
-    
-    if ! cmake -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ .. >/dev/null 2>&1; then
-        print_error "CMake configuration failed"
-        cd "${DIR}"
-        clean_problematic_dirs
-        return 1
-    fi
-    
-    if ! ninja "-j$(nproc)" >/dev/null 2>&1; then
-        print_error "Build failed"
-        cd "${DIR}"
-        clean_problematic_dirs
-        return 1
-    fi
-    
-    if ! ninja install >/dev/null 2>&1; then
-        print_error "Installation failed"
-        cd "${DIR}"
-        clean_problematic_dirs
-        return 1
-    fi
-    
-    cd "${DIR}" || return 1
-    # Clean after successful installation
-    clean_problematic_dirs
-    ldconfig
-    return 0
-}
-
-# Function to install packages
-install_packages() {
-    [ ! -f /etc/os-release ] && print_error "Could not detect the operating system" && return 1
-    
-    source /etc/os-release
-    
-    case $ID in
-        debian|ubuntu|pop)
-            print_step "Installing packages for Debian/Ubuntu..."
-            if ! apt-get update >/dev/null 2>&1; then
-                print_error "Failed to update package list"
-                return 1
-            fi
-            
-            for package in "${PACKAGES_DEBIAN[@]}"; do
-                if ! apt-get install -y "$package" >/dev/null 2>&1; then
-                    print_warning "Failed to install $package"
-                fi
-            done
-            
-            if ! find_library 'libdispatch.so' >/dev/null; then
-                if ! build_libdispatch; then
-                    print_warning "Failed to build libdispatch, trying to install from repository"
-                    apt-get install -y libdispatch-dev >/dev/null 2>&1 || print_warning "Failed to install libdispatch-dev"
-                fi
-            fi
-            ;;
-        arch)
-            print_step "Installing packages for Arch Linux..."
-            if ! pacman -Sy --noconfirm --needed "${PACKAGES_ARCH[@]}" >/dev/null 2>&1; then
-                print_error "Failed to install Arch Linux packages"
-                return 1
-            fi
-            ;;
-        *)
-            print_error "Unsupported operating system: $ID"
-            return 1
-            ;;
-    esac
-    
-    # Check if flock was installed
-    check_flock
-    return 0
-}
-
-print_step "[1/8] Installing required packages..."
-if ! install_packages; then
-    print_warning "Falling back to basic package installation..."
-    if ! apt-get update -y >/dev/null 2>&1; then
-        print_error "Failed to update package list"
-        exit 1
-    fi
-    
-    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget jq screen lsof software-properties-common >/dev/null 2>&1; then
-        print_error "Failed to install essential packages"
-        exit 1
-    fi
-    
-    # Check if flock was installed in fallback mode
-    check_flock
-fi
-
-print_step "[2/8] Downloading server archive from archive.org..."
-print_progress "Downloading server binary (this may take a moment)..."
-if wget $WGET_OPTIONS "$SERVER_URL" -O "$TEMP_FILE"; then
-    print_success "Download successful from archive.org"
+print_step "[2/5] Downloading server archive..."
+if wget --timeout=30 --tries=3 --show-progress "$SERVER_URL" -O "$TEMP_FILE" 2>/dev/null; then
+    print_success "Server downloaded successfully"
 else
-    print_error "Failed to download server file from archive.org"
+    print_error "Failed to download server file"
     exit 1
 fi
 
-print_step "[3/8] Extracting files..."
-EXTRACT_DIR="/tmp/blockheads_extract_$$"
-mkdir -p "$EXTRACT_DIR"
-
-print_progress "Extracting server files..."
-if ! tar -xzf "$TEMP_FILE" -C "$EXTRACT_DIR" >/dev/null 2>&1; then
+print_step "[3/5] Extracting server files..."
+if tar -xzf "$TEMP_FILE" -C . >/dev/null 2>&1; then
+    print_success "Files extracted successfully"
+else
     print_error "Failed to extract server files"
-    rm -rf "$EXTRACT_DIR"
     exit 1
 fi
 
-cp -r "$EXTRACT_DIR"/* ./
-rm -rf "$EXTRACT_DIR"
-
+# Find and rename the server binary
 if [ ! -f "$SERVER_BINARY" ]; then
-    ALTERNATIVE_BINARY=$(find . -name "*blockheads*" -type f -executable | head -n 1)
-    [ -n "$ALTERNATIVE_BINARY" ] && mv "$ALTERNATIVE_BINARY" "blockheads_server171" && SERVER_BINARY="blockheads_server171"
-fi
-
-if [ ! -f "$SERVER_BINARY" ]; then
-    print_error "Server binary not found after extraction"
-    exit 1
-fi
-
-chmod +x "$SERVER_BINARY"
-
-print_step "[4/8] Applying comprehensive patchelf compatibility patches..."
-declare -A LIBS=(
-    ["libgnustep-base.so.1.24"]="$(find_library 'libgnustep-base.so' || echo 'libgnustep-base.so.1.28')"
-    ["libobjc.so.4.6"]="$(find_library 'libobjc.so' || echo 'libobjc.so.4')"
-    ["libgnutls.so.26"]="$(find_library 'libgnutls.so' || echo 'libgnutls.so.30')"
-    ["libgcrypt.so.11"]="$(find_library 'libgcrypt.so' || echo 'libgcrypt.so.20')"
-    ["libffi.so.6"]="$(find_library 'libffi.so' || echo 'libffi.so.8')"
-    ["libicui18n.so.48"]="$(find_library 'libicui18n.so' || echo 'libicui18n.so.70')"
-    ["libicuuc.so.48"]="$(find_library 'libicuuc.so' || echo 'libicuuc.so.70')"
-    ["libicudata.so.48"]="$(find_library 'libicudata.so' || echo 'libicudata.so.70')"
-    ["libdispatch.so"]="$(find_library 'libdispatch.so' || echo 'libdispatch.so.0')"
-)
-
-TOTAL_LIBS=${#LIBS[@]}
-COUNT=0
-
-for LIB in "${!LIBS[@]}"; do
-    [ -z "${LIBS[$LIB]}" ] && continue
-    COUNT=$((COUNT+1))
-    
-    if ! patchelf --replace-needed "$LIB" "${LIBS[$LIB]}" "$SERVER_BINARY" >/dev/null 2>&1; then
-        print_warning "Failed to patch $LIB"
+    SERVER_BINARY=$(find . -name "*blockheads*" -type f -executable | head -n 1)
+    if [ -n "$SERVER_BINARY" ]; then
+        mv "$SERVER_BINARY" "blockheads_server171"
+        SERVER_BINARY="blockheads_server171"
+        chmod +x "$SERVER_BINARY"
+    else
+        print_error "Server binary not found after extraction"
+        exit 1
     fi
-done
+fi
 
-print_success "Compatibility patches applied"
+print_step "[4/5] Downloading server manager..."
+if ! download_server_manager; then
+    # Create a basic server manager if download fails
+    print_warning "Creating basic server manager..."
+    cat > server_manager.sh << 'EOF'
+#!/bin/bash
+# Basic Server Manager for Blockheads
+echo "Use: ./blockheads_server171 -n (to create world)"
+echo "Then: ./blockheads_server171 -o WORLD_NAME -p PORT"
+EOF
+    chmod +x server_manager.sh
+fi
 
-print_step "[5/8] Setting ownership and permissions"
-chown "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" ./*.json 2>/dev/null || true
-chmod 755 "$SERVER_BINARY" ./*.json 2>/dev/null || true
-
-print_step "[6/8] Creating economy data file"
-sudo -u "$ORIGINAL_USER" bash -c 'echo "{\"players\": {}, \"transactions\": []}" > economy_data.json' || true
-chown "$ORIGINAL_USER:$ORIGINAL_USER" economy_data.json 2>/dev/null || true
+print_step "[5/5] Setting permissions..."
+chown "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" 2>/dev/null || true
+chmod 755 "$SERVER_BINARY" "server_manager.sh" 2>/dev/null || true
 
 rm -f "$TEMP_FILE"
 
-# Final cleanup of problematic directories
-clean_problematic_dirs
-
-print_step "[7/8] Installation completed successfully"
-echo ""
-
-print_header "BINARY INSTRUCTIONS"
-./blockheads_server171 -h >/dev/null 2>&1 || print_warning "Server binary execution failed - may need additional dependencies"
-
-print_header "SERVER MANAGER INSTRUCTIONS"
-echo -e "${GREEN}0. Create a world: ${CYAN}./blockheads_server171 -n${NC}"
-echo -e "${GREEN}1. See world list and ID's: ${CYAN}./blockheads_server171 -l${NC}"
-echo -e "${GREEN}2. Start server: ${CYAN}./server_manager.sh start WORLD_ID PORT${NC}"
-echo -e "${GREEN}3. Stop server: ${CYAN}./server_manager.sh stop${NC}"
-echo -e "${GREEN}4. Check status: ${CYAN}./server_manager.sh status${NC}"
-echo -e "${GREEN}5. Default port: ${YELLOW}12153${NC}"
-echo -e "${GREEN}6. HELP: ${CYAN}./server_manager.sh help${NC}"
-echo ""
-print_warning "After creating the world, press CTRL+C to exit"
-
 print_header "INSTALLATION COMPLETE"
-echo -e "${GREEN}Your Blockheads server is now ready to use!${NC}"
-echo -e "${YELLOW}Don't forget to check the server manager for more options.${NC}"
+echo -e "${GREEN}Server installed successfully!${NC}"
+echo ""
+echo -e "${YELLOW}Next steps:${NC}"
+echo -e "1. ${CYAN}./blockheads_server171 -n${NC} (create a world)"
+echo -e "2. ${CYAN}./server_manager.sh start WORLD_NAME${NC} (start server)"
+echo -e "3. ${CYAN}./server_manager.sh stop${NC} (stop server)"
+echo ""
+echo -e "${GREEN}Your Blockheads server is ready!${NC}"
