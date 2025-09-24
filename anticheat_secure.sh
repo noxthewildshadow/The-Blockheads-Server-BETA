@@ -22,9 +22,6 @@ SCREEN_SERVER="blockheads_server_$PORT"
 IP_CHANGE_ATTEMPTS_FILE="$LOG_DIR/ip_change_attempts.json"
 PASSWORD_CHANGE_ATTEMPTS_FILE="$LOG_DIR/password_change_attempts.json"
 
-# Cloudwide admin list path (GLOBAL - fuera de la carpeta saves)
-CLOUDWIDE_ADMIN_FILE="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
-
 # Track player messages for spam detection
 declare -A player_message_times
 declare -A player_message_counts
@@ -43,8 +40,7 @@ declare -A ip_mismatch_announced
 # Track grace period timer PIDs to cancel them on verification
 declare -A grace_period_pids
 
-# Track SUPER admin disconnect timers and restart timers
-declare -A super_disconnect_timers
+# Track SUPER admin restart timers
 declare -A super_restart_timers
 
 # Function to check if a player name is valid (only letters, numbers, and underscores)
@@ -88,12 +84,6 @@ initialize_authorization_files() {
     [ ! -f "$IP_CHANGE_ATTEMPTS_FILE" ] && echo "{}" > "$IP_CHANGE_ATTEMPTS_FILE"
     [ ! -f "$PASSWORD_CHANGE_ATTEMPTS_FILE" ] && echo "{}" > "$PASSWORD_CHANGE_ATTEMPTS_FILE"
     
-    # Ensure cloudwide admin file exists
-    if [ ! -f "$CLOUDWIDE_ADMIN_FILE" ]; then
-        touch "$CLOUDWIDE_ADMIN_FILE"
-        print_success "Created global cloudWideOwnedAdminlist.txt"
-    fi
-    
     # Clean all list files on startup
     clean_all_list_files
 }
@@ -113,8 +103,13 @@ clean_all_list_files() {
     done
     
     # Cloudwide admin list should only contain SUPER admins from players.log
-    # But we DON'T clear it on startup - only clear when server stops completely
-    print_status "All local list files cleared. Cloudwide admin list preserved."
+    local superadmin_file="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
+    if [ -f "$superadmin_file" ]; then
+        > "$superadmin_file"
+        print_success "Cleared cloudWideOwnedAdminlist.txt"
+    fi
+    
+    print_status "All list files cleared. They will be populated dynamically as players connect."
 }
 
 # Function to validate authorization
@@ -514,6 +509,41 @@ load_verified_player_data() {
     fi
 }
 
+# Function to add player to a list file with 1-second cooldown
+add_to_list() {
+    local player_name="$1" list_type="$2"
+    local list_file="$LOG_DIR/${list_type}.txt"
+    
+    # Create file if it doesn't exist
+    [ ! -f "$list_file" ] && touch "$list_file"
+    
+    # Add player if not already present (with 1-second cooldown)
+    if ! grep -q "^$player_name$" "$list_file" 2>/dev/null; then
+        sleep 1  # Cooldown de 1 segundo antes de agregar
+        echo "$player_name" >> "$list_file"
+        print_success "Added $player_name to ${list_type}.txt"
+    fi
+}
+
+# Function to add SUPER admin to cloudwideownedadminlist with proper formatting
+add_super_to_cloudwide_list() {
+    local player_name="$1"
+    local superadmin_file="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
+    
+    # Create file if it doesn't exist
+    [ ! -f "$superadmin_file" ] && touch "$superadmin_file"
+    
+    # Remove any existing entry for this player (to avoid duplicates)
+    if grep -q "^$player_name$" "$superadmin_file" 2>/dev/null; then
+        sed -i "/^$player_name$/d" "$superadmin_file"
+    fi
+    
+    # Add player with 1-second cooldown
+    sleep 1  # Cooldown de 1 segundo antes de agregar
+    echo "$player_name" >> "$superadmin_file"
+    print_success "Added $player_name to cloudWideOwnedAdminlist.txt (SUPER admin)"
+}
+
 # Function to update all lists for a player
 update_lists_for_player() {
     local player_name="$1" rank="$2" whitelisted="$3" blacklisted="$4" player_ip="$5"
@@ -564,18 +594,8 @@ update_lists_for_player() {
         if is_player_connected "$player_name"; then
             send_server_command "$SCREEN_SERVER" "/admin $player_name"
         fi
-        
-        # Add to GLOBAL cloudwideownedadminlist.txt (only if not already present)
-        if [ ! -f "$CLOUDWIDE_ADMIN_FILE" ]; then
-            touch "$CLOUDWIDE_ADMIN_FILE"
-        fi
-        if ! grep -q "^$player_name$" "$CLOUDWIDE_ADMIN_FILE"; then
-            echo "$player_name" >> "$CLOUDWIDE_ADMIN_FILE"
-            print_success "Added $player_name to global cloudWideOwnedAdminlist.txt"
-            
-            # Schedule server restart to apply SUPER rank properly
-            schedule_super_admin_restart "$player_name"
-        fi
+        # Add to cloudwideownedadminlist (solo un archivo global)
+        add_super_to_cloudwide_list "$player_name"
     else
         # Remove ranks if rank is NONE
         if is_player_connected "$player_name"; then
@@ -587,21 +607,6 @@ update_lists_for_player() {
     print_success "Updated lists for $player_name: rank=$rank, whitelisted=$whitelisted, blacklisted=$blacklisted"
 }
 
-# Function to add player to a list file
-add_to_list() {
-    local player_name="$1" list_type="$2"
-    local list_file="$LOG_DIR/${list_type}.txt"
-    
-    # Create file if it doesn't exist
-    [ ! -f "$list_file" ] && touch "$list_file"
-    
-    # Add player if not already present
-    if ! grep -q "^$player_name$" "$list_file" 2>/dev/null; then
-        echo "$player_name" >> "$list_file"
-        print_success "Added $player_name to ${list_type}.txt"
-    fi
-}
-
 # Function to remove player from all lists
 remove_player_from_all_lists() {
     local player_name="$1"
@@ -611,102 +616,6 @@ remove_player_from_all_lists() {
     for list_type in "${lists[@]}"; do
         remove_from_list_file "$player_name" "$list_type"
     done
-    
-    # DO NOT remove from cloudwideownedadminlist.txt here - handled by delayed cleanup
-    # This prevents SUPER admins from losing their rank immediately on disconnect
-}
-
-# Function to schedule server restart for SUPER admin rank application
-schedule_super_admin_restart() {
-    local player_name="$1"
-    
-    # Cancel any existing restart timer for this player
-    if [ -n "${super_restart_timers[$player_name]}" ]; then
-        kill "${super_restart_timers[$player_name]}" 2>/dev/null
-        unset super_restart_timers["$player_name"]
-    fi
-    
-    print_warning "Scheduling server restart for SUPER admin $player_name..."
-    
-    # Wait 3 seconds then send messages
-    (
-        sleep 3
-        send_server_command "$SCREEN_SERVER" "SUPER ADMIN DETECTED: $player_name"
-        send_server_command "$SCREEN_SERVER" "Server will restart in 10 seconds to apply SUPER ADMIN rank"
-        send_server_command "$SCREEN_SERVER" "Please reconnect within 30 seconds after restart to keep your rank"
-    ) &
-    
-    # Schedule server stop after 13 seconds (3 + 10)
-    super_restart_timers["$player_name"]=$( (
-        sleep 13
-        print_warning "Executing /stop for SUPER admin $player_name"
-        send_server_command "$SCREEN_SERVER" "/stop"
-        
-        # Schedule removal from cloudwide list after 30 seconds if not reconnected
-        sleep 30
-        if [ -f "$CLOUDWIDE_ADMIN_FILE" ] && grep -q "^$player_name$" "$CLOUDWIDE_ADMIN_FILE"; then
-            # Check if player reconnected by looking at players.log current IP
-            local player_info=$(get_player_info "$player_name")
-            if [ -z "$player_info" ]; then
-                # Player not in registry anymore, remove from cloudwide list
-                sed -i "/^$player_name$/d" "$CLOUDWIDE_ADMIN_FILE"
-                print_success "Removed $player_name from cloudWideOwnedAdminlist.txt (did not reconnect after restart)"
-            else
-                local current_ip=$(echo "$player_info" | cut -d'|' -f2)
-                if [ "$current_ip" = "unknown" ]; then
-                    # Player IP unknown, assume not connected
-                    sed -i "/^$player_name$/d" "$CLOUDWIDE_ADMIN_FILE"
-                    print_success "Removed $player_name from cloudWideOwnedAdminlist.txt (did not reconnect after restart)"
-                fi
-            fi
-        fi
-        unset super_restart_timers["$player_name"]
-    ) & echo $! )
-}
-
-# Function to cancel SUPER admin restart if player disconnects before restart
-cancel_super_admin_restart() {
-    local player_name="$1"
-    
-    if [ -n "${super_restart_timers[$player_name]}" ]; then
-        kill "${super_restart_timers[$player_name]}" 2>/dev/null
-        unset super_restart_timers["$player_name"]
-        print_success "Cancelled SUPER admin restart for $player_name (player disconnected)"
-    fi
-}
-
-# Function to schedule SUPER admin removal after cooldown
-schedule_super_admin_removal() {
-    local player_name="$1"
-    
-    # Cancel any existing timer for this player
-    if [ -n "${super_disconnect_timers[$player_name]}" ]; then
-        kill "${super_disconnect_timers[$player_name]}" 2>/dev/null
-        unset super_disconnect_timers["$player_name"]
-    fi
-    
-    # Schedule removal after 30 seconds
-    super_disconnect_timers["$player_name"]=$( (
-        sleep 30
-        if [ -f "$CLOUDWIDE_ADMIN_FILE" ] && grep -q "^$player_name$" "$CLOUDWIDE_ADMIN_FILE"; then
-            sed -i "/^$player_name$/d" "$CLOUDWIDE_ADMIN_FILE"
-            print_success "Removed $player_name from cloudWideOwnedAdminlist.txt after 30-second cooldown"
-        fi
-        unset super_disconnect_timers["$player_name"]
-    ) & echo $! )
-    
-    print_success "Scheduled removal of SUPER admin $player_name in 30 seconds"
-}
-
-# Function to cancel SUPER admin removal if player reconnects
-cancel_super_admin_removal() {
-    local player_name="$1"
-    
-    if [ -n "${super_disconnect_timers[$player_name]}" ]; then
-        kill "${super_disconnect_timers[$player_name]}" 2>/dev/null
-        unset super_disconnect_timers["$player_name"]
-        print_success "Cancelled SUPER admin removal for $player_name (player reconnected)"
-    fi
 }
 
 # Function to apply rank commands directly to connected player
@@ -737,14 +646,6 @@ apply_rank_to_player() {
             ;;
         "SUPER")
             send_server_command "$SCREEN_SERVER" "/admin $player_name"
-            # Also ensure superadmin file is updated
-            if [ ! -f "$CLOUDWIDE_ADMIN_FILE" ]; then
-                touch "$CLOUDWIDE_ADMIN_FILE"
-            fi
-            if ! grep -q "^$player_name$" "$CLOUDWIDE_ADMIN_FILE"; then
-                echo "$player_name" >> "$CLOUDWIDE_ADMIN_FILE"
-                print_success "Added $player_name to cloudWideOwnedAdminlist.txt"
-            fi
             print_success "Applied SUPER rank to $player_name (manual players.log update)"
             ;;
         "NONE")
@@ -806,7 +707,7 @@ apply_players_log_changes() {
                 fi
             fi
         else
-            # Player not connected - remove from all lists except cloudwideownedadminlist for SUPER admins
+            # Player not connected - remove from all lists
             remove_player_from_all_lists "$name"
         fi
     done < "$temp_players_log"
@@ -844,6 +745,41 @@ monitor_players_log() {
         fi
         sleep 1
     done
+}
+
+# Function to handle SUPER admin connection with restart
+handle_super_admin_connection() {
+    local player_name="$1" player_ip="$2"
+    
+    # Wait 3 seconds then send restart message
+    (
+        sleep 3
+        if is_player_connected "$player_name" && [ "$(get_player_rank "$player_name")" = "SUPER" ]; then
+            send_server_command "$SCREEN_SERVER" "SUPER ADMIN $player_name detected. Server will restart in 10 seconds to apply SUPER admin rank."
+            send_server_command "$SCREEN_SERVER" "$player_name must reconnect within 30 seconds after restart or SUPER rank will be lost."
+            
+            # Wait 10 seconds then stop server
+            sleep 10
+            if is_player_connected "$player_name" && [ "$(get_player_rank "$player_name")" = "SUPER" ]; then
+                send_server_command "$SCREEN_SERVER" "/stop"
+                
+                # Schedule removal from cloudwideownedadminlist after 30 seconds if not reconnected
+                super_restart_timers["$player_name"]=$( (
+                    sleep 30
+                    local superadmin_file="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
+                    if [ -f "$superadmin_file" ] && grep -q "^$player_name$" "$superadmin_file"; then
+                        if ! is_player_connected "$player_name"; then
+                            sed -i "/^$player_name$/d" "$superadmin_file"
+                            print_success "Removed $player_name from cloudWideOwnedAdminlist.txt (did not reconnect within 30 seconds)"
+                        else
+                            print_success "SUPER ADMIN $player_name reconnected successfully after restart"
+                        fi
+                    fi
+                    unset super_restart_timers["$player_name"]
+                ) & echo $! )
+            fi
+        fi
+    ) &
 }
 
 # Function to check for username theft with IP verification
@@ -898,6 +834,11 @@ check_username_theft() {
         else
             # IP matches - load verified player data
             load_verified_player_data "$player_name" "$player_ip"
+            
+            # If player is SUPER, handle the super admin connection with restart
+            if [ "$registered_rank" = "SUPER" ]; then
+                handle_super_admin_connection "$player_name" "$player_ip"
+            fi
         fi
     else
         # New player - add to players.log with no password
@@ -1079,11 +1020,6 @@ filter_server_log() {
 cleanup() {
     print_status "Cleaning up anticheat..."
     
-    # Cancel all pending SUPER admin removal timers
-    for timer_pid in "${super_disconnect_timers[@]}"; do
-        kill "$timer_pid" 2>/dev/null
-    done
-    
     # Cancel all pending SUPER admin restart timers
     for timer_pid in "${super_restart_timers[@]}"; do
         kill "$timer_pid" 2>/dev/null
@@ -1125,7 +1061,6 @@ monitor_log() {
     print_status "Monitoring: $log_file"
     print_status "Port: $PORT"
     print_status "Log directory: $LOG_DIR"
-    print_status "Cloudwide admin file: $CLOUDWIDE_ADMIN_FILE"
     print_header "SECURITY SYSTEM ACTIVE"
     
     # Wait for log file to exist
@@ -1177,10 +1112,6 @@ monitor_log() {
                 fi
                 continue
             fi
-            
-            # Cancel SUPER admin removal if player reconnects
-            cancel_super_admin_removal "$player_name"
-            cancel_super_admin_restart "$player_name"
             
             # Check for username theft with IP verification
             if ! check_username_theft "$player_name" "$player_ip"; then
@@ -1237,18 +1168,6 @@ monitor_log() {
             
             print_warning "Player disconnected: $player_name"
             
-            # Get player rank to determine if SUPER admin
-            local player_info=$(get_player_info "$player_name")
-            local rank="NONE"
-            if [ -n "$player_info" ]; then
-                rank=$(echo "$player_info" | cut -d'|' -f4)
-            fi
-            
-            # Schedule SUPER admin removal after 30-second cooldown
-            if [ "$rank" = "SUPER" ]; then
-                schedule_super_admin_removal "$player_name"
-            fi
-            
             # Clean up grace period and announcement tracking if player disconnects
             unset ip_change_grace_periods["$player_name"]
             unset ip_change_pending_players["$player_name"]
@@ -1258,7 +1177,7 @@ monitor_log() {
                 unset grace_period_pids["$player_name"]
             fi
             
-            # Remove player from all lists when disconnected (except cloudwideownedadminlist for SUPER admins)
+            # Remove player from all lists when disconnected
             remove_player_from_all_lists "$player_name"
         fi
 
