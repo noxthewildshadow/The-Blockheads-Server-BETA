@@ -51,13 +51,15 @@ declare -A grace_period_pids
 declare -A connected_players
 declare -A player_verification_timers
 
-# Track disconnect timers to allow reconnection within 15 seconds
+# Track disconnect cooldown timers
 declare -A disconnect_timers
 
 # Function to execute /load-lists command
 execute_load_lists() {
+    print_status "Executing /load-lists command to refresh server lists..."
     send_server_command "$SCREEN_SERVER" "/load-lists"
-    print_success "Executed /load-lists command"
+    sleep 0.5  # Give server time to process
+    print_success "Server lists refreshed with /load-lists"
 }
 
 # Function to cleanup list files on startup/shutdown
@@ -177,12 +179,13 @@ update_player_info() {
         echo "$player_name|$first_ip|$current_ip|$password|$rank|$whitelisted|$blacklisted" >> "$PLAYERS_LOG"
         print_success "Updated player info in registry: $player_name -> First IP: $first_ip, Current IP: $current_ip, Password: $password, Rank: $rank, Whitelisted: $whitelisted, Blacklisted: $blacklisted"
         
-        # If player is connected, schedule sync after 5 seconds
+        # If player is connected, schedule sync after 2.5 seconds (reduced from 5 seconds)
         if [ -n "${connected_players[$player_name]}" ]; then
             (
-                sleep 5
+                sleep 2.5
                 sync_player_to_lists "$player_name"
-                # After syncing, execute /load-lists to apply changes immediately
+                # Wait 0.5 seconds after sync and then execute /load-lists
+                sleep 0.5
                 execute_load_lists
             ) &
         fi
@@ -379,8 +382,13 @@ validate_ip_change() {
     unset ip_change_grace_periods["$player_name"]
     unset ip_change_pending_players["$player_name"]
     
-    # Sync player to lists after verification
-    sync_player_to_lists "$player_name"
+    # Sync player to lists after verification with minimal delay
+    (
+        sleep 0.5  # Reduced from 5 seconds to 0.5 seconds
+        sync_player_to_lists "$player_name"
+        # Execute /load-lists immediately after verification
+        execute_load_lists
+    ) &
     
     # Send success message
     schedule_clear_and_messages "SUCCESS: $player_name, your IP has been verified and updated!" "Your new IP address is: $current_ip"
@@ -427,8 +435,13 @@ handle_password_creation() {
         update_player_info "$player_name" "$player_ip" "$player_ip" "$password" "$rank" "NO" "NO"
     fi
 
-    # Sync player to lists after password creation
-    sync_player_to_lists "$player_name"
+    # Sync player to lists after password creation with minimal delay
+    (
+        sleep 0.5  # Reduced from 5 seconds to 0.5 seconds
+        sync_player_to_lists "$player_name"
+        # Execute /load-lists immediately after password creation
+        execute_load_lists
+    ) &
     
     schedule_clear_and_messages "SUCCESS: $player_name, your IP password has been set successfully." "You can now use !ip_change YOUR_PASSWORD if your IP changes."
     return 0
@@ -539,9 +552,6 @@ sync_player_to_lists() {
     
     print_success "Synced player $player_name to lists (Rank: $rank, Whitelisted: $whitelisted, Blacklisted: $blacklisted)"
     
-    # Execute /load-lists to apply changes immediately
-    execute_load_lists
-    
     return 0
 }
 
@@ -561,6 +571,35 @@ remove_player_from_all_lists() {
     send_server_command "$SCREEN_SERVER" "/unban $player_name"
     
     print_warning "Removed $player_name from all lists"
+}
+
+# Function to schedule player removal after 15 second cooldown
+schedule_player_removal() {
+    local player_name="$1"
+    
+    # Cancel existing timer if any
+    if [ -n "${disconnect_timers[$player_name]}" ]; then
+        kill "${disconnect_timers[$player_name]}" 2>/dev/null
+        unset disconnect_timers["$player_name"]
+    fi
+    
+    # Schedule removal after 15 seconds
+    disconnect_timers["$player_name"]=$(
+        (
+            sleep 15
+            # Check if player reconnected during cooldown
+            if [ -z "${connected_players[$player_name]}" ]; then
+                print_warning "15-second cooldown expired for $player_name - removing from lists"
+                remove_player_from_all_lists "$player_name"
+                execute_load_lists
+            else
+                print_success "Player $player_name reconnected during cooldown - keeping in lists"
+            fi
+            unset disconnect_timers["$player_name"]
+        ) &
+        echo $!
+    )
+    print_success "Scheduled removal of $player_name from lists in 15 seconds"
 }
 
 # Function to add player to list file
@@ -595,7 +634,7 @@ remove_from_cloud_admin_list() {
     [ -f "$CLOUD_ADMIN_FILE" ] && sed -i "/^$player_name$/d" "$CLOUD_ADMIN_FILE"
 }
 
-# Function to check for username theft with IP verification
+# Function to check for username theft with IP verification (MODIFICADO CON NUEVOS TIEMPOS)
 check_username_theft() {
     local player_name="$1" player_ip="$2"
     
@@ -617,13 +656,13 @@ check_username_theft() {
         if [ "$registered_current_ip" != "$player_ip" ]; then
             # IP doesn't match - check if player has password
             if [ "$registered_password" = "NONE" ]; then
-                # No password set - send consolidated reminder after 5 seconds (only once)
+                # No password set - send consolidated reminder after 2.5 seconds (reduced from 5 seconds)
                 print_warning "IP changed for $player_name but no password set (old IP: $registered_current_ip, new IP: $player_ip)"
                 # Only show announcement once per player connection
                 if [[ -z "${ip_mismatch_announced[$player_name]}" ]]; then
                     ip_mismatch_announced["$player_name"]=1
                     (
-                        sleep 5
+                        sleep 2.5  # Reduced from 5 seconds to 2.5 seconds
                         # Check if player is still connected before sending message
                         if is_player_connected "$player_name"; then
                             handle_ip_change_reminder "$player_name" "ip_changed_no_password"
@@ -641,19 +680,22 @@ check_username_theft() {
                 fi
             fi
         else
-            # IP matches - update rank if needed and sync after 5 seconds
+            # IP matches - update rank if needed and sync after 2.5 seconds (reduced from 5 seconds)
             local current_rank=$(get_player_rank "$player_name")
             if [ "$current_rank" != "$registered_rank" ]; then
                 update_player_info "$player_name" "$registered_first_ip" "$player_ip" "$registered_password" "$current_rank" "$registered_whitelisted" "$registered_blacklisted"
             fi
             
-            # Schedule sync after 5 seconds for verified players
+            # Schedule sync after 2.5 seconds for verified players (reduced from 5 seconds)
             if [[ -z "${player_verification_timers[$player_name]}" ]]; then
                 player_verification_timers["$player_name"]=1
                 (
-                    sleep 5
+                    sleep 2.5  # Reduced from 5 seconds to 2.5 seconds
                     if is_player_connected "$player_name" && ! is_in_grace_period "$player_name"; then
                         sync_player_to_lists "$player_name"
+                        # Wait 0.5 seconds after sync and then execute /load-lists
+                        sleep 0.5
+                        execute_load_lists
                     fi
                     unset player_verification_timers["$player_name"]
                 ) &
@@ -665,11 +707,11 @@ check_username_theft() {
         update_player_info "$player_name" "$player_ip" "$player_ip" "NONE" "$rank" "NO" "NO"
         print_success "Added new player to registry: $player_name ($player_ip) with rank: $rank"
         
-        # Send consolidated reminder after 5 seconds (only once)
+        # Send consolidated reminder after 2.5 seconds (reduced from 5 seconds)
         if [[ -z "${ip_mismatch_announced[$player_name]}" ]]; then
             ip_mismatch_announced["$player_name"]=1
             (
-                sleep 5
+                sleep 2.5  # Reduced from 5 seconds to 2.5 seconds
                 # Check if player is still connected before sending message
                 if is_player_connected "$player_name"; then
                     handle_ip_change_reminder "$player_name" "new_player_no_password"
@@ -996,23 +1038,8 @@ monitor_log() {
             # Remove player from connected players
             unset connected_players["$player_name"]
             
-            # Schedule removal from lists after 15 seconds
-            if [ -z "${disconnect_timers[$player_name]}" ]; then
-                disconnect_timers["$player_name"]=$(
-                    (
-                        sleep 15
-                        # Check if player reconnected within 15 seconds
-                        if [ -z "${connected_players[$player_name]}" ]; then
-                            print_warning "Removing $player_name from all lists after 15 seconds disconnect"
-                            remove_player_from_all_lists "$player_name"
-                            execute_load_lists
-                        fi
-                        unset disconnect_timers["$player_name"]
-                    ) &
-                    echo $!
-                )
-                print_success "Scheduled removal of $player_name from lists in 15 seconds"
-            fi
+            # Schedule removal from lists after 15 seconds instead of immediate removal
+            schedule_player_removal "$player_name"
             
             # Clean up grace period and announcement tracking if player disconnects
             unset ip_change_grace_periods["$player_name"]
