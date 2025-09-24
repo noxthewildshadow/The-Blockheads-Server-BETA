@@ -51,6 +51,15 @@ declare -A grace_period_pids
 declare -A connected_players
 declare -A player_verification_timers
 
+# Track disconnect timers to allow reconnection within 15 seconds
+declare -A disconnect_timers
+
+# Function to execute /load-lists command
+execute_load_lists() {
+    send_server_command "$SCREEN_SERVER" "/load-lists"
+    print_success "Executed /load-lists command"
+}
+
 # Function to cleanup list files on startup/shutdown
 cleanup_list_files() {
     local lists=("$BLACKLIST_FILE" "$ADMINLIST_FILE" "$MODLIST_FILE" "$WHITELIST_FILE" "$CLOUD_ADMIN_FILE")
@@ -173,6 +182,8 @@ update_player_info() {
             (
                 sleep 5
                 sync_player_to_lists "$player_name"
+                # After syncing, execute /load-lists to apply changes immediately
+                execute_load_lists
             ) &
         fi
     fi
@@ -527,6 +538,10 @@ sync_player_to_lists() {
     fi
     
     print_success "Synced player $player_name to lists (Rank: $rank, Whitelisted: $whitelisted, Blacklisted: $blacklisted)"
+    
+    # Execute /load-lists to apply changes immediately
+    execute_load_lists
+    
     return 0
 }
 
@@ -832,6 +847,10 @@ cleanup() {
     for pid in "${grace_period_pids[@]}"; do
         kill "$pid" 2>/dev/null
     done
+    # Kill all disconnect timers
+    for pid in "${disconnect_timers[@]}"; do
+        kill "$pid" 2>/dev/null
+    done
     rm -f "${ADMIN_OFFENSES_FILE}.lock" 2>/dev/null
     rm -f "${IP_CHANGE_ATTEMPTS_FILE}.lock" 2>/dev/null
     rm -f "${PASSWORD_CHANGE_ATTEMPTS_FILE}.lock" 2>/dev/null
@@ -909,6 +928,13 @@ monitor_log() {
                 continue
             fi
             
+            # Cancel disconnect timer if player reconnects within 15 seconds
+            if [ -n "${disconnect_timers[$player_name]}" ]; then
+                kill "${disconnect_timers[$player_name]}" 2>/dev/null
+                unset disconnect_timers["$player_name"]
+                print_success "Canceled disconnect timer for $player_name (reconnected within 15 seconds)"
+            fi
+            
             # Add player to connected players list
             connected_players["$player_name"]="$player_ip"
             
@@ -967,9 +993,26 @@ monitor_log() {
             
             print_warning "Player disconnected: $player_name"
             
-            # Remove player from connected players and all lists
+            # Remove player from connected players
             unset connected_players["$player_name"]
-            remove_player_from_all_lists "$player_name"
+            
+            # Schedule removal from lists after 15 seconds
+            if [ -z "${disconnect_timers[$player_name]}" ]; then
+                disconnect_timers["$player_name"]=$(
+                    (
+                        sleep 15
+                        # Check if player reconnected within 15 seconds
+                        if [ -z "${connected_players[$player_name]}" ]; then
+                            print_warning "Removing $player_name from all lists after 15 seconds disconnect"
+                            remove_player_from_all_lists "$player_name"
+                            execute_load_lists
+                        fi
+                        unset disconnect_timers["$player_name"]
+                    ) &
+                    echo $!
+                )
+                print_success "Scheduled removal of $player_name from lists in 15 seconds"
+            fi
             
             # Clean up grace period and announcement tracking if player disconnects
             unset ip_change_grace_periods["$player_name"]
