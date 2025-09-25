@@ -165,7 +165,7 @@ EOF
     (sleep 10; rm -f /tmp/start_server_$$.sh) &
     
     # Wait a moment for server to start creating files
-    sleep 3
+    sleep 5
     
     # Start rank patcher in separate screen session
     screen -dmS "$SCREEN_PATCHER" /tmp/start_patcher_$$.sh
@@ -401,11 +401,10 @@ show_usage() {
     print_warning "First create a world: ./blockheads_server171 -n"
     print_warning "After creating the world, press CTRL+C to exit"
     echo ""
-    print_status "Rank Patcher Features:"
-    echo -e " ${CYAN}• Player authentication with IP verification${NC}"
-    echo -e " ${CYAN}• Password protection for players${NC}"
-    echo -e " ${CYAN}• Automated rank management (ADMIN, MOD, SUPER)${NC}"
-    echo -e " ${CYAN}• Real-time monitoring of player lists${NC}"
+    print_status "Multi-server support:"
+    echo -e " ${CYAN}Start server 1: $0 start World1 12153${NC}"
+    echo -e " ${CYAN}Start server 2: $0 start World2 12154${NC}"
+    echo -e " ${CYAN}Start server 3: $0 start World3 12155${NC}"
 }
 
 # Main execution
