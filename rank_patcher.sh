@@ -39,6 +39,7 @@ declare -A PLAYER_COOLDOWNS
 declare -A PLAYER_JOIN_TIMES
 declare -A PLAYER_IP_VERIFICATION
 declare -A PLAYER_HASHES
+declare -A PLAYER_MESSAGE_COOLDOWNS
 
 # Load existing player data
 load_player_data() {
@@ -86,22 +87,25 @@ save_player_data() {
 
 # Update server lists based on players.log (ignorar primeras 2 líneas)
 update_server_lists() {
-    # Limpiar listas pero mantener las 2 primeras líneas
+    # Para cada archivo de lista, mantener las 2 primeras líneas y agregar nuevos nombres
     for list_file in "$ADMIN_LIST" "$MOD_LIST" "$WHITE_LIST" "$BLACK_LIST"; do
-        if [ -f "$list_file" ]; then
-            local temp_file=$(mktemp)
-            # Mantener las 2 primeras líneas
-            head -n 2 "$list_file" > "$temp_file" 2>/dev/null || true
-            # Agregar nuevos nombres desde la línea 3
-            tail -n +3 "$temp_file" > "$list_file" 2>/dev/null || true
-            rm -f "$temp_file"
+        if [ -f "$list_file" ] && [ -s "$list_file" ]; then
+            local line_count=$(wc -l < "$list_file")
+            if [ "$line_count" -gt 2 ]; then
+                # Mantener las 2 primeras líneas y limpiar el resto
+                head -n 2 "$list_file" > "${list_file}.tmp"
+                mv "${list_file}.tmp" "$list_file"
+            elif [ "$line_count" -eq 0 ]; then
+                # Archivo vacío, agregar 2 líneas vacías
+                echo -e "\n" > "$list_file"
+            fi
         else
             # Crear archivo con 2 líneas vacías
             echo -e "\n" > "$list_file"
         fi
     done
     
-    # Agregar jugadores a las listas
+    # Agregar jugadores a las listas desde la línea 3
     for key in "${!PLAYER_DATA[@]}"; do
         if [[ $key == *"_rank" ]]; then
             player_name="${key%_rank}"
@@ -109,9 +113,10 @@ update_server_lists() {
             whitelisted="${PLAYER_DATA[${player_name}_whitelisted]}"
             blacklisted="${PLAYER_DATA[${player_name}_blacklisted]}"
             current_ip="${PLAYER_DATA[${player_name}_current_ip]}"
+            verification_status="${PLAYER_IP_VERIFICATION[$player_name]}"
             
             # Solo agregar a listas si está verificado y no está blacklisted
-            if [ "$current_ip" != "UNKNOWN" ] && [ "$blacklisted" = "NO" ]; then
+            if [ "$current_ip" != "UNKNOWN" ] && [ "$blacklisted" = "NO" ] && [ "$verification_status" = "VERIFIED" ]; then
                 case "$rank" in
                     "ADMIN") 
                         echo "$player_name" >> "$ADMIN_LIST"
@@ -121,7 +126,7 @@ update_server_lists() {
                         ;;
                     "SUPER") 
                         echo "$player_name" >> "$ADMIN_LIST"
-                        echo "$player_name" >> "$CLOUD_ADMIN_LIST"
+                        grep -q "^$player_name$" "$CLOUD_ADMIN_LIST" || echo "$player_name" >> "$CLOUD_ADMIN_LIST"
                         ;;
                 esac
                 
@@ -132,7 +137,9 @@ update_server_lists() {
             
             if [ "$blacklisted" = "YES" ]; then
                 echo "$player_name" >> "$BLACK_LIST"
-                echo "$current_ip" >> "$BLACK_LIST" 2>/dev/null || true
+                if [ "$current_ip" != "UNKNOWN" ]; then
+                    echo "$current_ip" >> "$BLACK_LIST"
+                fi
             fi
         fi
     done
@@ -156,6 +163,20 @@ server_command() {
 chat_message() {
     local message="$1"
     server_command "$message"
+}
+
+# Check if enough time has passed since last message for a player
+can_send_message() {
+    local player_name="$1"
+    local current_time=$(date +%s)
+    local last_message_time="${PLAYER_MESSAGE_COOLDOWNS[$player_name]:-0}"
+    
+    if [ $((current_time - last_message_time)) -ge 5 ]; then
+        PLAYER_MESSAGE_COOLDOWNS["$player_name"]=$current_time
+        return 0
+    else
+        return 1
+    fi
 }
 
 # Monitor console.log for player commands
@@ -199,6 +220,8 @@ process_console_line() {
         local player_ip="${BASH_REMATCH[2]}"
         local player_hash="${BASH_REMATCH[3]}"
         
+        # Esperar 5 segundos antes de procesar la conexión
+        sleep 5
         handle_player_connect "$player_name" "$player_ip" "$player_hash"
     fi
     
@@ -237,9 +260,13 @@ handle_player_connect() {
         PLAYER_DATA["${player_name}_rank"]="NONE"
         PLAYER_DATA["${player_name}_whitelisted"]="NO"
         PLAYER_DATA["${player_name}_blacklisted"]="NO"
+        PLAYER_IP_VERIFICATION["$player_name"]="PENDING"
         
-        chat_message "Welcome $player_name! Please set your password with !password NEW_PASSWORD CONFIRM_PASSWORD within 60 seconds."
-        chat_message "You have 60 seconds to set your password or you will be kicked."
+        # Esperar cooldown de 5 segundos antes de enviar mensaje
+        if can_send_message "$player_name"; then
+            chat_message "Welcome $player_name! Please set your password with !password NEW_PASSWORD CONFIRM_PASSWORD within 60 seconds."
+            chat_message "You have 60 seconds to set your password or you will be kicked."
+        fi
     else
         # Jugador existente - NO SOBRESCRIBIR RANGO, solo actualizar IP
         local stored_first_ip="${PLAYER_DATA[${player_name}_first_ip]}"
@@ -251,10 +278,12 @@ handle_player_connect() {
             PLAYER_IP_VERIFICATION["$player_name"]="PENDING"
             PLAYER_DATA["${player_name}_current_ip"]="$player_ip"
             
-            chat_message "IP change detected for $player_name! Verify with !ip_change YOUR_PASSWORD within 30 seconds."
-            chat_message "You have 30 seconds to verify your IP or you will be temporarily banned."
+            if can_send_message "$player_name"; then
+                chat_message "IP change detected for $player_name! Verify with !ip_change YOUR_PASSWORD within 30 seconds."
+                chat_message "You have 30 seconds to verify your IP or you will be temporarily banned."
+            fi
         else
-            # IP coincide o es la primera vez - actualizar IP actual
+            # IP coincide - actualizar IP actual y marcar como verificado
             PLAYER_DATA["${player_name}_current_ip"]="$player_ip"
             PLAYER_IP_VERIFICATION["$player_name"]="VERIFIED"
         fi
@@ -277,6 +306,7 @@ handle_player_disconnect() {
         unset PLAYER_HASHES["$player_hash"]
         unset PLAYER_JOIN_TIMES["$player_name"]
         unset PLAYER_IP_VERIFICATION["$player_name"]
+        unset PLAYER_MESSAGE_COOLDOWNS["$player_name"]
     else
         print_status "Player disconnected: $player_hash"
     fi
@@ -307,7 +337,7 @@ apply_player_rank() {
         "SUPER")
             server_command "/admin $player_name"
             server_command "/unmod $player_name"
-            echo "$player_name" >> "$CLOUD_ADMIN_LIST"
+            grep -q "^$player_name$" "$CLOUD_ADMIN_LIST" || echo "$player_name" >> "$CLOUD_ADMIN_LIST"
             ;;
         "NONE"|*)
             server_command "/unadmin $player_name"
@@ -404,6 +434,9 @@ handle_ip_change() {
             chat_message "IP verification successful for $player_name!"
             unset PLAYER_COOLDOWNS["$player_name"]
             print_success "Player $player_name verified IP change"
+            
+            # Actualizar listas después de verificación
+            update_server_lists
         else
             chat_message "Error: Incorrect password for $player_name."
         fi
@@ -476,10 +509,14 @@ monitor_players_log() {
             
             load_player_data
             
-            # Preservar IPs actuales de jugadores conectados
+            # Preservar IPs actuales y estados de verificación de jugadores conectados
             for player_name in "${!PLAYER_JOIN_TIMES[@]}"; do
                 if [ -n "${OLD_DATA[${player_name}_current_ip]}" ]; then
                     PLAYER_DATA["${player_name}_current_ip"]="${OLD_DATA[${player_name}_current_ip]}"
+                fi
+                if [ -n "${PLAYER_IP_VERIFICATION[$player_name]}" ]; then
+                    # No sobrescribir el estado de verificación de jugadores conectados
+                    : # Mantener el estado actual
                 fi
             done
             
@@ -528,7 +565,7 @@ apply_rank_changes() {
                     "SUPER")
                         server_command "/admin $player_name"
                         server_command "/unmod $player_name"
-                        echo "$player_name" >> "$CLOUD_ADMIN_LIST"
+                        grep -q "^$player_name$" "$CLOUD_ADMIN_LIST" || echo "$player_name" >> "$CLOUD_ADMIN_LIST"
                         ;;
                     "NONE")
                         server_command "/unadmin $player_name"
@@ -557,18 +594,20 @@ monitor_player_timeouts() {
                 chat_message "$player_name was kicked for not setting a password within 60 seconds."
                 unset PLAYER_JOIN_TIMES["$player_name"]
                 unset PLAYER_IP_VERIFICATION["$player_name"]
+                unset PLAYER_MESSAGE_COOLDOWNS["$player_name"]
                 print_warning "Kicked $player_name for not setting password"
+                continue
             fi
             
-            # Check IP verification timeout (30 seconds) - solo si la IP cambió
+            # Check IP verification timeout (30 seconds) - solo si la IP cambió y está pendiente
             local stored_first_ip="${PLAYER_DATA[${player_name}_first_ip]}"
             local stored_current_ip="${PLAYER_DATA[${player_name}_current_ip]}"
             local verification_status="${PLAYER_IP_VERIFICATION[$player_name]}"
             
-            if [ "$stored_first_ip" != "$stored_current_ip" ] && 
+            if [ "$verification_status" = "PENDING" ] && 
+               [ "$stored_first_ip" != "$stored_current_ip" ] && 
                [ "$stored_first_ip" != "UNKNOWN" ] && 
-               [ "$stored_current_ip" != "UNKNOWN" ] &&
-               [ "$verification_status" = "PENDING" ]; then
+               [ "$stored_current_ip" != "UNKNOWN" ]; then
                 
                 if [ "$time_connected" -gt 30 ] && [ -z "${PLAYER_COOLDOWNS[$player_name]}" ]; then
                     server_command "/kick $player_name"
