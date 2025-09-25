@@ -18,18 +18,19 @@ print_debug() { echo -e "${CYAN}[RANK_PATCHER_DEBUG]${NC} $1"; }
 # Configuration
 WORLD_ID="$1"
 PORT="$2"
-SAVES_DIR="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
-WORLD_DIR="$SAVES_DIR/$WORLD_ID"
+SAVES_DIR="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads"
+WORLD_DIR="$SAVES_DIR/saves/$WORLD_ID"
 PLAYERS_LOG="$WORLD_DIR/players.log"
 CONSOLE_LOG="$WORLD_DIR/console.log"
 ADMIN_LIST="$WORLD_DIR/adminlist.txt"
 MOD_LIST="$WORLD_DIR/modlist.txt"
 WHITE_LIST="$WORLD_DIR/whitelist.txt"
 BLACK_LIST="$WORLD_DIR/blacklist.txt"
-CLOUD_ADMIN_LIST="$SAVES_DIR/cloudWideOwnedAdminlist.txt"
+CLOUD_ADMIN_LIST="$SAVES_DIR/cloudWideOwnedAdminlist.txt"  # Ahora junto a saves, no dentro
 
 # Create necessary directories and files
 mkdir -p "$WORLD_DIR"
+mkdir -p "$SAVES_DIR"  # Asegurar que el directorio padre existe
 touch "$PLAYERS_LOG" "$CONSOLE_LOG" "$ADMIN_LIST" "$MOD_LIST" "$WHITE_LIST" "$BLACK_LIST" "$CLOUD_ADMIN_LIST"
 
 # Initialize empty lists
@@ -141,6 +142,12 @@ server_command() {
     fi
 }
 
+# Send chat message (sin /)
+chat_message() {
+    local message="$1"
+    server_command "$message"
+}
+
 # Monitor console.log for player commands
 monitor_console() {
     local last_size=0
@@ -168,11 +175,10 @@ monitor_console() {
 process_console_line() {
     local line="$1"
     
-    # Check for player chat messages
-    if [[ "$line" =~ .*" - Client Chat:".*"|"([^|]+)"|"([^|]+)"|"(.+) ]]; then
-        local player_hash="${BASH_REMATCH[1]}"
-        local player_name="${BASH_REMATCH[2]}"
-        local message="${BASH_REMATCH[3]}"
+    # Check for player chat messages - formato: JUGADOR: mensaje
+    if [[ "$line" =~ ([A-Za-z0-9_]+):[[:space:]]+(!.+) ]]; then
+        local player_name="${BASH_REMATCH[1]}"
+        local message="${BASH_REMATCH[2]}"
         
         process_player_command "$player_name" "$message"
     fi
@@ -213,16 +219,16 @@ handle_player_connect() {
         PLAYER_DATA["${player_name}_whitelisted"]="NO"
         PLAYER_DATA["${player_name}_blacklisted"]="NO"
         
-        # Ask player to set password
-        server_command "msg $player_name Welcome! Please set your password with !password NEW_PASSWORD CONFIRM_PASSWORD within 60 seconds."
-        server_command "msg $player_name You have 60 seconds to set your password or you will be kicked."
+        # Ask player to set password (sin /)
+        chat_message "Welcome $player_name! Please set your password with !password NEW_PASSWORD CONFIRM_PASSWORD within 60 seconds."
+        chat_message "You have 60 seconds to set your password or you will be kicked."
     else
         # Check if IP matches
         local stored_ip="${PLAYER_DATA[${player_name}_current_ip]}"
         if [ "$stored_ip" != "$player_ip" ] && [ "$stored_ip" != "UNKNOWN" ]; then
             PLAYER_DATA["${player_name}_current_ip"]="$player_ip"
-            server_command "msg $player_name IP change detected! Verify with !ip_change YOUR_PASSWORD within 30 seconds."
-            server_command "msg $player_name You have 30 seconds to verify your IP or you will be temporarily banned."
+            chat_message "IP change detected for $player_name! Verify with !ip_change YOUR_PASSWORD within 30 seconds."
+            chat_message "You have 30 seconds to verify your IP or you will be temporarily banned."
         else
             PLAYER_DATA["${player_name}_current_ip"]="$player_ip"
         fi
@@ -263,27 +269,27 @@ handle_password_set() {
     local message="$2"
     
     # Extract password and confirmation
-    if [[ "$message" =~ !password\ ([^ ]+)\ (.+) ]]; then
+    if [[ "$message" =~ !password[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+) ]]; then
         local password="${BASH_REMATCH[1]}"
         local confirm="${BASH_REMATCH[2]}"
         
-        # Clear chat for security
-        server_command "clear"
+        # Clear chat for security (con /)
+        server_command "/clear"
         sleep 0.5
         
         # Validate password
         if [ "${#password}" -lt 7 ]; then
-            server_command "msg $player_name Error: Password must be at least 7 characters long."
+            chat_message "Error: Password must be at least 7 characters long."
             return
         fi
         
         if [ "${#password}" -gt 16 ]; then
-            server_command "msg $player_name Error: Password must be at most 16 characters long."
+            chat_message "Error: Password must be at most 16 characters long."
             return
         fi
         
         if [ "$password" != "$confirm" ]; then
-            server_command "msg $player_name Error: Passwords do not match."
+            chat_message "Error: Passwords do not match."
             return
         fi
         
@@ -291,10 +297,10 @@ handle_password_set() {
         PLAYER_DATA["${player_name}_password"]="$password"
         save_player_data
         
-        server_command "msg $player_name Password set successfully! Your IP is now verified."
+        chat_message "Password set successfully for $player_name! Your IP is now verified."
         print_success "Player $player_name set password successfully"
     else
-        server_command "msg $player_name Usage: !password NEW_PASSWORD CONFIRM_PASSWORD"
+        chat_message "Usage: !password NEW_PASSWORD CONFIRM_PASSWORD"
     fi
 }
 
@@ -303,30 +309,30 @@ handle_ip_change() {
     local player_name="$1"
     local message="$2"
     
-    if [[ "$message" =~ !ip_change\ (.+) ]]; then
+    if [[ "$message" =~ !ip_change[[:space:]]+(.+) ]]; then
         local password="${BASH_REMATCH[1]}"
         
-        # Clear chat for security
-        server_command "clear"
+        # Clear chat for security (con /)
+        server_command "/clear"
         sleep 0.5
         
         local stored_password="${PLAYER_DATA[${player_name}_password]}"
         
         if [ "$stored_password" = "NONE" ]; then
-            server_command "msg $player_name Error: You need to set a password first with !password."
+            chat_message "Error: You need to set a password first with !password."
             return
         fi
         
         if [ "$password" = "$stored_password" ]; then
             # IP verified successfully
-            server_command "msg $player_name IP verification successful!"
+            chat_message "IP verification successful for $player_name!"
             unset PLAYER_COOLDOWNS["$player_name"]
             print_success "Player $player_name verified IP change"
         else
-            server_command "msg $player_name Error: Incorrect password."
+            chat_message "Error: Incorrect password for $player_name."
         fi
     else
-        server_command "msg $player_name Usage: !ip_change YOUR_PASSWORD"
+        chat_message "Usage: !ip_change YOUR_PASSWORD"
     fi
 }
 
@@ -335,33 +341,33 @@ handle_password_change() {
     local player_name="$1"
     local message="$2"
     
-    if [[ "$message" =~ !change_psw\ ([^ ]+)\ (.+) ]]; then
+    if [[ "$message" =~ !change_psw[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+) ]]; then
         local old_password="${BASH_REMATCH[1]}"
         local new_password="${BASH_REMATCH[2]}"
         
-        # Clear chat for security
-        server_command "clear"
+        # Clear chat for security (con /)
+        server_command "/clear"
         sleep 0.5
         
         local stored_password="${PLAYER_DATA[${player_name}_password]}"
         
         if [ "$stored_password" = "NONE" ]; then
-            server_command "msg $player_name Error: You don't have a password set yet."
+            chat_message "Error: You don't have a password set yet."
             return
         fi
         
         if [ "$old_password" != "$stored_password" ]; then
-            server_command "msg $player_name Error: Old password is incorrect."
+            chat_message "Error: Old password is incorrect."
             return
         fi
         
         if [ "${#new_password}" -lt 7 ]; then
-            server_command "msg $player_name Error: New password must be at least 7 characters long."
+            chat_message "Error: New password must be at least 7 characters long."
             return
         fi
         
         if [ "${#new_password}" -gt 16 ]; then
-            server_command "msg $player_name Error: New password must be at most 16 characters long."
+            chat_message "Error: New password must be at most 16 characters long."
             return
         fi
         
@@ -369,10 +375,10 @@ handle_password_change() {
         PLAYER_DATA["${player_name}_password"]="$new_password"
         save_player_data
         
-        server_command "msg $player_name Password changed successfully!"
+        chat_message "Password changed successfully for $player_name!"
         print_success "Player $player_name changed password"
     else
-        server_command "msg $player_name Usage: !change_psw OLD_PASSWORD NEW_PASSWORD"
+        chat_message "Usage: !change_psw OLD_PASSWORD NEW_PASSWORD"
     fi
 }
 
@@ -405,10 +411,10 @@ apply_rank_changes() {
             
             # Handle blacklist changes
             if [ "$blacklisted" = "YES" ]; then
-                server_command "unmod $player_name"
-                server_command "unadmin $player_name"
-                server_command "ban $player_name"
-                server_command "ban ${PLAYER_DATA[${player_name}_current_ip]}"
+                server_command "/unmod $player_name"
+                server_command "/unadmin $player_name"
+                server_command "/ban $player_name"
+                server_command "/ban ${PLAYER_DATA[${player_name}_current_ip]}"
                 
                 # Remove from cloud admin list if SUPER
                 if [ "$current_rank" = "SUPER" ]; then
@@ -419,17 +425,17 @@ apply_rank_changes() {
             # Handle rank changes
             case "$current_rank" in
                 "ADMIN")
-                    server_command "admin $player_name"
+                    server_command "/admin $player_name"
                     ;;
                 "MOD")
-                    server_command "mod $player_name"
+                    server_command "/mod $player_name"
                     ;;
                 "SUPER")
                     echo "$player_name" >> "$CLOUD_ADMIN_LIST"
                     ;;
                 "NONE")
-                    server_command "unadmin $player_name"
-                    server_command "unmod $player_name"
+                    server_command "/unadmin $player_name"
+                    server_command "/unmod $player_name"
                     # Remove from cloud admin list if was SUPER
                     sed -i "/^$player_name$/d" "$CLOUD_ADMIN_LIST"
                     ;;
@@ -449,7 +455,8 @@ monitor_player_timeouts() {
             
             # Check password set timeout (60 seconds)
             if [ "${PLAYER_DATA[${player_name}_password]}" = "NONE" ] && [ "$time_connected" -gt 60 ]; then
-                server_command "kick $player_name You did not set a password within 60 seconds."
+                server_command "/kick $player_name"
+                chat_message "$player_name was kicked for not setting a password within 60 seconds."
                 unset PLAYER_JOIN_TIMES["$player_name"]
                 print_warning "Kicked $player_name for not setting password"
             fi
@@ -460,8 +467,9 @@ monitor_player_timeouts() {
             
             if [ "$stored_ip" != "$first_ip" ] && [ "$stored_ip" != "UNKNOWN" ] && [ "$first_ip" != "UNKNOWN" ]; then
                 if [ "$time_connected" -gt 30 ] && [ -z "${PLAYER_COOLDOWNS[$player_name]}" ]; then
-                    server_command "kick $player_name You did not verify your IP change within 30 seconds."
-                    server_command "ban ${PLAYER_DATA[${player_name}_current_ip]}"
+                    server_command "/kick $player_name"
+                    server_command "/ban ${PLAYER_DATA[${player_name}_current_ip]}"
+                    chat_message "$player_name was banned for 30 seconds for not verifying IP change."
                     PLAYER_COOLDOWNS["$player_name"]=$current_time
                     print_warning "Kicked and temp-banned $player_name for IP verification timeout"
                 fi
@@ -472,7 +480,7 @@ monitor_player_timeouts() {
         for player_name in "${!PLAYER_COOLDOWNS[@]}"; do
             local cooldown_time="${PLAYER_COOLDOWNS[$player_name]}"
             if [ $((current_time - cooldown_time)) -gt 60 ]; then  # 30 sec ban + 30 sec cleanup buffer
-                server_command "unban ${PLAYER_DATA[${player_name}_current_ip]}"
+                server_command "/unban ${PLAYER_DATA[${player_name}_current_ip]}"
                 unset PLAYER_COOLDOWNS["$player_name"]
                 print_status "Removed temp ban for $player_name"
             fi
@@ -496,6 +504,7 @@ main() {
     print_header "Starting Rank Patcher for World: $WORLD_ID, Port: $PORT"
     print_status "Players log: $PLAYERS_LOG"
     print_status "Console log: $CONSOLE_LOG"
+    print_status "Cloud admin list: $CLOUD_ADMIN_LIST"
     
     # Load initial player data
     load_player_data
@@ -503,14 +512,27 @@ main() {
     
     # Start monitoring processes in background
     monitor_console &
+    console_pid=$!
     monitor_players_log &
+    players_log_pid=$!
     monitor_player_timeouts &
+    timeouts_pid=$!
     
     print_success "Rank patcher started successfully with all monitors"
+    print_status "Monitor PIDs: Console=$console_pid, PlayersLog=$players_log_pid, Timeouts=$timeouts_pid"
     
     # Wait for all background processes
     wait
 }
+
+# Trap signals to clean up background processes
+cleanup() {
+    print_status "Stopping rank patcher..."
+    kill $console_pid $players_log_pid $timeouts_pid 2>/dev/null
+    exit 0
+}
+
+trap cleanup EXIT INT TERM
 
 # Start the main function
 main "$@"
