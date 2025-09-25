@@ -9,6 +9,7 @@ CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 NC='\033[0m'
 
+# Funciones de impresión DEFINIDAS CORRECTAMENTE AL PRINCIPIO
 print_error() { echo -e "${RED}[RANK_PATCHER_ERROR]${NC} $1"; }
 print_success() { echo -e "${GREEN}[RANK_PATCHER_SUCCESS]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[RANK_PATCHER_WARNING]${NC} $1"; }
@@ -102,13 +103,18 @@ save_player_data() {
     rm -f "$temp_file"
 }
 
-# Update server lists based on players.log (NO borrar listas existentes)
+# Update server lists based on players.log
 update_server_lists() {
     print_debug "Updating server lists from players.log..."
     
-    # NO borrar las listas existentes, el servidor las maneja internamente
-    # Solo agregamos jugadores verificados a las listas si no están ya presentes
+    # Para cada lista, asegurarnos de que existe y tiene al menos 2 líneas
+    for list_file in "$ADMIN_LIST" "$MOD_LIST" "$WHITE_LIST" "$BLACK_LIST"; do
+        if [ ! -f "$list_file" ] || [ ! -s "$list_file" ]; then
+            echo -e "\n" > "$list_file"
+        fi
+    done
     
+    # Agregar jugadores a las listas si están verificados
     for key in "${!PLAYER_DATA[@]}"; do
         if [[ $key == *"_rank" ]]; then
             player_name="${key%_rank}"
@@ -118,7 +124,7 @@ update_server_lists() {
             current_ip="${PLAYER_DATA[${player_name}_current_ip]}"
             verification_status="${PLAYER_IP_VERIFICATION[$player_name]}"
             
-            # Solo procesar jugadores verificados y no blacklisted
+            # Solo agregar a listas si está verificado y no está blacklisted
             if [ "$verification_status" = "VERIFIED" ] && [ "$blacklisted" = "NO" ]; then
                 case "$rank" in
                     "ADMIN")
@@ -156,6 +162,7 @@ server_command() {
     if screen -list | grep -q "$screen_session"; then
         screen -S "$screen_session" -X stuff "$cmd^M"
         print_debug "Sent command: $cmd"
+        sleep 0.1  # Pequeña pausa para evitar sobrecarga
         return 0
     else
         print_error "Server screen session not found: $screen_session"
@@ -337,6 +344,8 @@ apply_player_rank() {
     local rank="${PLAYER_DATA[${player_name}_rank]}"
     local blacklisted="${PLAYER_DATA[${player_name}_blacklisted]}"
     
+    print_debug "Applying rank to $player_name: $rank, blacklisted: $blacklisted"
+    
     if [ "$blacklisted" = "YES" ]; then
         server_command "/unmod $player_name"
         server_command "/unadmin $player_name"
@@ -348,19 +357,23 @@ apply_player_rank() {
         "ADMIN")
             server_command "/admin $player_name"
             server_command "/unmod $player_name"
+            print_debug "Set $player_name as ADMIN"
             ;;
         "MOD")
             server_command "/mod $player_name"
             server_command "/unadmin $player_name"
+            print_debug "Set $player_name as MOD"
             ;;
         "SUPER")
             server_command "/admin $player_name"
             server_command "/unmod $player_name"
             grep -q "^$player_name$" "$CLOUD_ADMIN_LIST" || echo "$player_name" >> "$CLOUD_ADMIN_LIST"
+            print_debug "Set $player_name as SUPER"
             ;;
         "NONE"|*)
             server_command "/unadmin $player_name"
             server_command "/unmod $player_name"
+            print_debug "Set $player_name as NONE"
             ;;
     esac
 }
@@ -523,64 +536,20 @@ monitor_players_log() {
             
             # Recargar datos
             load_player_data
-            apply_rank_changes
+            
+            # Aplicar cambios de rango a todos los jugadores conectados
+            for player_name in "${!PLAYER_JOIN_TIMES[@]}"; do
+                if [ -n "${PLAYER_DATA[${player_name}_rank]}" ]; then
+                    print_debug "Applying rank change from players.log to connected player: $player_name"
+                    apply_player_rank "$player_name"
+                fi
+            done
+            
             update_server_lists
             last_hash="$current_hash"
         fi
         
         sleep 1
-    done
-}
-
-# Apply rank changes from players.log
-apply_rank_changes() {
-    for key in "${!PLAYER_DATA[@]}"; do
-        if [[ $key == *"_rank" ]]; then
-            local player_name="${key%_rank}"
-            local current_rank="${PLAYER_DATA[$key]}"
-            local blacklisted="${PLAYER_DATA[${player_name}_blacklisted]}"
-            
-            # Si el jugador está conectado, aplicar cambios
-            if [ -n "${PLAYER_JOIN_TIMES[$player_name]}" ]; then
-                if [ "$blacklisted" = "YES" ]; then
-                    server_command "/unmod $player_name"
-                    server_command "/unadmin $player_name"
-                    server_command "/ban $player_name"
-                    local player_ip="${PLAYER_DATA[${player_name}_current_ip]}"
-                    if [ "$player_ip" != "UNKNOWN" ]; then
-                        server_command "/ban $player_ip"
-                    fi
-                    
-                    # Remove from cloud admin list if SUPER
-                    if [ "$current_rank" = "SUPER" ]; then
-                        sed -i "/^$player_name$/d" "$CLOUD_ADMIN_LIST" 2>/dev/null || true
-                    fi
-                else
-                    # Apply rank changes
-                    case "$current_rank" in
-                        "ADMIN")
-                            server_command "/admin $player_name"
-                            server_command "/unmod $player_name"
-                            ;;
-                        "MOD")
-                            server_command "/mod $player_name"
-                            server_command "/unadmin $player_name"
-                            ;;
-                        "SUPER")
-                            server_command "/admin $player_name"
-                            server_command "/unmod $player_name"
-                            grep -q "^$player_name$" "$CLOUD_ADMIN_LIST" || echo "$player_name" >> "$CLOUD_ADMIN_LIST"
-                            ;;
-                        "NONE")
-                            server_command "/unadmin $player_name"
-                            server_command "/unmod $player_name"
-                            # Remove from cloud admin list if was SUPER
-                            sed -i "/^$player_name$/d" "$CLOUD_ADMIN_LIST" 2>/dev/null || true
-                            ;;
-                    esac
-                fi
-            fi
-        fi
     done
 }
 
