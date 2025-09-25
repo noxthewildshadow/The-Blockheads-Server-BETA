@@ -93,23 +93,25 @@ save_player_data() {
 
 # Update server lists based on players.log (NO BORRAR LAS LISTAS, SOLO ACTUALIZAR)
 update_server_lists() {
-    # NO BORRAR LAS LISTAS, solo actualizar los nombres basados en players.log
-    # Para adminlist.txt, modlist.txt, whitelist.txt - mantener formato existente
-    
-    # Limpiar solo los nombres de jugadores, mantener encabezados/comentarios
+    # Para cada archivo de lista, mantener las 2 primeras líneas y agregar nuevos nombres
     for list_file in "$ADMIN_LIST" "$MOD_LIST" "$WHITE_LIST"; do
-        if [ -f "$list_file" ]; then
+        if [ -f "$list_file" ] && [ -s "$list_file" ]; then
             # Mantener líneas que no son nombres de jugadores (que contienen comentarios o están vacías)
-            grep -v -E "^[A-Za-z0-9_]+$" "$list_file" > "${list_file}.tmp" 2>/dev/null || true
+            head -n 2 "$list_file" > "${list_file}.tmp" 2>/dev/null || true
             mv "${list_file}.tmp" "$list_file" 2>/dev/null || true
+        else
+            # Crear archivo con 2 líneas vacías
+            echo -e "\n" > "$list_file"
         fi
     done
     
     # Para blacklist.txt, mantener IPs y nombres existentes que no sean de jugadores
-    if [ -f "$BLACK_LIST" ]; then
-        # Mantener líneas que son IPs o comentarios, pero quitar nombres de jugadores que manejaremos
-        grep -v -E "^[A-Za-z0-9_]+$" "$BLACK_LIST" > "${BLACK_LIST}.tmp" 2>/dev/null || true
+    if [ -f "$BLACK_LIST" ] && [ -s "$BLACK_LIST" ]; then
+        # Mantener las 2 primeras líneas
+        head -n 2 "$BLACK_LIST" > "${BLACK_LIST}.tmp" 2>/dev/null || true
         mv "${BLACK_LIST}.tmp" "$BLACK_LIST" 2>/dev/null || true
+    else
+        echo -e "\n" > "$BLACK_LIST"
     fi
     
     # Agregar jugadores a las listas según su estado en players.log
@@ -159,7 +161,7 @@ server_command() {
     
     if screen -list | grep -q "$screen_session"; then
         screen -S "$screen_session" -X stuff "$cmd^M"
-        sleep 0.1  # Pequeña pausa para evitar sobrecarga
+        sleep 0.1
         return 0
     else
         print_error "Server screen session not found: $screen_session"
@@ -228,7 +230,7 @@ process_console_line() {
         local player_ip="${BASH_REMATCH[2]}"
         local player_hash="${BASH_REMATCH[3]}"
         
-        # Esperar 1 segundo antes de procesar la conexión para evitar mensajes dobles
+        # Esperar 1 segundo antes de procesar la conexión
         sleep 1
         handle_player_connect "$player_name" "$player_ip" "$player_hash"
     fi
@@ -602,9 +604,9 @@ monitor_player_timeouts() {
             local join_time="${PLAYER_JOIN_TIMES[$player_name]}"
             local time_connected=$((current_time - join_time))
             
-            # Check password set timeout (60 seconds)
-            if [ "${PLAYER_DATA[${player_name}_password]}" = "NONE" ] && [ "$time_connected" -gt 60 ]; then
-                print_debug "Kicking $player_name for not setting password within 60 seconds"
+            # Check password set timeout (60 seconds) - CORREGIDO
+            if [ "${PLAYER_DATA[${player_name}_password]}" = "NONE" ] && [ "$time_connected" -ge 60 ]; then
+                print_debug "Kicking $player_name for not setting password within 60 seconds (connected: $time_connected seconds)"
                 server_command "/kick $player_name"
                 chat_message "$player_name was kicked for not setting a password within 60 seconds."
                 unset PLAYER_JOIN_TIMES["$player_name"]
@@ -614,7 +616,7 @@ monitor_player_timeouts() {
                 continue
             fi
             
-            # Check IP verification timeout (30 seconds) - solo si la IP cambió y está pendiente
+            # Check IP verification timeout (30 seconds)
             local stored_first_ip="${PLAYER_DATA[${player_name}_first_ip]}"
             local stored_current_ip="${PLAYER_DATA[${player_name}_current_ip]}"
             local verification_status="${PLAYER_IP_VERIFICATION[$player_name]}"
@@ -624,7 +626,7 @@ monitor_player_timeouts() {
                [ "$stored_first_ip" != "UNKNOWN" ] && 
                [ "$stored_current_ip" != "UNKNOWN" ]; then
                 
-                if [ "$time_connected" -gt 30 ] && [ -z "${PLAYER_COOLDOWNS[$player_name]}" ]; then
+                if [ "$time_connected" -ge 30 ] && [ -z "${PLAYER_COOLDOWNS[$player_name]}" ]; then
                     print_debug "Banning $player_name for not verifying IP change within 30 seconds"
                     server_command "/kick $player_name"
                     server_command "/ban $stored_current_ip"
