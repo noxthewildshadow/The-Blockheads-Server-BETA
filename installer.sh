@@ -1,10 +1,6 @@
 #!/bin/bash
 set -e
 
-# =============================================================================
-# THE BLOCKHEADS LINUX SERVER INSTALLER - COMPLETE VERSION
-# =============================================================================
-
 # Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -266,4 +262,3 @@ echo -e "${YELLOW}Each server runs in its own screen session${NC}"
 
 print_header "INSTALLATION COMPLETE"
 echo -e "${GREEN}Your Blockheads server is now ready to use!${NC}"
-echo -e "${YELLOW}The server binary has been patched for compatibility with modern libraries.${NC}"
