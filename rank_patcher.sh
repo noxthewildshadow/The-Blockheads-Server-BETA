@@ -33,11 +33,22 @@ mkdir -p "$WORLD_DIR"
 mkdir -p "$SAVES_DIR"  # Asegurar que el directorio padre existe
 touch "$PLAYERS_LOG" "$CONSOLE_LOG" "$ADMIN_LIST" "$MOD_LIST" "$WHITE_LIST" "$BLACK_LIST" "$CLOUD_ADMIN_LIST"
 
-# Initialize empty lists
-> "$ADMIN_LIST"
-> "$MOD_LIST"
-> "$WHITE_LIST"
-> "$BLACK_LIST"
+# Initialize empty lists (conservando las dos primeras líneas si existen)
+initialize_lists() {
+    # Para cada archivo de lista, si tiene menos de 2 líneas, inicializar con dos líneas vacías
+    for list_file in "$ADMIN_LIST" "$MOD_LIST" "$WHITE_LIST" "$BLACK_LIST"; do
+        line_count=$(wc -l < "$list_file")
+        if [ "$line_count" -lt 2 ]; then
+            echo -e "\n" > "$list_file"
+            sed -i '1,2{/^$/d;}' "$list_file"  # Asegurar que son dos líneas
+            if [ "$(wc -l < "$list_file")" -lt 2 ]; then
+                for i in {1..2}; do echo >> "$list_file"; done
+            fi
+        fi
+    done
+}
+
+initialize_lists
 
 # Player tracking arrays
 declare -A PLAYER_DATA
@@ -89,12 +100,20 @@ save_player_data() {
     done
 }
 
-# Update server lists based on players.log
+# Update server lists based on players.log (ignorando las dos primeras líneas)
 update_server_lists() {
-    > "$ADMIN_LIST"
-    > "$MOD_LIST"
-    > "$WHITE_LIST"
-    > "$BLACK_LIST"
+    for list_file in "$ADMIN_LIST" "$MOD_LIST" "$WHITE_LIST" "$BLACK_LIST"; do
+        # Conservar las dos primeras líneas
+        head -n 2 "$list_file" > "${list_file}.tmp"
+        # Agregar los nombres a partir de la línea 3
+        tail -n +3 "$list_file" | while read -r line; do
+            # Si la línea no está vacía, eliminarla (ya que vamos a repoblar)
+            if [ -n "$line" ]; then
+                sed -i "/^$line$/d" "${list_file}.tmp"
+            fi
+        done
+        mv "${list_file}.tmp" "$list_file"
+    done
     
     for key in "${!PLAYER_DATA[@]}"; do
         if [[ $key == *"_rank" ]]; then
@@ -107,8 +126,13 @@ update_server_lists() {
             # Only add to lists if player is verified and connected
             if [ "$current_ip" != "UNKNOWN" ] && [ "$blacklisted" = "NO" ]; then
                 case "$rank" in
-                    "ADMIN") echo "$player_name" >> "$ADMIN_LIST" ;;
-                    "MOD") echo "$player_name" >> "$MOD_LIST" ;;
+                    "ADMIN") 
+                        # Agregar a adminlist.txt (después de las dos primeras líneas)
+                        echo "$player_name" >> "$ADMIN_LIST"
+                        ;;
+                    "MOD") 
+                        echo "$player_name" >> "$MOD_LIST"
+                        ;;
                     "SUPER") 
                         echo "$player_name" >> "$ADMIN_LIST"
                         echo "$player_name" >> "$CLOUD_ADMIN_LIST"
@@ -223,14 +247,21 @@ handle_player_connect() {
         chat_message "Welcome $player_name! Please set your password with !password NEW_PASSWORD CONFIRM_PASSWORD within 60 seconds."
         chat_message "You have 60 seconds to set your password or you will be kicked."
     else
-        # Check if IP matches
-        local stored_ip="${PLAYER_DATA[${player_name}_current_ip]}"
-        if [ "$stored_ip" != "$player_ip" ] && [ "$stored_ip" != "UNKNOWN" ]; then
-            PLAYER_DATA["${player_name}_current_ip"]="$player_ip"
+        # Si el jugador ya existe, no resetear el rango, solo actualizar la IP actual
+        local stored_first_ip="${PLAYER_DATA[${player_name}_first_ip]}"
+        local stored_current_ip="${PLAYER_DATA[${player_name}_current_ip]}"
+        
+        # Actualizar la IP actual
+        PLAYER_DATA["${player_name}_current_ip"]="$player_ip"
+        
+        # Verificar si la IP ha cambiado respecto a la primera IP o la última IP conocida
+        if [ "$stored_first_ip" != "$player_ip" ] && [ "$stored_first_ip" != "UNKNOWN" ]; then
+            # IP cambiada, requerir verificación
             chat_message "IP change detected for $player_name! Verify with !ip_change YOUR_PASSWORD within 30 seconds."
             chat_message "You have 30 seconds to verify your IP or you will be temporarily banned."
         else
-            PLAYER_DATA["${player_name}_current_ip"]="$player_ip"
+            # IP coincide, no hacer nada especial
+            :
         fi
     fi
     
@@ -299,6 +330,9 @@ handle_password_set() {
         
         chat_message "Password set successfully for $player_name! Your IP is now verified."
         print_success "Player $player_name set password successfully"
+        
+        # Eliminar el temporizador de kick por no establecer contraseña
+        unset PLAYER_JOIN_TIMES["$player_name"]
     else
         chat_message "Usage: !password NEW_PASSWORD CONFIRM_PASSWORD"
     fi
@@ -420,26 +454,27 @@ apply_rank_changes() {
                 if [ "$current_rank" = "SUPER" ]; then
                     sed -i "/^$player_name$/d" "$CLOUD_ADMIN_LIST"
                 fi
+            else
+                # Si no está blacklisted, aplicar el rango
+                case "$current_rank" in
+                    "ADMIN")
+                        server_command "/admin $player_name"
+                        ;;
+                    "MOD")
+                        server_command "/mod $player_name"
+                        ;;
+                    "SUPER")
+                        echo "$player_name" >> "$CLOUD_ADMIN_LIST"
+                        server_command "/admin $player_name"  # SUPER también debe ser admin en el servidor
+                        ;;
+                    "NONE")
+                        server_command "/unadmin $player_name"
+                        server_command "/unmod $player_name"
+                        # Remove from cloud admin list if was SUPER
+                        sed -i "/^$player_name$/d" "$CLOUD_ADMIN_LIST"
+                        ;;
+                esac
             fi
-            
-            # Handle rank changes
-            case "$current_rank" in
-                "ADMIN")
-                    server_command "/admin $player_name"
-                    ;;
-                "MOD")
-                    server_command "/mod $player_name"
-                    ;;
-                "SUPER")
-                    echo "$player_name" >> "$CLOUD_ADMIN_LIST"
-                    ;;
-                "NONE")
-                    server_command "/unadmin $player_name"
-                    server_command "/unmod $player_name"
-                    # Remove from cloud admin list if was SUPER
-                    sed -i "/^$player_name$/d" "$CLOUD_ADMIN_LIST"
-                    ;;
-            esac
         fi
     done
 }
