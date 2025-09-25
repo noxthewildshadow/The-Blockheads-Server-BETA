@@ -56,18 +56,20 @@ SERVER_BINARY="blockheads_server171"
 
 # URL for server manager
 SERVER_MANAGER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/server_manager.sh"
+RANK_PATCHER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/rank_patcher.sh"
 
 # Package lists for different distributions
 declare -a PACKAGES_DEBIAN=(
     'git' 'cmake' 'ninja-build' 'clang' 'patchelf' 'libgnustep-base-dev' 'libobjc4' 
     'libgnutls28-dev' 'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev' 'zlib1g' 
     'libicu-dev' 'libstdc++6' 'libgcc-s1' 'wget' 'curl' 'tar' 'grep' 'screen' 'lsof'
+    'inotify-tools'
 )
 
 declare -a PACKAGES_ARCH=(
     'base-devel' 'git' 'cmake' 'ninja' 'clang' 'patchelf' 'gnustep-base' 'gcc-libs' 
     'gnutls' 'libgcrypt' 'libxml2' 'libffi' 'libnsl' 'zlib' 'icu' 'libdispatch' 
-    'wget' 'curl' 'tar' 'grep' 'screen' 'lsof'
+    'wget' 'curl' 'tar' 'grep' 'screen' 'lsof' 'inotify-tools'
 )
 
 print_header "THE BLOCKHEADS LINUX SERVER INSTALLER"
@@ -119,17 +121,27 @@ install_packages() {
     return 0
 }
 
-# Function to download server manager
-download_server_manager() {
+# Function to download server manager and rank patcher
+download_server_files() {
     print_step "Downloading server manager..."
     if wget --timeout=30 --tries=3 -O "server_manager.sh" "$SERVER_MANAGER_URL" 2>/dev/null; then
         chmod +x "server_manager.sh"
         print_success "Server manager downloaded successfully"
-        return 0
     else
         print_error "Failed to download server manager"
         return 1
     fi
+    
+    print_step "Downloading rank patcher..."
+    if wget --timeout=30 --tries=3 -O "rank_patcher.sh" "$RANK_PATCHER_URL" 2>/dev/null; then
+        chmod +x "rank_patcher.sh"
+        print_success "Rank patcher downloaded successfully"
+    else
+        print_error "Failed to download rank patcher"
+        return 1
+    fi
+    
+    return 0
 }
 
 print_step "[1/7] Installing required packages and dependencies..."
@@ -140,7 +152,7 @@ if ! install_packages; then
         exit 1
     fi
     
-    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget curl tar screen lsof >/dev/null 2>&1; then
+    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget curl tar screen lsof inotify-tools >/dev/null 2>&1; then
         print_error "Failed to install essential packages"
         exit 1
     fi
@@ -215,10 +227,12 @@ else
     print_warning "Server binary execution test failed - may need additional dependencies"
 fi
 
-print_step "[6/7] Downloading server manager..."
-if ! download_server_manager; then
-    # Create a basic server manager if download fails
-    print_warning "Creating basic server manager..."
+print_step "[6/7] Downloading server manager and rank patcher..."
+if ! download_server_files; then
+    # Create basic files if download fails
+    print_warning "Creating basic server manager and rank patcher..."
+    
+    # Basic server manager
     cat > server_manager.sh << 'EOF'
 #!/bin/bash
 # Basic Server Manager for Blockheads
@@ -226,11 +240,18 @@ echo "Use: ./blockheads_server171 -n (to create world)"
 echo "Then: ./blockheads_server171 -o WORLD_NAME -p PORT"
 EOF
     chmod +x server_manager.sh
+    
+    # Basic rank patcher
+    cat > rank_patcher.sh << 'EOF'
+#!/bin/bash
+echo "Rank patcher placeholder - download failed"
+EOF
+    chmod +x rank_patcher.sh
 fi
 
 print_step "[7/7] Setting ownership and permissions..."
-chown "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" 2>/dev/null || true
-chmod 755 "$SERVER_BINARY" "server_manager.sh" 2>/dev/null || true
+chown "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" 2>/dev/null || true
+chmod 755 "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" 2>/dev/null || true
 
 rm -f "$TEMP_FILE"
 
@@ -252,13 +273,21 @@ echo -e "${GREEN}5. Check status: ${CYAN}./server_manager.sh status${NC}"
 echo -e "${GREEN}6. Default port: ${YELLOW}12153${NC}"
 echo ""
 
+print_header "RANK PATCHER FEATURES"
+echo -e "${GREEN}The rank patcher provides:${NC}"
+echo -e "${CYAN}• Player authentication with IP verification${NC}"
+echo -e "${CYAN}• Password protection for players${NC}"
+echo -e "${CYAN}• Automated rank management (ADMIN, MOD, SUPER)${NC}"
+echo -e "${CYAN}• Real-time monitoring of player lists${NC}"
+echo ""
+
 print_header "MULTI-SERVER SUPPORT"
 echo -e "${GREEN}You can run multiple servers simultaneously:${NC}"
 echo -e "${CYAN}./server_manager.sh start WorldID1 12153${NC}"
 echo -e "${CYAN}./server_manager.sh start WorldID2 12154${NC}"
 echo -e "${CYAN}./server_manager.sh start WorldID3 12155${NC}"
 echo ""
-echo -e "${YELLOW}Each server runs in its own screen session${NC}"
+echo -e "${YELLOW}Each server runs in its own screen session with rank patcher${NC}"
 
 print_header "INSTALLATION COMPLETE"
-echo -e "${GREEN}Your Blockheads server is now ready to use!${NC}"
+echo -e "${GREEN}Your Blockheads server with rank management is now ready!${NC}"
