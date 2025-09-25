@@ -1,640 +1,632 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# rank_patcher.sh
+# Implementa la lógica descrita en INSTRUCCIONES.txt:
+# - Mantiene players.log por mundo en $HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/<world_id>/players.log
+# - Monitorea cambios cada 0.25s
+# - Sincroniza adminlist.txt y modlist.txt para jugadores conectados con IP verificada
+# - Maneja comandos sensibles (!password, !ip_change, !change_psw), /clear y cooldowns
+# - Gestiona cloudWideOwnedAdminlist.txt para SUPER
+# - Ejecuta comandos en la consola del servidor (vía screen)
+#
+# Requerimientos: bash >=4 (para arrays asociativos), inotify-tools (opcional),
+# screen, lsof, md5sum, coreutils. Asume que el script se ejecuta desde la carpeta
+# donde están server_manager.sh y los archivos world_id_*.txt (tal como el installer).
+#
+# Basado en las reglas exactas del archivo de instrucciones del usuario. (Referencia incluida).
+# :contentReference[oaicite:1]{index=1}
 
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
-NC='\033[0m'
+set -u
+shopt -s extglob
 
-print_error() { echo -e "${RED}[RANK_PATCHER_ERROR]${NC} $1"; }
-print_success() { echo -e "${GREEN}[RANK_PATCHER_SUCCESS]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[RANK_PATCHER_WARNING]${NC} $1"; }
-print_status() { echo -e "${BLUE}[RANK_PATCHER_INFO]${NC} $1"; }
-print_debug() { echo -e "${CYAN}[RANK_PATCHER_DEBUG]${NC} $1"; }
+# ---------- CONFIG ----------
+BASE_SAVES_DIR="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
+CLOUD_ADMIN_FILE="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
+COOLDOWN=0.5              # 0.5 seconds before sending any confirmation/error message
+PLAYERS_POLL_INTERVAL=0.25 # poll players.log every 0.25 seconds
+KICK_IF_NO_PSW_TIMEOUT=60  # 1 minute to create password if required
+IP_CHANGE_WINDOW=30       # 30 seconds to verify IP
+# Pattern for server screen sessions: blockheads_server_<port>
+WORLD_ID_FILE_PREFIX="world_id_"
+# Command to send line into screen session (send Enter)
+screen_send() { local session="$1"; local cmd="$2"; screen -S "$session" -X stuff "$cmd$(printf '\r')"; }
 
-# Configuration
-WORLD_ID="$1"
-PORT="$2"
-SAVES_DIR="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads"
-WORLD_DIR="$SAVES_DIR/saves/$WORLD_ID"
-PLAYERS_LOG="$WORLD_DIR/players.log"
-CONSOLE_LOG="$WORLD_DIR/console.log"
-ADMIN_LIST="$WORLD_DIR/adminlist.txt"
-MOD_LIST="$WORLD_DIR/modlist.txt"
-WHITE_LIST="$WORLD_DIR/whitelist.txt"
-BLACK_LIST="$WORLD_DIR/blacklist.txt"
-CLOUD_ADMIN_LIST="$SAVES_DIR/cloudWideOwnedAdminlist.txt"
+# ---------- UTIL ----------
+log() { echo "[`date '+%F %T'`] $*"; }
+err() { echo >&2 "[ERROR] $*"; }
 
-# Create necessary directories and files
-mkdir -p "$WORLD_DIR"
-mkdir -p "$SAVES_DIR"
-touch "$PLAYERS_LOG" "$CONSOLE_LOG" "$ADMIN_LIST" "$MOD_LIST" "$WHITE_LIST" "$BLACK_LIST" "$CLOUD_ADMIN_LIST"
+# Ensure saves directory exists
+mkdir -p "$BASE_SAVES_DIR"
 
-# Player tracking arrays
-declare -A PLAYER_DATA
-declare -A PLAYER_COOLDOWNS
-declare -A PLAYER_JOIN_TIMES
-declare -A PLAYER_IP_CHANGED
-declare -A PASSWORD_ATTEMPTS
+# Create cloud admin file if not exists (managed only by this script)
+mkdir -p "$(dirname "$CLOUD_ADMIN_FILE")"
+[ -f "$CLOUD_ADMIN_FILE" ] || >"$CLOUD_ADMIN_FILE"
 
-# Load existing player data from players.log (source of truth)
-load_player_data() {
-    if [ ! -f "$PLAYERS_LOG" ]; then
-        return
-    fi
-    
-    # Clear existing data
-    for key in "${!PLAYER_DATA[@]}"; do unset PLAYER_DATA["$key"]; done
-    
-    while IFS='|' read -r name first_ip current_ip password rank whitelisted blacklisted; do
-        name=$(echo "$name" | xargs)
-        first_ip=$(echo "$first_ip" | xargs)
-        current_ip=$(echo "$current_ip" | xargs)
-        password=$(echo "$password" | xargs)
-        rank=$(echo "$rank" | xargs)
-        whitelisted=$(echo "$whitelisted" | xargs)
-        blacklisted=$(echo "$blacklisted" | xargs)
-        
-        if [ -n "$name" ] && [ "$name" != "UNKNOWN" ]; then
-            PLAYER_DATA["${name}_first_ip"]="$first_ip"
-            PLAYER_DATA["${name}_current_ip"]="$current_ip"
-            PLAYER_DATA["${name}_password"]="$password"
-            PLAYER_DATA["${name}_rank"]="$rank"
-            PLAYER_DATA["${name}_whitelisted"]="$whitelisted"
-            PLAYER_DATA["${name}_blacklisted"]="$blacklisted"
-        fi
-    done < "$PLAYERS_LOG"
-}
+# Map: world_id -> players.log path
+declare -A PLAYERS_FILE_FOR_WORLD
+# In-memory snapshot of players.log contents: associative array of player -> rawline
+# format used internally: "NAME|IP|PSW|RANK|WHITELISTED|BLACKLISTED"
+declare -A SNAPSHOT
 
-# Save player data to players.log (source of truth)
-save_player_data() {
-    local temp_file=$(mktemp)
-    
-    for key in "${!PLAYER_DATA[@]}"; do
-        if [[ $key == *"_first_ip" ]]; then
-            player_name="${key%_first_ip}"
-            first_ip="${PLAYER_DATA[${player_name}_first_ip]}"
-            current_ip="${PLAYER_DATA[${player_name}_current_ip]:-UNKNOWN}"
-            password="${PLAYER_DATA[${player_name}_password]:-NONE}"
-            rank="${PLAYER_DATA[${player_name}_rank]:-NONE}"
-            whitelisted="${PLAYER_DATA[${player_name}_whitelisted]:-NO}"
-            blacklisted="${PLAYER_DATA[${player_name}_blacklisted]:-NO}"
-            
-            echo "$player_name | $first_ip | $current_ip | $password | $rank | $whitelisted | $blacklisted" >> "$temp_file"
+# Track pending timers and actions per player
+declare -A PENDING_KICK_TIMER_PID    # when player must create password
+declare -A PENDING_IP_TIMER_PID      # when player must confirm IP
+declare -A PENDING_IP_EXPECTED       # expected new ip for verification (not strictly required)
+declare -A PENDING_IP_PLAYER_WORLD   # world_id for pending ip timers
+declare -A CONNECTED_PLAYERS_IP      # player -> current known IP (from logs / connection events)
+
+# Helper: normalize trim whitespace
+trim() { local v="$*"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; printf '%s' "$v"; }
+
+# Helper: get screen session for a given world_id
+# Strategy: look for world_id_<port>.txt files in cwd; if found, read which port maps to this world_id
+find_screen_for_world() {
+    local world_id="$1"
+    # search for matching world_id_* files in current working dir and the script dir
+    for f in ./world_id_*.txt world_id_*.txt; do
+        [ -f "$f" ] || continue
+        if [ "$(cat "$f" 2>/dev/null)" = "$world_id" ]; then
+            local port="${f#*world_id_}"
+            port="${port%.txt}"
+            printf "blockheads_server_%s" "$port"
+            return 0
         fi
     done
-    
-    mv "$temp_file" "$PLAYERS_LOG"
-}
-
-# Update server lists based on players.log (ignore first 2 lines of existing files)
-update_server_lists() {
-    # Preserve first 2 lines of existing files if they contain headers
-    local admin_header=$(head -n 2 "$ADMIN_LIST" 2>/dev/null | grep -v "^[A-Za-z0-9_]*$" | head -n 2)
-    local mod_header=$(head -n 2 "$MOD_LIST" 2>/dev/null | grep -v "^[A-Za-z0-9_]*$" | head -n 2)
-    local white_header=$(head -n 2 "$WHITE_LIST" 2>/dev/null | grep -v "^[A-Za-z0-9_]*$" | head -n 2)
-    local black_header=$(head -n 2 "$BLACK_LIST" 2>/dev/null | grep -v "^[A-Za-z0-9_]*$" | head -n 2)
-    
-    # Create new list files
-    local new_admin=$(mktemp)
-    local new_mod=$(mktemp)
-    local new_white=$(mktemp)
-    local new_black=$(mktemp)
-    
-    # Add headers back if they existed
-    [ -n "$admin_header" ] && echo "$admin_header" > "$new_admin"
-    [ -n "$mod_header" ] && echo "$mod_header" > "$new_mod"
-    [ -n "$white_header" ] && echo "$white_header" > "$new_white"
-    [ -n "$black_header" ] && echo "$black_header" > "$new_black"
-    
-    # Add players based on players.log data
-    for key in "${!PLAYER_DATA[@]}"; do
-        if [[ $key == *"_rank" ]]; then
-            player_name="${key%_rank}"
-            rank="${PLAYER_DATA[$key]}"
-            whitelisted="${PLAYER_DATA[${player_name}_whitelisted]}"
-            blacklisted="${PLAYER_DATA[${player_name}_blacklisted]}"
-            current_ip="${PLAYER_DATA[${player_name}_current_ip]}"
-            password="${PLAYER_DATA[${player_name}_password]}"
-            
-            # Only add to lists if player is verified (has password) and not blacklisted
-            if [ "$password" != "NONE" ] && [ "$blacklisted" = "NO" ] && [ "$current_ip" != "UNKNOWN" ]; then
-                case "$rank" in
-                    "ADMIN") 
-                        if ! grep -q "^$player_name$" "$new_admin" 2>/dev/null; then
-                            echo "$player_name" >> "$new_admin"
-                        fi
-                        ;;
-                    "MOD")
-                        if ! grep -q "^$player_name$" "$new_mod" 2>/dev/null; then
-                            echo "$player_name" >> "$new_mod"
-                        fi
-                        ;;
-                    "SUPER") 
-                        if ! grep -q "^$player_name$" "$new_admin" 2>/dev/null; then
-                            echo "$player_name" >> "$new_admin"
-                        fi
-                        if ! grep -q "^$player_name$" "$CLOUD_ADMIN_LIST" 2>/dev/null; then
-                            echo "$player_name" >> "$CLOUD_ADMIN_LIST"
-                        fi
-                        ;;
-                esac
-                
-                if [ "$whitelisted" = "YES" ] && ! grep -q "^$player_name$" "$new_white" 2>/dev/null; then
-                    echo "$player_name" >> "$new_white"
-                fi
-            fi
-            
-            if [ "$blacklisted" = "YES" ] && ! grep -q "^$player_name$" "$new_black" 2>/dev/null; then
-                echo "$player_name" >> "$new_black"
-                if [ "$current_ip" != "UNKNOWN" ] && ! grep -q "^$current_ip$" "$new_black" 2>/dev/null; then
-                    echo "$current_ip" >> "$new_black"
-                fi
-            fi
-        fi
-    done
-    
-    # Replace old files with new ones
-    mv "$new_admin" "$ADMIN_LIST"
-    mv "$new_mod" "$MOD_LIST"
-    mv "$new_white" "$WHITE_LIST"
-    mv "$new_black" "$BLACK_LIST"
-}
-
-# Execute server command
-server_command() {
-    local cmd="$1"
-    local screen_session="blockheads_server_$PORT"
-    
-    if screen -list | grep -q "$screen_session"; then
-        screen -S "$screen_session" -X stuff "$cmd^M"
+    # fallback: if only one running blockheads_server_* screen exists, use it (best-effort)
+    local sc=$(screen -list 2>/dev/null | grep -oE "blockheads_server_[0-9]+" | head -n1 || true)
+    if [ -n "$sc" ]; then
+        printf "%s" "$sc"
         return 0
-    else
-        print_error "Server screen session not found: $screen_session"
+    fi
+    # not found
+    return 1
+}
+
+# Send command to world (via screen session)
+send_cmd_to_world() {
+    local world_id="$1"; shift
+    local cmd="$*"
+    local sess
+    if ! sess=$(find_screen_for_world "$world_id"); then
+        err "No screen session found for world '$world_id' (cannot send: $cmd)"
         return 1
     fi
+    log "-> Sending to [$sess] : $cmd"
+    screen_send "$sess" "$cmd"
+    return 0
 }
 
-# Send chat message (sin /)
-chat_message() {
-    local message="$1"
-    server_command "$message"
+# Safe /clear then send a message after COOLDOWN
+clear_and_announce() {
+    local world_id="$1"; local message="$2"
+    send_cmd_to_world "$world_id" "/clear"
+    sleep "$COOLDOWN"
+    # Use /say to broadcast the confirmation (server must support it)
+    send_cmd_to_world "$world_id" "/say $message"
 }
 
-# Monitor console.log for player commands and connections
-monitor_console() {
-    local last_size=0
-    
-    while true; do
-        if [ -f "$CONSOLE_LOG" ]; then
-            local current_size=$(stat -c%s "$CONSOLE_LOG" 2>/dev/null || echo 0)
-            
-            if [ "$current_size" -gt "$last_size" ]; then
-                local new_content=$(tail -c +$((last_size + 1)) "$CONSOLE_LOG" 2>/dev/null)
-                
-                while IFS= read -r line; do
-                    process_console_line "$line"
-                done <<< "$new_content"
-                
-                last_size=$current_size
-            fi
-        fi
-        
-        sleep 0.25
-    done
+# read players.log for a world and return array of normalized lines (trimmed)
+read_players_file_lines() {
+    local file="$1"
+    [ -f "$file" ] || { printf ''; return 0; }
+    # read lines, ignore completely empty lines
+    awk 'NF{print}' "$file"
 }
 
-# Process console line for commands
-process_console_line() {
+# Parse a players.log line into fields:
+# NAME | IP | PSW | RANK | WHITELISTED | BLACKLISTED
+# returns fields in global variables
+parse_players_line() {
     local line="$1"
-    
-    # Check for player chat messages - formato: JUGADOR: mensaje
-    if [[ "$line" =~ ([A-Za-z0-9_]+):[[:space:]]+(!.+) ]]; then
-        local player_name="${BASH_REMATCH[1]}"
-        local message="${BASH_REMATCH[2]}"
-        
-        process_player_command "$player_name" "$message"
-    fi
-    
-    # Check for player connections
-    if [[ "$line" =~ .*" - Player Connected "(.*)" | "(.*)" | "(.*) ]]; then
-        local player_name="${BASH_REMATCH[1]}"
-        local player_ip="${BASH_REMATCH[2]}"
-        local player_hash="${BASH_REMATCH[3]}"
-        
-        handle_player_connect "$player_name" "$player_ip" "$player_hash"
-    fi
-    
-    # Check for player disconnections
-    if [[ "$line" =~ .*" - Client disconnected:"(.*) ]]; then
-        local player_hash="${BASH_REMATCH[1]}"
-        handle_player_disconnect "$player_hash"
-    fi
+    IFS='|' read -r a b c d e f <<< "$line"
+    PLAYER_NAME=$(trim "$a")
+    PLAYER_IP=$(trim "$b")
+    PLAYER_PSW=$(trim "$c")
+    PLAYER_RANK=$(trim "$d")
+    PLAYER_WHITELISTED=$(trim "$e")
+    PLAYER_BLACKLISTED=$(trim "$f")
 }
 
-# Handle player connection
-handle_player_connect() {
-    local player_name="$1"
-    local player_ip="$2"
-    local player_hash="$3"
-    
-    print_status "Player connected: $player_name ($player_ip)"
-    
-    # Record join time
-    PLAYER_JOIN_TIMES["$player_name"]=$(date +%s)
-    
-    # Initialize player data if new
-    if [ -z "${PLAYER_DATA[${player_name}_first_ip]}" ]; then
-        PLAYER_DATA["${player_name}_first_ip"]="$player_ip"
-        PLAYER_DATA["${player_name}_current_ip"]="$player_ip"
-        PLAYER_DATA["${player_name}_password"]="NONE"
-        PLAYER_DATA["${player_name}_rank"]="NONE"
-        PLAYER_DATA["${player_name}_whitelisted"]="NO"
-        PLAYER_DATA["${player_name}_blacklisted"]="NO"
-        
-        save_player_data
-        
-        # Ask player to set password (sin /)
-        chat_message "Welcome $player_name! Please set your password with !password NEW_PASSWORD CONFIRM_PASSWORD within 60 seconds."
-        chat_message "You have 60 seconds to set your password or you will be kicked."
-    else
-        # Check if IP matches stored IP
-        local stored_ip="${PLAYER_DATA[${player_name}_current_ip]}"
-        local first_ip="${PLAYER_DATA[${player_name}_first_ip]}"
-        
-        PLAYER_DATA["${player_name}_current_ip"]="$player_ip"
-        
-        # If IP changed from stored IP and player has password, require verification
-        if [ "$stored_ip" != "$player_ip" ] && [ "$stored_ip" != "UNKNOWN" ] && 
-           [ "${PLAYER_DATA[${player_name}_password]}" != "NONE" ]; then
-            
-            PLAYER_IP_CHANGED["$player_name"]=1
-            chat_message "IP change detected for $player_name! Verify with !ip_change YOUR_PASSWORD within 30 seconds."
-            chat_message "You have 30 seconds to verify your IP or you will be temporarily banned."
-        fi
-        
-        save_player_data
-    fi
-    
-    update_server_lists
+# Update cloud admin list (ensure unique names, one per line)
+cloud_admin_add() {
+    local name="$1"
+    grep -Fxq "$name" "$CLOUD_ADMIN_FILE" 2>/dev/null || echo "$name" >> "$CLOUD_ADMIN_FILE"
+}
+cloud_admin_remove() {
+    local name="$1"
+    [ -f "$CLOUD_ADMIN_FILE" ] || return
+    grep -Fxv "$name" "$CLOUD_ADMIN_FILE" > "${CLOUD_ADMIN_FILE}.tmp" || true
+    mv -f "${CLOUD_ADMIN_FILE}.tmp" "$CLOUD_ADMIN_FILE"
 }
 
-# Handle player disconnect
-handle_player_disconnect() {
-    local player_hash="$1"
-    # Find player name by current IP (since we don't have direct mapping)
-    for key in "${!PLAYER_DATA[@]}"; do
-        if [[ $key == *"_current_ip" ]]; then
-            local player_name="${key%_current_ip}"
-            local current_ip="${PLAYER_DATA[$key]}"
-            # We can't reliably map hash to name, so we'll rely on timeout cleanup
+# Sync adminlist.txt and modlist.txt for connected players with verified IPs
+sync_txt_lists_for_world() {
+    local world_id="$1"
+    local dir="$BASE_SAVES_DIR/$world_id"
+    mkdir -p "$dir"
+    local adminfile="$dir/adminlist.txt"
+    local modfile="$dir/modlist.txt"
+    # Build lists from current SNAPSHOT but include only players with IP != UNKNOWN and that are connected (we check CONNECTED_PLAYERS_IP)
+    >"$adminfile"
+    >"$modfile"
+    for k in "${!SNAPSHOT[@]}"; do
+        local line="${SNAPSHOT[$k]}"
+        parse_players_line "$line"
+        # only include if IP is not UNKNOWN and player is connected and IP matches
+        if [ "$PLAYER_IP" != "UNKNOWN" ] && [ -n "${CONNECTED_PLAYERS_IP[$PLAYER_NAME]:-}" ] && [ "${CONNECTED_PLAYERS_IP[$PLAYER_NAME]}" = "$PLAYER_IP" ]; then
+            case "$PLAYER_RANK" in
+                ADMIN) grep -Fxq "$PLAYER_NAME" "$adminfile" 2>/dev/null || echo "$PLAYER_NAME" >> "$adminfile" ;;
+                MOD) grep -Fxq "$PLAYER_NAME" "$modfile" 2>/dev/null || echo "$PLAYER_NAME" >> "$modfile" ;;
+            esac
         fi
     done
-    print_status "Player disconnected: $player_hash"
+    # Ensure whitelist.txt and blacklist.txt are not populated by default from players.log (they may be populated only as needed)
+    # Note: whitelist/blacklist are managed but the instruction says default server lists remain empty until verified players connect.
 }
 
-# Process player commands
-process_player_command() {
-    local player_name="$1"
-    local message="$2"
-    
-    case "$message" in
-        !password*)
-            handle_password_set "$player_name" "$message"
-            ;;
-        !ip_change*)
-            handle_ip_change "$player_name" "$message"
-            ;;
-        !change_psw*)
-            handle_password_change "$player_name" "$message"
-            ;;
-    esac
+# Helper: send admin/mod/unadmin/unmod/unban/ban/kick commands
+do_rank_command() {
+    local world_id="$1"; local cmd="$2"; local target="$3"
+    send_cmd_to_world "$world_id" "/$cmd $target"
 }
 
-# Handle password set command
-handle_password_set() {
-    local player_name="$1"
-    local message="$2"
-    
-    # Extract password and confirmation
-    if [[ "$message" =~ !password[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+) ]]; then
-        local password="${BASH_REMATCH[1]}"
-        local confirm="${BASH_REMATCH[2]}"
-        
-        # Clear chat for security (con /)
-        server_command "/clear"
-        sleep 0.5
-        
-        # Validate password
-        if [ "${#password}" -lt 7 ]; then
-            chat_message "Error: Password must be at least 7 characters long."
-            return
+# Handle when a player's record changed (cmp previous -> current)
+handle_record_transition() {
+    local world_id="$1"; local oldline="$2"; local newline="$3"
+    parse_players_line "$oldline"
+    local old_name="$PLAYER_NAME" old_ip="$PLAYER_IP" old_psw="$PLAYER_PSW" old_rank="$PLAYER_RANK" old_black="$PLAYER_BLACKLISTED"
+    parse_players_line "$newline"
+    local name="$PLAYER_NAME" ip="$PLAYER_IP" psw="$PLAYER_PSW" rank="$PLAYER_RANK" black="$PLAYER_BLACKLISTED"
+    # RANK transitions
+    if [ "$old_rank" != "$rank" ]; then
+        # promotions
+        if [ "$old_rank" = "NONE" ] && [ "$rank" = "ADMIN" ]; then
+            do_rank_command "$world_id" "admin" "$name"
+        elif [ "$old_rank" = "NONE" ] && [ "$rank" = "MOD" ]; then
+            do_rank_command "$world_id" "mod" "$name"
+        elif [ "$rank" = "SUPER" ] && [ "$old_rank" != "SUPER" ]; then
+            # add to cloudWideOwnedAdminlist.txt
+            cloud_admin_add "$name"
         fi
-        
-        if [ "${#password}" -gt 16 ]; then
-            chat_message "Error: Password must be at most 16 characters long."
-            return
+        # demotions
+        if [ "$old_rank" = "ADMIN" ] && [ "$rank" = "NONE" ]; then
+            do_rank_command "$world_id" "unadmin" "$name"
         fi
-        
-        if [ "$password" != "$confirm" ]; then
-            chat_message "Error: Passwords do not match."
-            return
+        if [ "$old_rank" = "MOD" ] && [ "$rank" = "NONE" ]; then
+            do_rank_command "$world_id" "unmod" "$name"
         fi
-        
-        # Set password
-        PLAYER_DATA["${player_name}_password"]="$password"
-        save_player_data
-        update_server_lists
-        
-        chat_message "Password set successfully for $player_name! Your IP is now verified."
-        print_success "Player $player_name set password successfully"
-        
-        # Clear IP change flag if it was set
-        unset PLAYER_IP_CHANGED["$player_name"]
-    else
-        chat_message "Usage: !password NEW_PASSWORD CONFIRM_PASSWORD"
+        if [ "$old_rank" = "SUPER" ] && [ "$rank" = "NONE" ]; then
+            cloud_admin_remove "$name"
+        fi
+    fi
+
+    # BLACKLIST transitions
+    if [ "$old_black" != "$black" ]; then
+        if [ "$black" = "YES" ]; then
+            # If was SUPER, stop server if connected
+            if [ "$old_rank" = "SUPER" ]; then
+                send_cmd_to_world "$world_id" "/stop"
+                sleep 1
+            fi
+            # unmod/unadmin/ban name and ban ip
+            do_rank_command "$world_id" "unmod" "$name"
+            do_rank_command "$world_id" "unadmin" "$name"
+            do_rank_command "$world_id" "ban" "$name"
+            # ban by IP if available and not UNKNOWN
+            if [ "$ip" != "UNKNOWN" ]; then
+                do_rank_command "$world_id" "ban" "$ip"
+                # schedule unban? The instruction doesn't require automatic unban here except for the IP-change flow
+            fi
+            cloud_admin_remove "$name"
+        elif [ "$old_black" = "YES" ] && [ "$black" != "YES" ]; then
+            # removed from blacklist -> maybe unban? no instruction specified, so do nothing automatically
+            :
+        fi
     fi
 }
 
-# Handle IP change verification
-handle_ip_change() {
-    local player_name="$1"
-    local message="$2"
-    
-    if [[ "$message" =~ !ip_change[[:space:]]+(.+) ]]; then
-        local password="${BASH_REMATCH[1]}"
-        
-        # Clear chat for security (con /)
-        server_command "/clear"
-        sleep 0.5
-        
-        local stored_password="${PLAYER_DATA[${player_name}_password]}"
-        
-        if [ "$stored_password" = "NONE" ]; then
-            chat_message "Error: You need to set a password first with !password."
-            return
-        fi
-        
-        if [ "$password" = "$stored_password" ]; then
-            # IP verified successfully
-            chat_message "IP verification successful for $player_name!"
-            unset PLAYER_IP_CHANGED["$player_name"]
-            unset PLAYER_COOLDOWNS["$player_name"]
-            print_success "Player $player_name verified IP change"
-        else
-            chat_message "Error: Incorrect password for $player_name."
-        fi
-    else
-        chat_message "Usage: !ip_change YOUR_PASSWORD"
-    fi
-}
-
-# Handle password change
-handle_password_change() {
-    local player_name="$1"
-    local message="$2"
-    
-    if [[ "$message" =~ !change_psw[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+) ]]; then
-        local old_password="${BASH_REMATCH[1]}"
-        local new_password="${BASH_REMATCH[2]}"
-        
-        # Clear chat for security (con /)
-        server_command "/clear"
-        sleep 0.5
-        
-        local stored_password="${PLAYER_DATA[${player_name}_password]}"
-        
-        if [ "$stored_password" = "NONE" ]; then
-            chat_message "Error: You don't have a password set yet."
-            return
-        fi
-        
-        if [ "$old_password" != "$stored_password" ]; then
-            chat_message "Error: Old password is incorrect."
-            return
-        fi
-        
-        if [ "${#new_password}" -lt 7 ]; then
-            chat_message "Error: New password must be at least 7 characters long."
-            return
-        fi
-        
-        if [ "${#new_password}" -gt 16 ]; then
-            chat_message "Error: New password must be at most 16 characters long."
-            return
-        fi
-        
-        # Change password
-        PLAYER_DATA["${player_name}_password"]="$new_password"
-        save_player_data
-        
-        chat_message "Password changed successfully for $player_name!"
-        print_success "Player $player_name changed password"
-    else
-        chat_message "Usage: !change_psw OLD_PASSWORD NEW_PASSWORD"
-    fi
-}
-
-# Monitor players.log for manual changes
-monitor_players_log() {
-    local last_hash=$(md5sum "$PLAYERS_LOG" 2>/dev/null | cut -d' ' -f1)
-    
-    while true; do
-        sleep 1
-        local current_hash=$(md5sum "$PLAYERS_LOG" 2>/dev/null | cut -d' ' -f1)
-        
-        if [ "$current_hash" != "$last_hash" ] && [ -n "$current_hash" ]; then
-            print_status "players.log changed manually, applying updates..."
-            
-            # Reload data from players.log (source of truth)
-            load_player_data
-            
-            # Apply rank changes based on the manual edit
-            apply_rank_changes
-            
-            # Update server lists to reflect changes
-            update_server_lists
-            
-            last_hash=$current_hash
-        fi
+# Apply full scan comparing snapshot -> current for a world
+scan_players_file_and_apply() {
+    local world_id="$1"
+    local file="${PLAYERS_FILE_FOR_WORLD[$world_id]}"
+    local lines
+    IFS=$'\n' read -d '' -r -a lines < <(read_players_file_lines "$file" && printf '\0')
+    # build map of current
+    declare -A current_map=()
+    for ln in "${lines[@]}"; do
+        # identify player key by NAME (first field)
+        parse_players_line "$ln"
+        local key="$PLAYER_NAME"
+        [ -z "$key" ] && continue
+        current_map["$key"]="$ln"
     done
-}
-
-# Apply rank changes from players.log
-apply_rank_changes() {
-    for key in "${!PLAYER_DATA[@]}"; do
-        if [[ $key == *"_rank" ]]; then
-            local player_name="${key%_rank}"
-            local current_rank="${PLAYER_DATA[$key]}"
-            local previous_rank="${PLAYER_DATA[${player_name}_previous_rank]:-NONE}"
-            local blacklisted="${PLAYER_DATA[${player_name}_blacklisted]}"
-            
-            # Only apply changes if rank actually changed
-            if [ "$current_rank" != "$previous_rank" ]; then
-                # Handle blacklist changes
-                if [ "$blacklisted" = "YES" ]; then
-                    server_command "/unmod $player_name"
-                    server_command "/unadmin $player_name"
-                    server_command "/ban $player_name"
-                    local player_ip="${PLAYER_DATA[${player_name}_current_ip]}"
-                    if [ "$player_ip" != "UNKNOWN" ]; then
-                        server_command "/ban $player_ip"
-                    fi
-                    
-                    # Remove from cloud admin list if SUPER
-                    if [ "$current_rank" = "SUPER" ]; then
-                        sed -i "/^$player_name$/d" "$CLOUD_ADMIN_LIST"
-                    fi
-                else
-                    # Handle rank changes
-                    case "$current_rank" in
-                        "ADMIN")
-                            server_command "/admin $player_name"
-                            ;;
-                        "MOD")
-                            server_command "/mod $player_name"
-                            ;;
-                        "SUPER")
-                            if ! grep -q "^$player_name$" "$CLOUD_ADMIN_LIST"; then
-                                echo "$player_name" >> "$CLOUD_ADMIN_LIST"
-                            fi
-                            server_command "/admin $player_name"
-                            ;;
-                        "NONE")
-                            server_command "/unadmin $player_name"
-                            server_command "/unmod $player_name"
-                            # Remove from cloud admin list if was SUPER
-                            sed -i "/^$player_name$/d" "$CLOUD_ADMIN_LIST"
-                            ;;
-                    esac
-                fi
-                
-                # Store current rank as previous for next comparison
-                PLAYER_DATA[${player_name}_previous_rank]="$current_rank"
+    # compare previous SNAPSHOT entries for this world (we store by world prefix to avoid collisions)
+    for key in "${!SNAPSHOT[@]}"; do
+        # Only consider keys belonging to this world: we encoded them including world id prefix
+        if [[ "$key" == "${world_id}:"* ]]; then
+            local pname="${key#${world_id}:}"
+            local old_line="${SNAPSHOT[$key]}"
+            local new_line="${current_map[$pname]:-}"
+            if [ -z "$new_line" ]; then
+                # player removed from file -> treat as no change (explicit handling not required by instructions)
+                unset 'SNAPSHOT[$key]'
+            elif [ "$old_line" != "$new_line" ]; then
+                handle_record_transition "$world_id" "$old_line" "$new_line"
+                SNAPSHOT["${world_id}:${pname}"]="$new_line"
             fi
         fi
     done
+    # check for new players added to file
+    for k in "${!current_map[@]}"; do
+        local mapkey="${world_id}:${k}"
+        if [ -z "${SNAPSHOT[$mapkey]:-}" ]; then
+            # new entry added manually
+            SNAPSHOT[$mapkey]="${current_map[$k]}"
+            # No specific 'on add' actions except syncing lists; but if rank is SUPER add to cloud list
+            parse_players_line "${current_map[$k]}"
+            if [ "$PLAYER_RANK" = "SUPER" ]; then
+                cloud_admin_add "$PLAYER_NAME"
+            fi
+        fi
+    done
+
+    # After handling transitions, rebuild per-world SNAPSHOT-only listing used for sync
+    # For syncing we need a flat SNAPSHOT per world (without world prefix)
+    # Build temporary mapping for sync function
+    declare -A tmp_map=()
+    for k in "${!SNAPSHOT[@]}"; do
+        if [[ "$k" == "${world_id}:"* ]]; then
+            local pname="${k#${world_id}:}"
+            tmp_map["$pname"]="${SNAPSHOT[$k]}"
+        fi
+    done
+    # Replace SNAPSHOT entries for world with tmp_map entries (encapsulated in SNAPSHOT_WORLD_* variables)
+    # We'll rely on existing SNAPSHOT but the sync function expects SNAPSHOT to have entries without world prefix.
+    # For simplicity for sync, temporarily export the values into SNAPSHOT_FOR_SYNC array variable
+    declare -gA SNAPSHOT_FOR_SYNC
+    for k in "${!tmp_map[@]}"; do
+        SNAPSHOT_FOR_SYNC[$k]="${tmp_map[$k]}"
+    done
+    # Also update the global CONNECTED_PLAYERS_IP map by scanning console.log connection events (done elsewhere)
+    # Finally sync the admin/mod txts
+    sync_txt_lists_for_world "$world_id"
 }
 
-# Monitor player cooldowns and verification timeouts
-monitor_player_timeouts() {
-    while true; do
-        local current_time=$(date +%s)
-        
-        for player_name in "${!PLAYER_JOIN_TIMES[@]}"; do
-            local join_time="${PLAYER_JOIN_TIMES[$player_name]}"
-            local time_connected=$((current_time - join_time))
-            
-            # Check password set timeout (60 seconds)
-            if [ "${PLAYER_DATA[${player_name}_password]}" = "NONE" ] && [ "$time_connected" -gt 60 ]; then
-                server_command "/kick $player_name"
-                chat_message "$player_name was kicked for not setting a password within 60 seconds."
-                unset PLAYER_JOIN_TIMES["$player_name"]
-                print_warning "Kicked $player_name for not setting password"
+# ---------- Monitor server console logs for chat messages and connect/disconnect events ----------
+# We will tail console.log files for ALL worlds found under $BASE_SAVES_DIR and handle in-game commands:
+# - !password P1 P2
+# - !change_psw OLD NEW
+# - !ip_change PSW
+# and also handle connection log lines to record CONNECTED_PLAYERS_IP mapping for verification.
+
+# Launch a monitor that tails all console.log files (one per running world directory)
+start_console_tail_monitors() {
+    # find all console.log files under saves
+    local logs=()
+    while IFS= read -r -d $'\0' f; do logs+=("$f"); done < <(find "$BASE_SAVES_DIR" -type f -name "console.log" -print0 2>/dev/null)
+    if [ "${#logs[@]}" -eq 0 ]; then
+        log "No console.log files found to monitor. Will watch for creation."
+        return 0
+    fi
+    # For each log spawn a background tail -F process feeding into a handler
+    for logfile in "${logs[@]}"; do
+        _monitor_single_console "$logfile" &
+    done
+}
+
+# Monitor a single console.log file (background function)
+_monitor_single_console() {
+    local logfile="$1"
+    log "Starting monitor for $logfile"
+    # Continuously follow file
+    tail -n0 -F "$logfile" 2>/dev/null | while IFS= read -r line; do
+        # Example connection line from log (as given in INSTRUCCIONES.txt):
+        # 2025-09-23 16:20:00.636 blockheads_server171[131869:131869] PLOT_HEAVEN - Player Connected THE_WILD_SHADOW | 187.233.203.236 | uuid
+        if echo "$line" | grep -q "Player Connected"; then
+            # extract world name and player info
+            # get part after ']' to skip timestamp/frame
+            local after=$(echo "$line" | sed -E 's/^[^]]*\] //; s/^[^]]* //;')
+            # we expect: <WORLD> - Player Connected <NAME> | <IP> | <uuid>
+            local world=$(echo "$after" | awk -F' - ' '{print $1}' | tr -d ' ')
+            local rest=$(echo "$after" | awk -F' - ' '{print $2}')
+            # parse name and ip
+            local pname=$(echo "$rest" | sed -E 's/Player Connected //; s/ *\|.*//')
+            local ip=$(echo "$rest" | awk -F'|' '{gsub(/ /,"",$2); print $2}')
+            # map player->ip
+            CONNECTED_PLAYERS_IP["$pname"]="$ip"
+            log "Detected connect: [$world] $pname -> $ip"
+            # If there is an entry in players.log for this player, check IP mismatch triggers
+            local world_dir="$(dirname "$logfile")"
+            local world_id="$(basename "$world_dir")"
+            # If players file exists, check stored IP
+            local pfile="$BASE_SAVES_DIR/$world_id/players.log"
+            if [ -f "$pfile" ]; then
+                # find player line
+                local pline=$(grep -E "^$pname[[:space:]]*\|" "$pfile" || true)
+                if [ -n "$pline" ]; then
+                    parse_players_line "$pline"
+                    if [ "$PLAYER_IP" != "$ip" ]; then
+                        # IP differs -> start ip-change workflow
+                        log "IP mismatch for $pname (stored: $PLAYER_IP, current: $ip). Asking to verify within $IP_CHANGE_WINDOW seconds."
+                        send_cmd_to_world "$world_id" "/say $pname: Your IP doesn't match our records. You have $IP_CHANGE_WINDOW seconds to run: !ip_change <your_password>"
+                        # record expected
+                        PENDING_IP_EXPECTED["$pname"]="$ip"
+                        PENDING_IP_PLAYER_WORLD["$pname"]="$world_id"
+                        # spawn timer
+                        ( sleep "$IP_CHANGE_WINDOW"
+                          # after window, check if resolved
+                          if [ -n "${PENDING_IP_EXPECTED[$pname]:-}" ]; then
+                              # not resolved
+                              log "IP-change timeout for $pname -> kicking & banning IP $ip (temporary ban 30s)."
+                              do_rank_command "$world_id" "kick" "$pname"
+                              do_rank_command "$world_id" "ban" "$ip"
+                              # schedule unban after 30s
+                              ( sleep 30
+                                do_rank_command "$world_id" "unban" "$ip"
+                                log "Auto-unban executed for $ip after 30s (IP-change flow)."
+                                ) &
+                              unset PENDING_IP_EXPECTED["$pname"]
+                              unset PENDING_IP_PLAYER_WORLD["$pname"]
+                          fi
+                        ) &
+                        PENDING_IP_TIMER_PID["$pname"]=$!
+                    fi
+                fi
+            fi
+            continue
+        fi
+
+        # Player chat messages (format: "PLAYERNAME: message")
+        # We'll capture !password, !change_psw and !ip_change and process them
+        if echo "$line" | grep -qE '^[[:alnum:]_[:punct:]]+:'; then
+            # only consider lines where chat appears (simplified)
+            # Extract player and message
+            player=$(echo "$line" | awk -F'] ' '{print $2}' | sed -n 's/^\([^:]*\):.*$/\1/p' || true)
+            # Fallback: attempt simpler parse (if above fails)
+            if [ -z "$player" ]; then
+                player=$(echo "$line" | sed -E 's/^.*] //;s/:.*$//')
+            fi
+            msg=$(echo "$line" | sed -E 's/^.*: //')
+            # Trim
+            player=$(trim "$player")
+            msg=$(trim "$msg")
+            # if command !password
+            if echo "$msg" | grep -qE '^!password[[:space:]]+'; then
+                # parse args
+                args=$(echo "$msg" | sed -E 's/^!password[[:space:]]+//')
+                p1=$(echo "$args" | awk '{print $1}')
+                p2=$(echo "$args" | awk '{print $2}')
+                # input validation
+                if [ -z "$p1" ] || [ -z "$p2" ]; then
+                    send_cmd_to_world "$(basename "$(dirname "$logfile")")" "/clear"
+                    sleep "$COOLDOWN"
+                    send_cmd_to_world "$(basename "$(dirname "$logfile")")" "/say $player: password command requires two arguments."
+                    continue
+                fi
+                if [ "${#p1}" -lt 7 ] || [ "${#p1}" -gt 16 ]; then
+                    send_cmd_to_world "$(basename "$(dirname "$logfile")")" "/clear"
+                    sleep "$COOLDOWN"
+                    send_cmd_to_world "$(basename "$(dirname "$logfile")")" "/say $player: password length must be 7–16 characters."
+                    continue
+                fi
+                if [ "$p1" != "$p2" ]; then
+                    send_cmd_to_world "$(basename "$(dirname "$logfile")")" "/clear"
+                    sleep "$COOLDOWN"
+                    send_cmd_to_world "$(basename "$(dirname "$logfile")")" "/say $player: passwords do not match."
+                    continue
+                fi
+                # update players.log for this world if player exists, else add entry
+                local world_dir="$(dirname "$logfile")"
+                local world_id="$(basename "$world_dir")"
+                local pfile="$BASE_SAVES_DIR/$world_id/players.log"
+                mkdir -p "$BASE_SAVES_DIR/$world_id"
+                if grep -qE "^$player[[:space:]]*\|" "$pfile" 2>/dev/null; then
+                    # replace password field (3rd field)
+                    awk -F'|' -v OFS='|' -v name="$player" -v npw="$p1" '{gsub(/^[ \t]+|[ \t]+$/,"",$1); if($1==name){$3=" "npw" "}; print}' "$pfile" > "${pfile}.tmp" && mv -f "${pfile}.tmp" "$pfile"
+                else
+                    # create new line with defaults
+                    echo "$player | UNKNOWN | $p1 | NONE | NO | NO" >> "$pfile"
+                fi
+                # clear chat and confirm with cooldown
+                send_cmd_to_world "$world_id" "/clear"
+                sleep "$COOLDOWN"
+                send_cmd_to_world "$world_id" "/say $player: password set successfully."
+                # If there was a pending KICK timer because user lacked password, cancel it
+                if [ -n "${PENDING_KICK_TIMER_PID[$player]:-}" ]; then
+                    kill "${PENDING_KICK_TIMER_PID[$player]}" 2>/dev/null || true
+                    unset PENDING_KICK_TIMER_PID["$player"]
+                fi
                 continue
             fi
-            
-            # Check IP verification timeout (30 seconds) - only if IP changed and password is set
-            if [ -n "${PLAYER_IP_CHANGED[$player_name]}" ] && 
-               [ "${PLAYER_DATA[${player_name}_password]}" != "NONE" ] &&
-               [ "$time_connected" -gt 30 ] && 
-               [ -z "${PLAYER_COOLDOWNS[$player_name]}" ]; then
-                
-                server_command "/kick $player_name"
-                local player_ip="${PLAYER_DATA[${player_name}_current_ip]}"
-                if [ "$player_ip" != "UNKNOWN" ]; then
-                    server_command "/ban $player_ip"
-                fi
-                chat_message "$player_name was banned for 30 seconds for not verifying IP change."
-                PLAYER_COOLDOWNS["$player_name"]=$current_time
-                unset PLAYER_IP_CHANGED["$player_name"]
-                print_warning "Kicked and temp-banned $player_name for IP verification timeout"
-            fi
-        done
-        
-        # Clean up old cooldowns and join times
-        for player_name in "${!PLAYER_COOLDOWNS[@]}"; do
-            local cooldown_time="${PLAYER_COOLDOWNS[$player_name]}"
-            if [ $((current_time - cooldown_time)) -gt 60 ]; then  # 30 sec ban + 30 sec cleanup buffer
-                local player_ip="${PLAYER_DATA[${player_name}_current_ip]}"
-                if [ "$player_ip" != "UNKNOWN" ]; then
-                    server_command "/unban $player_ip"
-                fi
-                unset PLAYER_COOLDOWNS["$player_name"]
-                print_status "Removed temp ban for $player_name"
-            fi
-        done
-        
-        # Clean up old join times (players who left)
-        for player_name in "${!PLAYER_JOIN_TIMES[@]}"; do
-            local join_time="${PLAYER_JOIN_TIMES[$player_name]}"
-            if [ $((current_time - join_time)) -gt 300 ]; then  # 5 minutes
-                unset PLAYER_JOIN_TIMES["$player_name"]
-                unset PLAYER_IP_CHANGED["$player_name"]
-            fi
-        done
-        
-        sleep 1
-    done
-}
 
-# Main function
-main() {
-    if [ -z "$WORLD_ID" ]; then
-        print_error "Usage: $0 <world_id> [port]"
-        exit 1
-    fi
-    
-    if [ -z "$PORT" ]; then
-        PORT=12153
-    fi
-    
-    print_header "Starting Rank Patcher for World: $WORLD_ID, Port: $PORT"
-    print_status "Players log: $PLAYERS_LOG"
-    print_status "Console log: $CONSOLE_LOG"
-    print_status "Cloud admin list: $CLOUD_ADMIN_LIST"
-    
-    # Load initial player data
-    load_player_data
-    
-    # Initialize previous ranks
-    for key in "${!PLAYER_DATA[@]}"; do
-        if [[ $key == *"_rank" ]]; then
-            player_name="${key%_rank}"
-            PLAYER_DATA[${player_name}_previous_rank]="${PLAYER_DATA[$key]}"
+            # !change_psw OLD NEW
+            if echo "$msg" | grep -qE '^!change_psw[[:space:]]+'; then
+                args=$(echo "$msg" | sed -E 's/^!change_psw[[:space:]]+//')
+                old=$(echo "$args" | awk '{print $1}')
+                new=$(echo "$args" | awk '{print $2}')
+                if [ -z "$old" ] || [ -z "$new" ]; then
+                    send_cmd_to_world "$(basename "$(dirname "$logfile")")" "/clear"
+                    sleep "$COOLDOWN"
+                    send_cmd_to_world "$(basename "$(dirname "$logfile")")" "/say $player: !change_psw requires old and new password."
+                    continue
+                fi
+                if [ "${#new}" -lt 7 ] || [ "${#new}" -gt 16 ]; then
+                    send_cmd_to_world "$(basename "$(dirname "$logfile")")" "/clear"
+                    sleep "$COOLDOWN"
+                    send_cmd_to_world "$(basename "$(dirname "$logfile")")" "/say $player: new password length must be 7–16."
+                    continue
+                fi
+                # Update in players.log if old matches
+                local world_dir="$(dirname "$logfile")"
+                local world_id="$(basename "$world_dir")"
+                local pfile="$BASE_SAVES_DIR/$world_id/players.log"
+                if grep -qE "^$player[[:space:]]*\|" "$pfile" 2>/dev/null; then
+                    curline=$(grep -E "^$player[[:space:]]*\|" "$pfile" | head -n1)
+                    parse_players_line "$curline"
+                    if [ "$PLAYER_PSW" != "$old" ]; then
+                        send_cmd_to_world "$world_id" "/clear"
+                        sleep "$COOLDOWN"
+                        send_cmd_to_world "$world_id" "/say $player: old password incorrect."
+                    else
+                        # replace third field with new
+                        awk -F'|' -v OFS='|' -v name="$player" -v npw="$new" '{gsub(/^[ \t]+|[ \t]+$/,"",$1); if($1==name){$3=" "npw" "}; print}' "$pfile" > "${pfile}.tmp" && mv -f "${pfile}.tmp" "$pfile"
+                        send_cmd_to_world "$world_id" "/clear"
+                        sleep "$COOLDOWN"
+                        send_cmd_to_world "$world_id" "/say $player: password changed successfully."
+                    fi
+                else
+                    send_cmd_to_world "$world_id" "/clear"
+                    sleep "$COOLDOWN"
+                    send_cmd_to_world "$world_id" "/say $player: no password found; use !password to create one."
+                fi
+                continue
+            fi
+
+            # !ip_change PSW
+            if echo "$msg" | grep -qE '^!ip_change[[:space:]]+'; then
+                args=$(echo "$msg" | sed -E 's/^!ip_change[[:space:]]+//')
+                given_psw="$args"
+                local world_dir="$(dirname "$logfile")"
+                local world_id="$(basename "$world_dir")"
+                # find players.log entry
+                local pfile="$BASE_SAVES_DIR/$world_id/players.log"
+                if grep -qE "^$player[[:space:]]*\|" "$pfile" 2>/dev/null; then
+                    curline=$(grep -E "^$player[[:space:]]*\|" "$pfile" | head -n1)
+                    parse_players_line "$curline"
+                    # check password
+                    if [ "$PLAYER_PSW" = "$given_psw" ]; then
+                        # update stored ip to current connected ip (from CONNECTED_PLAYERS_IP)
+                        curip="${CONNECTED_PLAYERS_IP[$player]:-UNKNOWN}"
+                        if [ -z "$curip" ] || [ "$curip" = "UNKNOWN" ]; then
+                            send_cmd_to_world "$world_id" "/clear"
+                            sleep "$COOLDOWN"
+                            send_cmd_to_world "$world_id" "/say $player: cannot determine your current IP to update."
+                        else
+                            # update file third field remains psw, but second field replace with curip
+                            awk -F'|' -v OFS='|' -v name="$player" -v nip="$curip" '{gsub(/^[ \t]+|[ \t]+$/,"",$1); if($1==name){$2=" "nip" "}; print}' "$pfile" > "${pfile}.tmp" && mv -f "${pfile}.tmp" "$pfile"
+                            # clear chat and confirm after cooldown
+                            send_cmd_to_world "$world_id" "/clear"
+                            sleep "$COOLDOWN"
+                            send_cmd_to_world "$world_id" "/say $player: IP updated successfully."
+                            # cancel pending ip timer if present
+                            if [ -n "${PENDING_IP_TIMER_PID[$player]:-}" ]; then
+                                kill "${PENDING_IP_TIMER_PID[$player]}" 2>/dev/null || true
+                                unset PENDING_IP_TIMER_PID["$player"]
+                                unset PENDING_IP_EXPECTED["$player"]
+                                unset PENDING_IP_PLAYER_WORLD["$player"]
+                            fi
+                        fi
+                    else
+                        send_cmd_to_world "$world_id" "/clear"
+                        sleep "$COOLDOWN"
+                        send_cmd_to_world "$world_id" "/say $player: password incorrect for ip_change."
+                    fi
+                else
+                    send_cmd_to_world "$world_id" "/clear"
+                    sleep "$COOLDOWN"
+                    send_cmd_to_world "$world_id" "/say $player: no account found. Use !password to create one."
+                fi
+                continue
+            fi
         fi
     done
-    
-    # Apply initial ranks and update lists
-    apply_rank_changes
-    update_server_lists
-    
-    # Start monitoring processes in background
-    monitor_console &
-    console_pid=$!
-    monitor_players_log &
-    players_log_pid=$!
-    monitor_player_timeouts &
-    timeouts_pid=$!
-    
-    print_success "Rank patcher started successfully with all monitors"
-    print_status "Monitor PIDs: Console=$console_pid, PlayersLog=$players_log_pid, Timeouts=$timeouts_pid"
-    
-    # Wait for all background processes
-    wait
 }
 
-# Trap signals to clean up background processes
-cleanup() {
-    print_status "Stopping rank patcher..."
-    kill $console_pid $players_log_pid $timeouts_pid 2>/dev/null
-    exit 0
+# ---------- Initial discovery of worlds & create players.log if at least one world exists ----------
+discover_worlds_and_ensure_playerslog() {
+    # For every directory under saves that is a world id, ensure players.log exists
+    while IFS= read -r -d $'\0' dir; do
+        local world_id
+        world_id=$(basename "$dir")
+        local pfile="$dir/players.log"
+        PLAYERS_FILE_FOR_WORLD["$world_id"]="$pfile"
+        mkdir -p "$dir"
+        # Create file automatically after detecting at least one world
+        if [ ! -f "$pfile" ]; then
+            log "Creating players.log for world $world_id at $pfile"
+            # Create default empty file (no header). The file is sole source of truth.
+            >"$pfile"
+        fi
+    done < <(find "$BASE_SAVES_DIR" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
 }
 
-trap cleanup EXIT INT TERM
+# ---------- Main Loop ----------
+main_loop() {
+    log "Rank patcher started. Monitoring every $PLAYERS_POLL_INTERVAL s. (Reference: INSTRUCCIONES.txt)."
+    discover_worlds_and_ensure_playerslog
+    start_console_tail_monitors
 
-# Start the main function
-main "$@"
+    # Build initial snapshot
+    for world_id in "${!PLAYERS_FILE_FOR_WORLD[@]}"; do
+        file="${PLAYERS_FILE_FOR_WORLD[$world_id]}"
+        IFS=$'\n' read -d '' -r -a LINES < <(read_players_file_lines "$file" && printf '\0')
+        for ln in "${LINES[@]}"; do
+            parse_players_line "$ln"
+            SNAPSHOT["${world_id}:${PLAYER_NAME}"]="$ln"
+        done
+    done
+
+    # Continuous monitoring loop
+    while true; do
+        # rediscover worlds (in case new worlds created)
+        discover_worlds_and_ensure_playerslog
+
+        for world_id in "${!PLAYERS_FILE_FOR_WORLD[@]}"; do
+            file="${PLAYERS_FILE_FOR_WORLD[$world_id]}"
+            # Ensure file exists
+            [ -f "$file" ] || touch "$file"
+            # compute simple checksum to detect manual edits (or modified time)
+            cur_sum=$(md5sum "$file" 2>/dev/null | awk '{print $1}')
+            prev_var="SUM_${world_id}"
+            prev_sum="${!prev_var:-}"
+            if [ "$cur_sum" != "$prev_sum" ]; then
+                # file changed -> full scan and apply transitions
+                log "Detected change in players.log for world $world_id"
+                # load file contents
+                IFS=$'\n' read -d '' -r -a lines < <(read_players_file_lines "$file" && printf '\0')
+                # ensure each line matches format with 6 fields, otherwise note and skip invalid lines
+                # We'll normalize lines into exact format: NAME | IP | PSW | RANK | WHITELISTED | BLACKLISTED
+                tmpfile="${file}.normalized.tmp"
+                : > "$tmpfile"
+                for l in "${lines[@]}"; do
+                    # split and ensure 6 fields
+                    IFS='|' read -r f1 f2 f3 f4 f5 f6 <<< "$l"
+                    # If missing fields, pad with defaults
+                    NAME=$(trim "${f1:-UNKNOWN}")
+                    IP=$(trim "${f2:-UNKNOWN}")
+                    PSW=$(trim "${f3:-NONE}")
+                    RANK=$(trim "${f4:-NONE}")
+                    WL=$(trim "${f5:-NO}")
+                    BL=$(trim "${f6:-NO}")
+                    # sanitize values: enforce uppercase for RANK, YES/NO for lists
+                    RANK=$(echo "$RANK" | tr '[:lower:]' '[:upper:]')
+                    [ -z "$RANK" ] && RANK="NONE"
+                    # enforce allowed ranks
+                    case "$RANK" in ADMIN|MOD|SUPER|NONE) ;; *) RANK="NONE" ;; esac
+                    WL=$(echo "$WL" | tr '[:lower:]' '[:upper:]'); [ "$WL" != "YES" ] && WL="NO"
+                    BL=$(echo "$BL" | tr '[:lower:]' '[:upper:]'); [ "$BL" != "YES" ] && BL="NO"
+                    # password placeholder NONE -> if PSW is empty set NONE
+                    [ -z "$PSW" ] && PSW="NONE"
+                    echo "$NAME | $IP | $PSW | $RANK | $WL | $BL" >> "$tmpfile"
+                done
+                # atomically replace players.log with normalized version (keeps modifications consistent with instruction that players.log is single source)
+                mv -f "$tmpfile" "$file"
+                # Update sum
+                declare "$prev_var=$cur_sum"
+                # Now perform scan and actions
+                scan_players_file_and_apply "$world_id"
+                # refresh stored sum var from dynamic variable
+                eval "SUM_${world_id}='$cur_sum'"
+            fi
+        done
+
+        sleep "$PLAYERS_POLL_INTERVAL"
+    done
+}
+
+# ---------- Start ----------
+# Ensure script is not run as root (server files are per user)
+if [ "$EUID" -eq 0 ]; then
+    log "Script is running as root. Prefer running as normal user owning server files."
+fi
+
+main_loop
