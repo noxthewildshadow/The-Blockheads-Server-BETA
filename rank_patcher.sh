@@ -101,7 +101,6 @@ initialize_players_log() {
     if [ ! -f "$PLAYERS_LOG" ]; then
         print_status "Creating new players.log file"
         mkdir -p "$(dirname "$PLAYERS_LOG")"
-        touch "$PLAYERS_LOG"
         echo "# Player Name | First IP | Password | Rank | Whitelisted | Blacklisted" > "$PLAYERS_LOG"
         echo "# Format: PLAYER_NAME | IP | PASSWORD | RANK | WHITELISTED | BLACKLISTED" >> "$PLAYERS_LOG"
         print_success "players.log created at: $PLAYERS_LOG"
@@ -120,8 +119,9 @@ read_players_log() {
     
     while IFS='|' read -r name ip password rank whitelisted blacklisted; do
         # Skip header lines and empty lines
-        [[ "$name" =~ ^# ]] && continue
-        [[ -z "$name" ]] && continue
+        if [[ "$name" =~ ^# ]] || [ -z "$name" ]; then
+            continue
+        fi
         
         # Clean up fields and apply correct defaults
         name=$(echo "$name" | xargs)
@@ -132,12 +132,12 @@ read_players_log() {
         blacklisted=$(echo "$blacklisted" | xargs)
         
         # Apply required defaults
-        [ -z "$name" ] && name="UNKNOWN"
-        [ -z "$ip" ] && ip="UNKNOWN"
-        [ -z "$password" ] && password="NONE"
-        [ -z "$rank" ] && rank="NONE"
-        [ -z "$whitelisted" ] && whitelisted="NO"
-        [ -z "$blacklisted" ] && blacklisted="NO"
+        if [ -z "$name" ]; then name="UNKNOWN"; fi
+        if [ -z "$ip" ]; then ip="UNKNOWN"; fi
+        if [ -z "$password" ]; then password="NONE"; fi
+        if [ -z "$rank" ]; then rank="NONE"; fi
+        if [ -z "$whitelisted" ]; then whitelisted="NO"; fi
+        if [ -z "$blacklisted" ]; then blacklisted="NO"; fi
         
         if [ "$name" != "UNKNOWN" ]; then
             players_data["$name,name"]="$name"
@@ -253,11 +253,16 @@ sync_server_lists() {
     for list_file in "$ADMIN_LIST" "$MOD_LIST" "$WHITELIST" "$BLACKLIST"; do
         if [ -f "$list_file" ]; then
             # Keep first two lines (headers) only
-            head -n 2 "$list_file" > "${list_file}.tmp" 2>/dev/null
-            if [ $? -eq 0 ] && [ -s "${list_file}.tmp" ]; then
-                mv "${list_file}.tmp" "$list_file"
+            if head -n 2 "$list_file" > "${list_file}.tmp" 2>/dev/null; then
+                if [ -s "${list_file}.tmp" ]; then
+                    mv "${list_file}.tmp" "$list_file"
+                else
+                    # Create default headers if file is empty
+                    echo "# Usernames in this file are considered admins" > "$list_file"
+                    echo "# One username per line" >> "$list_file"
+                fi
             else
-                # Create default headers if file is empty or doesn't have 2 lines
+                # Create with headers if file doesn't exist
                 echo "# Usernames in this file are considered admins" > "$list_file"
                 echo "# One username per line" >> "$list_file"
             fi
@@ -276,8 +281,9 @@ sync_server_lists() {
         echo "# These players have SUPER rank across all worlds" >> "$CLOUD_ADMIN_LIST"
     else
         # Keep only first 2 lines
-        head -n 2 "$CLOUD_ADMIN_LIST" > "${CLOUD_ADMIN_LIST}.tmp" 2>/dev/null
-        mv "${CLOUD_ADMIN_LIST}.tmp" "$CLOUD_ADMIN_LIST" 2>/dev/null || true
+        if head -n 2 "$CLOUD_ADMIN_LIST" > "${CLOUD_ADMIN_LIST}.tmp" 2>/dev/null; then
+            mv "${CLOUD_ADMIN_LIST}.tmp" "$CLOUD_ADMIN_LIST" 2>/dev/null || true
+        fi
     fi
     
     # Add players to appropriate lists based on rank and status
@@ -293,30 +299,30 @@ sync_server_lists() {
             if [ "$ip" != "UNKNOWN" ] && [ -n "${connected_players[$name]}" ]; then
                 case "$rank" in
                     "ADMIN")
-                        if ! grep -q "^$name$" <(tail -n +3 "$ADMIN_LIST" 2>/dev/null); then
+                        if ! tail -n +3 "$ADMIN_LIST" 2>/dev/null | grep -q "^$name$"; then
                             echo "$name" >> "$ADMIN_LIST"
                         fi
                         ;;
                     "MOD")
-                        if ! grep -q "^$name$" <(tail -n +3 "$MOD_LIST" 2>/dev/null); then
+                        if ! tail -n +3 "$MOD_LIST" 2>/dev/null | grep -q "^$name$"; then
                             echo "$name" >> "$MOD_LIST"
                         fi
                         ;;
                     "SUPER")
-                        if ! grep -q "^$name$" <(tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null); then
+                        if ! tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -q "^$name$"; then
                             echo "$name" >> "$CLOUD_ADMIN_LIST"
                         fi
                         ;;
                 esac
                 
                 if [ "$whitelisted" = "YES" ]; then
-                    if ! grep -q "^$name$" <(tail -n +3 "$WHITELIST" 2>/dev/null); then
+                    if ! tail -n +3 "$WHITELIST" 2>/dev/null | grep -q "^$name$"; then
                         echo "$name" >> "$WHITELIST"
                     fi
                 fi
                 
                 if [ "$blacklisted" = "YES" ]; then
-                    if ! grep -q "^$name$" <(tail -n +3 "$BLACKLIST" 2>/dev/null); then
+                    if ! tail -n +3 "$BLACKLIST" 2>/dev/null | grep -q "^$name$"; then
                         echo "$name" >> "$BLACKLIST"
                     fi
                 fi
@@ -348,8 +354,8 @@ handle_rank_change() {
             ;;
         "SUPER")
             # Add to cloud admin list (ignore first 2 lines)
-            if ! grep -q "^$player_name$" <(tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null); then
-                echo "$name" >> "$CLOUD_ADMIN_LIST"
+            if ! tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -q "^$player_name$"; then
+                echo "$player_name" >> "$CLOUD_ADMIN_LIST"
                 print_success "Added $player_name to cloud-wide admin list"
             fi
             ;;
@@ -364,7 +370,7 @@ handle_rank_change() {
                 # Remove from cloud admin list (ignore first 2 lines)
                 temp_file=$(mktemp)
                 head -n 2 "$CLOUD_ADMIN_LIST" > "$temp_file"
-                grep -v "^$player_name$" <(tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null) >> "$temp_file"
+                tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -v "^$player_name$" >> "$temp_file"
                 mv "$temp_file" "$CLOUD_ADMIN_LIST"
                 print_success "Removed $player_name from cloud-wide admin list"
             fi
@@ -399,7 +405,7 @@ handle_blacklist_change() {
         if [ "$rank" = "SUPER" ]; then
             temp_file=$(mktemp)
             head -n 2 "$CLOUD_ADMIN_LIST" > "$temp_file"
-            grep -v "^$player_name$" <(tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null) >> "$temp_file"
+            tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -v "^$player_name$" >> "$temp_file"
             mv "$temp_file" "$CLOUD_ADMIN_LIST"
         fi
         
@@ -623,7 +629,9 @@ monitor_console_log() {
             local message="${BASH_REMATCH[2]}"
             
             # Skip server messages
-            [ "$player_name" = "SERVER" ] && continue
+            if [ "$player_name" = "SERVER" ]; then
+                continue
+            fi
             
             # Process commands
             case "$message" in
@@ -761,7 +769,7 @@ main() {
         local wait_time=0
         while [ ! -f "$CONSOLE_LOG" ] && [ $wait_time -lt 30 ]; do
             sleep 1
-            ((wait_time++))
+            wait_time=$((wait_time + 1))
         done
         
         if [ ! -f "$CONSOLE_LOG" ]; then
