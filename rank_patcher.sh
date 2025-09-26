@@ -448,7 +448,8 @@ validate_password() {
         return 1
     fi
     
-    if ! [[ "$password" =~ ^[a-zA-Z0-9!@#$%^&*()_+-=]+$ ]]; then
+    # CORRECCIÓN: Escapar caracteres especiales en la expresión regular
+    if ! [[ "$password" =~ ^[a-zA-Z0-9!@#$%^\&*()_+-=]+$ ]]; then
         echo "Password contains invalid characters"
         return 1
     fi
