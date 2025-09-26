@@ -60,16 +60,27 @@ free_port() {
     print_warning "Freeing port $port..."
     
     local pids=$(lsof -ti ":$port")
-    [ -n "$pids" ] && kill -9 $pids 2>/dev/null
+    if [ -n "$pids" ]; then
+        kill -9 $pids 2>/dev/null
+    fi
     
     local screen_server="blockheads_server_$port"
     local screen_patcher="rank_patcher_$port"
     
-    screen_session_exists "$screen_server" && screen -S "$screen_server" -X quit 2>/dev/null
-    screen_session_exists "$screen_patcher" && screen -S "$screen_patcher" -X quit 2>/dev/null
+    if screen_session_exists "$screen_server"; then
+        screen -S "$screen_server" -X quit 2>/dev/null
+    fi
+    
+    if screen_session_exists "$screen_patcher"; then
+        screen -S "$screen_patcher" -X quit 2>/dev/null
+    fi
     
     sleep 2
-    ! is_port_in_use "$port"
+    if is_port_in_use "$port"; then
+        return 1
+    else
+        return 0
+    fi
 }
 
 # Function to start rank_patcher
@@ -91,8 +102,10 @@ start_rank_patcher() {
     fi
     
     # Stop existing patcher
-    screen_session_exists "$screen_patcher" && screen -S "$screen_patcher" -X quit 2>/dev/null
-    sleep 1
+    if screen_session_exists "$screen_patcher"; then
+        screen -S "$screen_patcher" -X quit 2>/dev/null
+        sleep 1
+    fi
     
     # Start rank_patcher in screen session
     screen -dmS "$screen_patcher" bash -c "
@@ -120,14 +133,16 @@ start_server() {
     
     local SCREEN_SERVER="blockheads_server_$port"
     
-    [ ! -f "$SERVER_BINARY" ] && {
+    if [ ! -f "$SERVER_BINARY" ]; then
         print_error "Server binary not found: $SERVER_BINARY"
         return 1
-    }
+    fi
     
-    check_world_exists "$world_id" || return 1
+    if ! check_world_exists "$world_id"; then
+        return 1
+    fi
     
-    is_port_in_use "$port" && {
+    if is_port_in_use "$port"; then
         print_warning "Port $port is in use."
         if ! free_port "$port"; then
             print_error "Could not free port $port"
@@ -135,9 +150,10 @@ start_server() {
         fi
     fi
     
-    screen_session_exists "$SCREEN_SERVER" && screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
-    
-    sleep 1
+    if screen_session_exists "$SCREEN_SERVER"; then
+        screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
+        sleep 1
+    fi
     
     local log_dir="$BASE_DIR/$world_id"
     local log_file="$log_dir/console.log"
@@ -183,7 +199,7 @@ EOF
         ((wait_time++))
     done
     
-    [ ! -f "$log_file" ] && {
+    if [ ! -f "$log_file" ]; then
         print_error "Could not create log file. Server may not have started."
         return 1
     fi
@@ -215,13 +231,12 @@ EOF
         print_warning "Rank patcher failed to start (will retry)"
         # Retry after delay
         sleep 10
-        start_rank_patcher "$world_id" "$port" || print_warning "Rank patcher still failed"
+        if ! start_rank_patcher "$world_id" "$port"; then
+            print_warning "Rank patcher still failed"
+        fi
     fi
     
-    local server_started=0
-    screen_session_exists "$SCREEN_SERVER" && server_started=1
-    
-    if [ "$server_started" -eq 1 ]; then
+    if screen_session_exists "$SCREEN_SERVER"; then
         print_header "SERVER STARTED SUCCESSFULLY!"
         print_success "World: $world_id"
         print_success "Port: $port"
@@ -398,7 +413,11 @@ show_usage() {
 # Main execution
 case "$1" in
     start)
-        [ -z "$2" ] && print_error "You must specify a WORLD_NAME" && show_usage && exit 1
+        if [ -z "$2" ]; then
+            print_error "You must specify a WORLD_NAME"
+            show_usage
+            exit 1
+        fi
         start_server "$2" "$3"
         ;;
     stop)
