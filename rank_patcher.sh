@@ -438,7 +438,7 @@ auto_unban_ips() {
     done
 }
 
-# Function to validate password
+# Function to validate password (CORREGIDA)
 validate_password() {
     local password="$1"
     local length=${#password}
@@ -448,8 +448,8 @@ validate_password() {
         return 1
     fi
     
-    # CORRECCIÓN: Escapar caracteres especiales en la expresión regular
-    if ! [[ "$password" =~ ^[a-zA-Z0-9!@#$%^\&*()_+-=]+$ ]]; then
+    # CARACTERES ESPECIALES CORRECTAMENTE ESCAPADOS
+    if ! [[ "$password" =~ ^[a-zA-Z0-9!@#$%\&*()_+-=]+$ ]]; then
         echo "Password contains invalid characters"
         return 1
     fi
