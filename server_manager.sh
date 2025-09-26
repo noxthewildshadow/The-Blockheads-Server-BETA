@@ -1,5 +1,4 @@
 #!/bin/bash
-set -e
 
 # Color codes for output
 RED='\033[0;31m'
@@ -8,9 +7,6 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
-ORANGE='\033[0;33m'
-PURPLE='\033[0;35m'
-BOLD='\033[1m'
 NC='\033[0m'
 
 print_status() {
@@ -30,24 +26,14 @@ print_error() {
 }
 
 print_header() {
-    echo -e "${PURPLE}================================================================================${NC}"
-    echo -e "${PURPLE}$1${NC}"
-    echo -e "${PURPLE}================================================================================${NC}"
+    echo -e "${MAGENTA}================================================================================${NC}"
+    echo -e "${MAGENTA}$1${NC}"
+    echo -e "${MAGENTA}================================================================================${NC}"
 }
 
 print_step() {
     echo -e "${CYAN}[STEP]${NC} $1";
 }
-
-print_progress() {
-    echo -e "${MAGENTA}[PROGRESS]${NC} $1";
-}
-
-# Check if running as root
-[ "$EUID" -ne 0 ] && print_error "This script requires root privileges." && exit 1
-
-ORIGINAL_USER=${SUDO_USER:-$USER}
-USER_HOME=$(getent passwd "$ORIGINAL_USER" | cut -d: -f6)
 
 # Server binary and default port
 SERVER_BINARY="./blockheads_server171"
@@ -61,13 +47,13 @@ screen_session_exists() {
 
 # Function to check if port is in use
 is_port_in_use() {
-    lsof -Pi ":$1" -sTCP:LISTEN -t >/dev/null 2>&1
+    lsof -Pi ":$1" -sTCP:LISTEN -t >/dev/null 2>&1 || netstat -tuln 2>/dev/null | grep -q ":$1 "
 }
 
 # Function to check if world exists
 check_world_exists() {
     local world_id="$1"
-    local saves_dir="$USER_HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
+    local saves_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
     
     [ -d "$saves_dir/$world_id" ] || {
         print_error "World '$world_id' does not exist in: $saves_dir/"
@@ -85,7 +71,8 @@ free_port() {
     local port="$1"
     print_warning "Freeing port $port..."
     
-    local pids=$(lsof -ti ":$port")
+    # Find and kill processes using the port
+    local pids=$(lsof -ti ":$port" 2>/dev/null || netstat -tuln 2>/dev/null | grep ":$port " | awk '{print $7}' | cut -d'/' -f1)
     [ -n "$pids" ] && kill -9 $pids 2>/dev/null
     
     local screen_server="blockheads_server_$port"
@@ -162,7 +149,7 @@ start_server() {
     
     check_world_exists "$world_id" || return 1
     
-    is_port_in_use "$port" && {
+    is_port_in__use "$port" && {
         print_warning "Port $port is in use."
         if ! free_port "$port"; then
             print_error "Could not free port $port"
@@ -174,7 +161,7 @@ start_server() {
     screen_session_exists "$SCREEN_SERVER" && screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
     sleep 1
     
-    local log_dir="$USER_HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/$world_id"
+    local log_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/$world_id"
     local log_file="$log_dir/console.log"
     mkdir -p "$log_dir"
     
@@ -194,8 +181,8 @@ echo "Server Binary: $SERVER_BINARY"
 echo ""
 
 # Set proper environment variables
-export HOME="$USER_HOME"
-export USER="$ORIGINAL_USER"
+export HOME="$HOME"
+export USER="$USER"
 
 # Start the server with proper error handling
 while true; do
@@ -226,7 +213,7 @@ while true; do
         break
     fi
     
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Restarting server in 5 seconds..."
+    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Restarting in 5 seconds..."
     sleep 5
 done
 
@@ -274,7 +261,7 @@ EOF
         
         sleep 1
         ((wait_time++))
-        print_progress "Waiting... ${wait_time}s"
+        echo -e "${MAGENTA}[PROGRESS]${NC} Waiting... ${wait_time}s"
     done
     
     if [ "$server_ready" = false ]; then
@@ -517,18 +504,18 @@ show_status() {
             print_status "World ID: ${CYAN}$WORLD_ID${NC}"
             
             # Check world directory
-            local world_dir="$USER_HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/$WORLD_ID"
+            local world_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/$WORLD_ID"
             if [ -d "$world_dir" ]; then
                 print_success "World Directory: EXISTS"
                 
                 # Check console log
                 local console_log="$world_dir/console.log"
                 if [ -f "$console_log" ]; then
-                    local log_size=$(du -h "$console_log" | cut -f1)
+                    local log_size=$(du -h "$console_log" 2>/dev/null | cut -f1 || echo "unknown")
                     print_status "Console Log: $console_log ($log_size)"
                     
                     # Show last connection if available
-                    local last_conn=$(grep "Player Connected" "$console_log" | tail -n 1 | cut -d']' -f2- | sed 's/^ *//')
+                    local last_conn=$(grep "Player Connected" "$console_log" 2>/dev/null | tail -n 1 | cut -d']' -f2- | sed 's/^ *//')
                     if [ -n "$last_conn" ]; then
                         print_status "Last Connection: $last_conn"
                     fi
@@ -539,7 +526,7 @@ show_status() {
                 # Check players.log
                 local players_log="$world_dir/players.log"
                 if [ -f "$players_log" ]; then
-                    local player_count=$(grep -v "^#" "$players_log" | grep -v "^$" | wc -l)
+                    local player_count=$(grep -v "^#" "$players_log" 2>/dev/null | grep -v "^$" | wc -l)
                     print_status "Registered Players: $player_count"
                 fi
             else
@@ -553,7 +540,7 @@ show_status() {
         print_step "Connection Information:"
         if is_port_in_use "$port"; then
             print_success "Port $port: IN USE"
-            local pid=$(lsof -ti ":$port")
+            local pid=$(lsof -ti ":$port" 2>/dev/null || echo "unknown")
             print_status "Process ID: $pid"
         else
             print_warning "Port $port: AVAILABLE"
@@ -587,7 +574,7 @@ show_logs() {
     fi
     
     local world_id=$(cat "world_id_$port.txt")
-    local log_file="$USER_HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/$world_id/console.log"
+    local log_file="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/$world_id/console.log"
     
     if [ ! -f "$log_file" ]; then
         print_error "Log file not found: $log_file"
@@ -625,9 +612,11 @@ create_world() {
     print_step "Available worlds:"
     ./blockheads_server171 -l 2>/dev/null || {
         print_warning "Could not list worlds. Checking saves directory..."
-        local saves_dir="$USER_HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
+        local saves_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
         if [ -d "$saves_dir" ]; then
-            ls -la "$saves_dir" | grep -E "^d" | awk '{print $9}' | grep -v "^$"
+            ls -la "$saves_dir" | grep -E "^d" | awk '{print $9}' | grep -v "^$" || echo "No worlds found"
+        else
+            echo "Saves directory not found: $saves_dir"
         fi
     }
 }
