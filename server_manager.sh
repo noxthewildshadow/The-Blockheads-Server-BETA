@@ -93,7 +93,7 @@ start_rank_patcher() {
     local wait_time=0
     while [ ! -f "$console_log" ] && [ $wait_time -lt 30 ]; do
         sleep 1
-        ((wait_time++))
+        wait_time=$((wait_time + 1))
     done
     
     if [ ! -f "$console_log" ]; then
@@ -196,7 +196,7 @@ EOF
     local wait_time=0
     while [ ! -f "$log_file" ] && [ $wait_time -lt 15 ]; do
         sleep 1
-        ((wait_time++))
+        wait_time=$((wait_time + 1))
     done
     
     if [ ! -f "$log_file" ]; then
@@ -231,8 +231,10 @@ EOF
         print_warning "Rank patcher failed to start (will retry)"
         # Retry after delay
         sleep 10
-        if ! start_rank_patcher "$world_id" "$port"; then
-            print_warning "Rank patcher still failed"
+        if start_rank_patcher "$world_id" "$port"; then
+            print_success "Rank patcher started on retry"
+        else
+            print_warning "Rank patcher still failed after retry"
         fi
     fi
     
@@ -258,16 +260,23 @@ stop_server() {
         print_header "STOPPING ALL SERVERS"
         print_step "Stopping all servers and rank patchers..."
         
-        for server_session in $(screen -list | grep "blockheads_server_" | awk -F. '{print $1}'); do
-            screen -S "$server_session" -X quit 2>/dev/null
-            print_success "Stopped server: $server_session"
+        # Stop all server sessions
+        for server_session in $(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | awk '{print $1}'); do
+            if screen_session_exists "$server_session"; then
+                screen -S "$server_session" -X quit 2>/dev/null
+                print_success "Stopped server: $server_session"
+            fi
         done
         
-        for patcher_session in $(screen -list | grep "rank_patcher_" | awk -F. '{print $1}'); do
-            screen -S "$patcher_session" -X quit 2>/dev/null
-            print_success "Stopped rank patcher: $patcher_session"
+        # Stop all patcher sessions
+        for patcher_session in $(screen -list | grep "rank_patcher_" | awk -F. '{print $1}' | awk '{print $1}'); do
+            if screen_session_exists "$patcher_session"; then
+                screen -S "$patcher_session" -X quit 2>/dev/null
+                print_success "Stopped rank patcher: $patcher_session"
+            fi
         done
         
+        # Kill any remaining processes
         pkill -f "$SERVER_BINARY" 2>/dev/null || true
         
         # Clean up world ID files
@@ -295,6 +304,7 @@ stop_server() {
             print_warning "Rank patcher was not running on port $port."
         fi
         
+        # Kill any remaining processes for this port
         pkill -f "$SERVER_BINARY.*$port" 2>/dev/null || true
         
         # Clean up world ID file for this port
@@ -308,7 +318,7 @@ stop_server() {
 list_servers() {
     print_header "LIST OF RUNNING SERVERS"
     
-    local servers=$(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | sed 's/blockheads_server_/ - Port: /')
+    local servers=$(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | awk '{print $1}' | sed 's/blockheads_server_/ - Port: /')
     
     if [ -z "$servers" ]; then
         print_warning "No servers are currently running."
@@ -329,7 +339,7 @@ show_status() {
     if [ -z "$port" ]; then
         print_header "THE BLOCKHEADS SERVER STATUS - ALL SERVERS"
         
-        local servers=$(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | sed 's/blockheads_server_//')
+        local servers=$(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | awk '{print $1}' | sed 's/blockheads_server_//')
         
         if [ -z "$servers" ]; then
             print_error "No servers are currently running."
