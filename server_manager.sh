@@ -1,17 +1,19 @@
 #!/bin/bash
 
-# Enhanced Colors for output
+# server_manager.sh
+# This script manages The Blockheads server instances, including starting, stopping, and status checks.
+# It launches the rank_patcher.sh script for each running server instance.
+
+# Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
-ORANGE='\033[0;33m'
-PURPLE='\033[0;35m'
-BOLD='\033[1m'
 NC='\033[0m'
 
+# --- Output Functions ---
 print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
@@ -28,531 +30,200 @@ print_status() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
 
-print_header() {
-    echo -e "${PURPLE}================================================================================${NC}"
-    echo -e "${PURPLE}$1${NC}"
-    echo -e "${PURPLE}================================================================================${NC}"
-}
-
 print_step() {
     echo -e "${CYAN}[STEP]${NC} $1"
 }
 
-# Server binary and default port
+print_header() {
+    echo -e "${MAGENTA}================================================================================${NC}"
+    echo -e "${MAGENTA}$1${NC}"
+    echo -e "${MAGENTA}================================================================================${NC}"
+}
+
+# --- Configuration ---
 SERVER_BINARY="./blockheads_server171"
-DEFAULT_PORT=12153
-RANK_PATCHER="./rank_patcher.sh"
+DEFAULT_PORT=15151
+SAVES_DIR="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
+RANK_PATCHER_SCRIPT="./rank_patcher.sh"
 
-# Function to check if screen session exists
+# --- Utility Functions ---
+
+# Checks if a screen session exists
 screen_session_exists() {
-    screen -list | grep -q "$1" 2>/dev/null
+    screen -list | grep -q "$1"
 }
 
-# Function to check if port is in use
+# Checks if a given port is in use
 is_port_in_use() {
-    lsof -Pi ":$1" -sTCP:LISTEN -t >/dev/null 2>&1
+    lsof -iTCP:"$1" -sTCP:LISTEN -t >/dev/null
 }
 
-# Function to check if world exists
+# Checks if the specified world directory exists
 check_world_exists() {
     local world_id="$1"
-    local saves_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
-    
-    if [ ! -d "$saves_dir/$world_id" ]; then
-        print_error "World '$world_id' does not exist in: $saves_dir/"
-        echo ""
-        print_warning "To create a world: ${GREEN}./blockheads_server171 -n${NC}"
-        print_warning "After creating the world, press ${YELLOW}CTRL+C${NC} to exit"
+    if [ ! -d "$SAVES_DIR/$world_id" ]; then
+        print_error "World '$world_id' does not exist in: $SAVES_DIR/"
+        echo
+        print_warning "To list worlds: ${GREEN}${SERVER_BINARY} -l${NC}"
+        print_warning "To create a world: ${GREEN}${SERVER_BINARY} -n${NC}"
+        print_warning "After creating the world, press ${YELLOW}CTRL+C${NC} to exit the creation process."
         return 1
     fi
-    
     return 0
 }
 
-# Function to create directory structure
-create_directory_structure() {
-    local world_id="$1"
-    local saves_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
-    local world_dir="$saves_dir/$world_id"
-    
-    # Create the entire directory path
-    mkdir -p "$world_dir"
-    
-    if [ $? -ne 0 ]; then
-        print_error "Failed to create directory: $world_dir"
-        return 1
-    fi
-    
-    # Set proper permissions
-    chmod 755 "$saves_dir" 2>/dev/null || true
-    chmod 755 "$world_dir" 2>/dev/null || true
-    
-    print_success "Directory structure created: $world_dir"
-    return 0
-}
+# --- Core Functions ---
 
-# Function to free port
-free_port() {
-    local port="$1"
-    print_warning "Freeing port $port..."
-    
-    local pids
-    pids=$(lsof -ti ":$port" 2>/dev/null || true)
-    if [ -n "$pids" ]; then
-        kill -9 $pids 2>/dev/null || true
-    fi
-    
-    local screen_server="blockheads_server_$port"
-    local screen_patcher="rank_patcher_$port"
-    
-    if screen_session_exists "$screen_server"; then
-        screen -S "$screen_server" -X quit 2>/dev/null || true
-    fi
-    
-    if screen_session_exists "$screen_patcher"; then
-        screen -S "$screen_patcher" -X quit 2>/dev/null || true
-    fi
-    
-    sleep 2
-    
-    if is_port_in_use "$port"; then
-        return 1
-    else
-        return 0
-    fi
-}
-
-# Function to start rank patcher
-start_rank_patcher() {
-    local world_id="$1"
-    local port="$2"
-    
-    local SCREEN_PATCHER="rank_patcher_$port"
-    
-    # Stop existing patcher
-    if screen_session_exists "$SCREEN_PATCHER"; then
-        screen -S "$SCREEN_PATCHER" -X quit 2>/dev/null || true
-        sleep 1
-    fi
-    
-    # Start rank patcher in screen session
-    screen -dmS "$SCREEN_PATCHER" bash -c "
-        cd '$PWD'
-        echo 'Starting rank patcher for world $world_id on port $port...'
-        ./rank_patcher.sh '$world_id'
-        echo 'Rank patcher stopped.'
-        sleep 5
-    "
-    
-    # Wait for patcher to start
-    sleep 2
-    
-    if screen_session_exists "$SCREEN_PATCHER"; then
-        print_success "Rank patcher started successfully"
-        return 0
-    else
-        print_error "Failed to start rank patcher"
-        return 1
-    fi
-}
-
-# Function to start server
 start_server() {
     local world_id="$1"
     local port="${2:-$DEFAULT_PORT}"
-    
-    local SCREEN_SERVER="blockheads_server_$port"
-    
+    local screen_session_name="blockheads_server_$port"
+
+    # --- Pre-start Checks ---
     if [ ! -f "$SERVER_BINARY" ]; then
         print_error "Server binary not found: $SERVER_BINARY"
-        print_warning "Make sure you are in the correct directory containing blockheads_server171"
         return 1
     fi
-    
-    if [ ! -f "$RANK_PATCHER" ]; then
-        print_error "Rank patcher not found: $RANK_PATCHER"
-        print_warning "Make sure rank_patcher.sh is in the same directory"
+    if [ ! -f "$RANK_PATCHER_SCRIPT" ]; then
+        print_error "Rank patcher script not found: $RANK_PATCHER_SCRIPT. Make sure it is in the same directory."
         return 1
     fi
-    
     if ! check_world_exists "$world_id"; then
-        print_warning "World directory doesn't exist, attempting to create it..."
-        if ! create_directory_structure "$world_id"; then
-            return 1
-        fi
-    fi
-    
-    if is_port_in_use "$port"; then
-        print_warning "Port $port is in use."
-        if ! free_port "$port"; then
-            print_error "Could not free port $port"
-            print_warning "Try using a different port or check what's using port $port with: lsof -i :$port"
-            return 1
-        fi
-    fi
-    
-    if screen_session_exists "$SCREEN_SERVER"; then
-        screen -S "$SCREEN_SERVER" -X quit 2>/dev/null || true
-    fi
-    
-    sleep 1
-    
-    local log_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/$world_id"
-    local log_file="$log_dir/console.log"
-    
-    # Ensure directory exists and has proper permissions
-    mkdir -p "$log_dir"
-    if [ $? -ne 0 ]; then
-        print_error "Failed to create log directory: $log_dir"
         return 1
     fi
-    
-    # Create empty log file with proper permissions
-    touch "$log_file" 2>/dev/null || true
-    chmod 666 "$log_file" 2>/dev/null || true
-    
-    print_header "STARTING SERVER - WORLD: $world_id, PORT: $port"
-    print_status "Log file: $log_file"
-    
-    # Save world ID for this port
-    echo "$world_id" > "world_id_$port.txt" 2>/dev/null || true
-    
-    # Create a simpler startup script without complex quoting
-    cat > /tmp/start_server_$$.sh << 'EOF'
-#!/bin/bash
-cd "$(dirname "$0")"
-WORLD_ID="$1"
-PORT="$2"
-LOG_FILE="$3"
-
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting server with world $WORLD_ID on port $PORT..."
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Log file: $LOG_FILE"
-
-# Start the server and log output
-./blockheads_server171 -o "$WORLD_ID" -p "$PORT" 2>&1 | tee -a "$LOG_FILE"
-
-EXIT_CODE=$?
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Server exited with code: $EXIT_CODE"
-exit $EXIT_CODE
-EOF
-    
-    chmod +x /tmp/start_server_$$.sh
-    
-    # Start server in screen session with simpler approach
-    screen -dmS "$SCREEN_SERVER" bash -c "
-        cd '$PWD'
-        export WORLD_ID='$world_id'
-        export PORT='$port'
-        export LOG_FILE='$log_file'
-        while true; do
-            echo \"[\\\$(date '+%Y-%m-%d %H:%M:%S')] Starting server...\"
-            ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'
-            EXIT_CODE=\\\$?
-            echo \"[\\\$(date '+%Y-%m-%d %H:%M:%S')] Server exited with code: \\\$EXIT_CODE\"
-            if [ \\\$EXIT_CODE -eq 1 ] && tail -n 5 '$log_file' | grep -q \"port.*already in use\"; then
-                echo \"[\\\$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Port already in use. Stopping.\"
-                break
-            fi
-            echo \"[\\\$(date '+%Y-%m-%d %H:%M:%S')] Restarting in 5 seconds...\"
-            sleep 5
-        done
-    "
-    
-    # Clean up temp file
-    rm -f /tmp/start_server_$$.sh
-    
-    print_step "Waiting for server to start (checking log file creation)..."
-    
-    local wait_time=0
-    local max_wait=30
-    while [ ! -f "$log_file" ] && [ $wait_time -lt $max_wait ]; do
-        sleep 1
-        wait_time=$((wait_time + 1))
-        print_status "Waiting for log file... ($wait_time/$max_wait seconds)"
-    done
-    
-    if [ ! -f "$log_file" ]; then
-        print_error "Log file was not created: $log_file"
-        print_warning "This could be due to:"
-        print_warning "1. Directory permissions issues"
-        print_warning "2. Server binary not starting correctly"
-        print_warning "3. Incorrect world ID"
-        
-        # Check if screen session is running
-        if screen_session_exists "$SCREEN_SERVER"; then
-            print_status "Server screen session exists, checking status..."
-            # Try to capture any error output
-            sleep 2
-            if [ -f "$log_file" ]; then
-                print_success "Log file finally created!"
-                tail -n 10 "$log_file"
-            else
-                print_error "Server may have failed to start. Check screen session for details:"
-                print_status "Run: screen -r $SCREEN_SERVER"
-            fi
-        else
-            print_error "Server screen session not found. Server failed to start."
-            return 1
-        fi
-    else
-        print_success "Log file created successfully: $log_file"
+    if is_port_in_use "$port"; then
+        print_error "Port $port is already in use. Stopping the existing server..."
+        stop_server "$port"
+        sleep 2
     fi
+    if screen_session_exists "$screen_session_name"; then
+        print_warning "A screen session named '$screen_session_name' already exists. Terminating it..."
+        screen -S "$screen_session_name" -X quit
+        sleep 1
+    fi
+
+    print_header "STARTING SERVER | WORLD: $world_id | PORT: $port"
     
-    print_step "Waiting for server initialization..."
+    local log_dir="$SAVES_DIR/$world_id"
+    local console_log="$log_dir/console.log"
+    mkdir -p "$log_dir"
+    # Clear old log to avoid reading past commands
+    > "$console_log"
+
+    print_step "Starting server in a detached screen session: $screen_session_name"
     
-    local server_ready=false
-    for i in {1..60}; do
-        if [ -f "$log_file" ] && grep -q "World load complete\|Server started\|Ready for connections\|using seed:\|save delay:" "$log_file"; then
-            server_ready=true
+    # Start the server binary inside a screen session.
+    # The output (stdout and stderr) is piped to tee, which writes to the console.log and also to the screen stdout.
+    screen -dmS "$screen_session_name" bash -c \
+    "'$PWD/$SERVER_BINARY' -o '$world_id' -p '$port' 2>&1 | tee '$console_log'"
+
+    # --- Wait for Server to Initialize ---
+    print_step "Waiting for server to initialize..."
+    local ready=false
+    for i in {1..20}; do
+        if grep -q "World load complete" "$console_log"; then
+            print_success "Server has loaded the world."
+            ready=true
             break
         fi
         sleep 1
-        print_status "Waiting for server to initialize... ($i/60 seconds)"
     done
-    
-    if [ "$server_ready" = false ]; then
-        print_warning "Server did not show complete startup messages within 60 seconds"
-        if screen_session_exists "$SCREEN_SERVER"; then
-            print_status "Server screen session is active. Server may be starting slowly..."
-            # Show last few lines of log
-            if [ -f "$log_file" ]; then
-                print_status "Last 10 lines of log:"
-                tail -n 10 "$log_file"
-            fi
-        else
-            print_error "Server screen session not found. Server may have failed to start."
-            return 1
-        fi
-    else
-        print_success "Server started successfully!"
+
+    if [ "$ready" = false ]; then
+        print_error "Server failed to start. Check the screen session for errors:"
+        print_warning "To view console: ${CYAN}screen -r $screen_session_name${NC}"
+        return 1
     fi
-    
-    # Start rank patcher
-    print_step "Starting rank patcher..."
-    if start_rank_patcher "$world_id" "$port"; then
-        print_success "Rank patcher started successfully"
-    else
-        print_warning "Rank patcher failed to start, but server is running"
-    fi
-    
-    local server_started=0
-    if screen_session_exists "$SCREEN_SERVER"; then
-        server_started=1
-    fi
-    
-    if [ "$server_started" -eq 1 ]; then
-        print_header "SERVER STARTED SUCCESSFULLY!"
-        print_success "World: $world_id"
-        print_success "Port: $port"
-        if [ -f "$log_file" ]; then
-            print_success "Log file: $log_file"
-        fi
-        echo ""
-        print_status "To view server console: ${CYAN}screen -r $SCREEN_SERVER${NC}"
-        print_status "To view rank patcher: ${CYAN}screen -r rank_patcher_$port${NC}"
-        echo ""
-        print_warning "To exit console without stopping server: ${YELLOW}CTRL+A, D${NC}"
-        echo ""
-        print_status "Server is now running with rank patcher monitoring"
-    else
-        print_warning "Could not verify server screen session"
-        print_status "Check if server is running with: screen -list"
-    fi
+
+    # --- Launch Rank Patcher ---
+    print_step "Launching the Rank Patcher in the same session..."
+    # Use 'stuff' to send commands to the running screen session.
+    # This runs the rank_patcher, passing the world_id and screen session name as arguments.
+    screen -S "$screen_session_name" -p 0 -X stuff "$PWD/rank_patcher.sh '$world_id' '$screen_session_name' \n"
+
+    print_success "Rank Patcher has been launched."
+    echo
+    print_header "SERVER AND RANK PATCHER ARE RUNNING"
+    print_status "To view server console: ${CYAN}screen -r $screen_session_name${NC}"
+    print_warning "To detach from the console without stopping the server, press: ${YELLOW}CTRL+A then D${NC}"
 }
 
-# Function to stop server
 stop_server() {
-    local port="$1"
-    
-    if [ -z "$port" ]; then
-        print_header "STOPPING ALL SERVERS AND RANK PATCHERS"
-        print_step "Stopping all servers and rank patchers..."
-        
+    if [ -z "$1" ]; then
         # Stop all servers
-        for server_session in $(screen -list 2>/dev/null | grep "blockheads_server_" | awk -F. '{print $1}' || true); do
-            screen -S "$server_session" -X quit 2>/dev/null || true
-            print_success "Stopped server: $server_session"
+        print_header "STOPPING ALL RUNNING SERVERS"
+        local running_sessions=$(screen -list | grep "blockheads_server_" | awk '{print $1}')
+        if [ -z "$running_sessions" ]; then
+            print_warning "No servers are currently running."
+            return
+        fi
+        for session in $running_sessions; do
+            screen -S "$session" -X quit
+            print_success "Stopped session: $session"
         done
-        
-        # Stop all rank patchers
-        for patcher_session in $(screen -list 2>/dev/null | grep "rank_patcher_" | awk -F. '{print $1}' || true); do
-            screen -S "$patcher_session" -X quit 2>/dev/null || true
-            print_success "Stopped rank patcher: $patcher_session"
-        done
-        
-        pkill -f "$SERVER_BINARY" 2>/dev/null || true
-        pkill -f "$RANK_PATCHER" 2>/dev/null || true
-        
-        # Clean up world ID files
-        rm -f world_id_*.txt 2>/dev/null || true
-        
-        print_success "All servers and rank patchers stopped."
+        # Fallback to kill any lingering processes
+        pkill -f "$SERVER_BINARY"
     else
-        print_header "STOPPING SERVER AND RANK PATCHER ON PORT $port"
-        print_step "Stopping server and rank patcher on port $port..."
-        
-        local screen_server="blockheads_server_$port"
-        local screen_patcher="rank_patcher_$port"
-        
-        if screen_session_exists "$screen_server"; then
-            screen -S "$screen_server" -X quit 2>/dev/null || true
-            print_success "Server stopped on port $port."
+        # Stop a specific server
+        local port="$1"
+        local screen_session_name="blockheads_server_$port"
+        print_header "STOPPING SERVER ON PORT $port"
+        if ! screen_session_exists "$screen_session_name"; then
+            print_warning "No server found running on port $port."
         else
-            print_warning "Server was not running on port $port."
+            screen -S "$screen_session_name" -X quit
+            print_success "Server on port $port has been stopped."
         fi
-        
-        if screen_session_exists "$screen_patcher"; then
-            screen -S "$screen_patcher" -X quit 2>/dev/null || true
-            print_success "Rank patcher stopped on port $port."
-        else
-            print_warning "Rank patcher was not running on port $port."
+         # Fallback to kill any lingering processes for that specific port
+        local pid=$(lsof -iTCP:"$port" -sTCP:LISTEN -t)
+        if [ -n "$pid" ]; then
+            kill -9 "$pid"
         fi
-        
-        pkill -f "$SERVER_BINARY.*$port" 2>/dev/null || true
-        pkill -f "$RANK_PATCHER.*$port" 2>/dev/null || true
-        
-        # Clean up world ID file for this port
-        rm -f "world_id_$port.txt" 2>/dev/null || true
-        
-        print_success "Server and rank patcher cleanup completed for port $port."
     fi
 }
 
-# Function to list servers
-list_servers() {
-    print_header "LIST OF RUNNING SERVERS AND RANK PATCHERS"
-    
-    local servers
-    servers=$(screen -list 2>/dev/null | grep "blockheads_server_" | awk -F. '{print $1}' | sed 's/blockheads_server_/ - Port: /' || true)
-    local patchers
-    patchers=$(screen -list 2>/dev/null | grep "rank_patcher_" | awk -F. '{print $1}' | sed 's/rank_patcher_/ - Port: /' || true)
-    
-    if [ -z "$servers" ] && [ -z "$patchers" ]; then
-        print_warning "No servers or rank patchers are currently running."
-    else
-        if [ -n "$servers" ]; then
-            print_status "Running servers:"
-            while IFS= read -r server; do
-                print_status " $server"
-            done <<< "$servers"
-        fi
-        
-        if [ -n "$patchers" ]; then
-            print_status "Running rank patchers:"
-            while IFS= read -r patcher; do
-                print_status " $patcher"
-            done <<< "$patchers"
-        fi
-    fi
-    
-    print_header "END OF LIST"
-}
-
-# Function to show status
 show_status() {
-    local port="$1"
-    
-    if [ -z "$port" ]; then
-        print_header "THE BLOCKHEADS SERVER STATUS - ALL SERVERS"
-        
-        local servers
-        servers=$(screen -list 2>/dev/null | grep "blockheads_server_" | awk -F. '{print $1}' | sed 's/blockheads_server_//' || true)
-        
-        if [ -z "$servers" ]; then
-            print_error "No servers are currently running."
-        else
-            while IFS= read -r server_port; do
-                if screen_session_exists "blockheads_server_$server_port"; then
-                    print_success "Server on port $server_port: RUNNING"
-                else
-                    print_error "Server on port $server_port: STOPPED"
-                fi
-                
-                if screen_session_exists "rank_patcher_$server_port"; then
-                    print_success "Rank patcher on port $server_port: RUNNING"
-                else
-                    print_error "Rank patcher on port $server_port: STOPPED"
-                fi
-                
-                if [ -f "world_id_$server_port.txt" ]; then
-                    local WORLD_ID
-                    WORLD_ID=$(cat "world_id_$server_port.txt" 2>/dev/null)
-                    print_status "World for port $server_port: ${CYAN}$WORLD_ID${NC}"
-                fi
-                echo ""
-            done <<< "$servers"
-        fi
+    print_header "SERVER STATUS"
+    local running_sessions=$(screen -list | grep "blockheads_server_")
+    if [ -z "$running_sessions" ]; then
+        print_warning "No Blockheads servers are currently running."
     else
-        print_header "THE BLOCKHEADS SERVER STATUS - PORT $port"
-        
-        if screen_session_exists "blockheads_server_$port"; then
-            print_success "Server: RUNNING"
-        else
-            print_error "Server: STOPPED"
-        fi
-        
-        if screen_session_exists "rank_patcher_$port"; then
-            print_success "Rank patcher: RUNNING"
-        else
-            print_error "Rank patcher: STOPPED"
-        fi
-        
-        if [ -f "world_id_$port.txt" ]; then
-            local WORLD_ID
-            WORLD_ID=$(cat "world_id_$port.txt" 2>/dev/null)
-            print_status "Current world: ${CYAN}$WORLD_ID${NC}"
-            
-            if screen_session_exists "blockheads_server_$port"; then
-                print_status "To view console: ${CYAN}screen -r blockheads_server_$port${NC}"
-            fi
-            
-            if screen_session_exists "rank_patcher_$port"; then
-                print_status "To view rank patcher: ${CYAN}screen -r rank_patcher_$port${NC}"
-            fi
-        else
-            print_warning "World: Not configured for port $port"
-        fi
+        echo -e "${GREEN}Running Server Instances:${NC}"
+        echo "$running_sessions" | while read -r line; do
+            local session_name=$(echo "$line" | awk '{print $1}')
+            local port=$(echo "$session_name" | awk -F_ '{print $3}')
+            echo -e "  - ${CYAN}Session:${NC} $session_name | ${CYAN}Port:${NC} $port | ${GREEN}Status: RUNNING${NC}"
+        done
     fi
-    
-    print_header "END OF STATUS"
 }
 
-# Function to show usage
 show_usage() {
-    print_header "THE BLOCKHEADS SERVER MANAGER WITH RANK PATCHER"
-    print_status "Usage: $0 [command]"
-    echo ""
-    print_status "Available commands:"
-    echo -e " ${GREEN}start${NC} [WORLD_NAME] [PORT] - Start server with rank patcher"
-    echo -e " ${RED}stop${NC} [PORT] - Stop server and rank patcher"
-    echo -e " ${CYAN}status${NC} [PORT] - Show server and rank patcher status"
-    echo -e " ${YELLOW}list${NC} - List all running servers and rank patchers"
-    echo -e " ${YELLOW}help${NC} - Show this help"
-    echo ""
-    print_status "Examples:"
-    echo -e " ${GREEN}$0 start MyWorld 12153${NC}"
-    echo -e " ${GREEN}$0 start MyWorld${NC} (uses default port 12153)"
-    echo -e " ${RED}$0 stop${NC} (stops all servers and rank patchers)"
-    echo -e " ${RED}$0 stop 12153${NC} (stops server on port 12153)"
-    echo -e " ${CYAN}$0 status${NC} (shows status of all servers)"
-    echo -e " ${CYAN}$0 status 12153${NC} (shows status of server on port 12153)"
-    echo -e " ${YELLOW}$0 list${NC} (lists all running servers and rank patchers)"
-    echo ""
-    print_warning "First create a world: ./blockheads_server171 -n"
-    print_warning "After creating the world, press CTRL+C to exit"
-    echo ""
-    print_status "Rank Patcher Features:"
-    echo -e " ${CYAN}• Centralized players.log management${NC}"
-    echo -e " ${CYAN}• Automated rank synchronization${NC}"
-    echo -e " ${CYAN}• Password system with IP verification${NC}"
-    echo -e " ${CYAN}• Real-time command monitoring${NC}"
+    print_header "THE BLOCKHEADS SERVER MANAGER"
+    echo "This script helps you manage your Blockheads server."
+    echo
+    echo -e "${YELLOW}USAGE:${NC}"
+    echo -e "  $0 ${GREEN}start${NC} <world_id> [port]"
+    echo -e "  $0 ${RED}stop${NC} [port]"
+    echo -e "  $0 ${CYAN}status${NC}"
+    echo
+    echo -e "${YELLOW}COMMANDS:${NC}"
+    echo -e "  ${GREEN}start${NC}   - Starts a server for a given world. Uses port $DEFAULT_PORT if not specified."
+    echo -e "  ${RED}stop${NC}    - Stops the server on a specific port. If no port is given, stops all servers."
+    echo -e "  ${CYAN}status${NC}  - Shows all currently running server instances."
+    echo
+    echo -e "${YELLOW}EXAMPLES:${NC}"
+    echo -e "  ./server_manager.sh start MyWorld"
+    echo -e "  ./server_manager.sh start AnotherWorld 15152"
+    echo -e "  ./server_manager.sh stop 15152"
+    echo -e "  ./server_manager.sh stop"
 }
 
-# Main execution
+
+# --- Main Logic ---
 case "$1" in
     start)
         if [ -z "$2" ]; then
-            print_error "You must specify a WORLD_NAME"
+            print_error "You must specify a world_id to start the server."
             show_usage
             exit 1
         fi
@@ -562,12 +233,9 @@ case "$1" in
         stop_server "$2"
         ;;
     status)
-        show_status "$2"
+        show_status
         ;;
-    list)
-        list_servers
-        ;;
-    help|--help|-h|*)
+    *)
         show_usage
         ;;
 esac
