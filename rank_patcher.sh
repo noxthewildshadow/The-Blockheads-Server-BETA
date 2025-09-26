@@ -10,14 +10,30 @@ CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 NC='\033[0m'
 
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+print_status() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
 print_header() {
     echo -e "${MAGENTA}================================================================"
     echo -e "$1"
     echo -e "===============================================================${NC}"
+}
+
+print_step() {
+    echo -e "${CYAN}[STEP]${NC} $1"
 }
 
 # Configuration
@@ -32,7 +48,10 @@ find_world_directory() {
     # Check if world ID is provided as argument
     if [ $# -eq 1 ] && [ -n "$1" ]; then
         world_dir="$BASE_SAVES_DIR/$1"
-        [ -d "$world_dir" ] && echo "$world_dir" && return 0
+        if [ -d "$world_dir" ]; then
+            echo "$world_dir"
+            return 0
+        fi
     fi
     
     # Auto-detect world directory
@@ -46,7 +65,11 @@ find_world_directory() {
         done
     fi
     
-    [ -z "$world_dir" ] && print_error "No world directory found" && return 1
+    if [ -z "$world_dir" ]; then
+        print_error "No world directory found"
+        return 1
+    fi
+    
     echo "$world_dir"
 }
 
@@ -80,7 +103,9 @@ sync_lists_from_players_log() {
     local world_dir="$1"
     local players_log="$world_dir/players.log"
     
-    [ ! -f "$players_log" ] && return 1
+    if [ ! -f "$players_log" ]; then
+        return 1
+    fi
     
     # Initialize list files if they don't exist
     local admin_list="$world_dir/adminlist.txt"
@@ -118,8 +143,12 @@ sync_lists_from_players_log() {
         blacklisted=$(echo "$blacklisted" | xargs)
         
         # Skip unknown or invalid entries
-        [ "$player_name" = "UNKNOWN" ] || [ -z "$player_name" ] && continue
-        [ "$ip" = "UNKNOWN" ] && continue
+        if [ "$player_name" = "UNKNOWN" ] || [ -z "$player_name" ]; then
+            continue
+        fi
+        if [ "$ip" = "UNKNOWN" ]; then
+            continue
+        fi
         
         # Add to appropriate lists based on rank and status
         case "$rank" in
@@ -180,10 +209,10 @@ process_rank_changes() {
     local players_log="$world_dir/players.log"
     local world_id="$2"
     
-    [ ! -f "$players_log" ] && return 1
+    if [ ! -f "$players_log" ]; then
+        return 1
+    fi
     
-    # This function would compare previous and current state to detect changes
-    # For simplicity, we'll implement the change detection in the main loop
     print_status "Checking for rank changes..."
 }
 
@@ -241,7 +270,9 @@ handle_ip_change() {
     local world_dir="$BASE_SAVES_DIR/$world_id"
     local players_log="$world_dir/players.log"
     
-    [ ! -f "$players_log" ] && return 1
+    if [ ! -f "$players_log" ]; then
+        return 1
+    fi
     
     # Verify password
     local stored_password=$(grep "^$player_name |" "$players_log" | cut -d'|' -f3 | xargs)
@@ -269,7 +300,9 @@ handle_password_change() {
     local world_dir="$BASE_SAVES_DIR/$world_id"
     local players_log="$world_dir/players.log"
     
-    [ ! -f "$players_log" ] && return 1
+    if [ ! -f "$players_log" ]; then
+        return 1
+    fi
     
     # Verify old password
     local stored_password=$(grep "^$player_name |" "$players_log" | cut -d'|' -f3 | xargs)
@@ -300,7 +333,9 @@ monitor_console_log() {
     local world_id="$2"
     local console_log="$world_dir/console.log"
     
-    [ ! -f "$console_log" ] && return 1
+    if [ ! -f "$console_log" ]; then
+        return 1
+    fi
     
     print_status "Monitoring console.log for commands..."
     
@@ -373,7 +408,9 @@ update_player_ip() {
     local world_dir="$BASE_SAVES_DIR/$world_id"
     local players_log="$world_dir/players.log"
     
-    [ ! -f "$players_log" ] && return 1
+    if [ ! -f "$players_log" ]; then
+        return 1
+    fi
     
     # Check if player exists
     if grep -q "^$player_name |" "$players_log"; then
@@ -434,7 +471,9 @@ monitor_players_log() {
     local world_id="$2"
     local players_log="$world_dir/players.log"
     
-    [ ! -f "$players_log" ] && return 1
+    if [ ! -f "$players_log" ]; then
+        return 1
+    fi
     
     print_status "Monitoring players.log for changes..."
     
@@ -465,7 +504,9 @@ process_rank_changes_simple() {
     local world_id="$2"
     local players_log="$world_dir/players.log"
     
-    [ ! -f "$players_log" ] && return 1
+    if [ ! -f "$players_log" ]; then
+        return 1
+    fi
     
     # This is a simplified version - in a real implementation you would track previous state
     while IFS='|' read -r player_name ip password rank whitelisted blacklisted; do
@@ -473,7 +514,9 @@ process_rank_changes_simple() {
         rank=$(echo "$rank" | xargs)
         blacklisted=$(echo "$blacklisted" | xargs)
         
-        [ -z "$player_name" ] || [ "$player_name" = "UNKNOWN" ] && continue
+        if [ -z "$player_name" ] || [ "$player_name" = "UNKNOWN" ]; then
+            continue
+        fi
         
         # Handle blacklist changes
         if [ "$blacklisted" = "YES" ]; then
@@ -517,7 +560,9 @@ main() {
     # Find world directory
     local world_dir
     world_dir=$(find_world_directory "$1")
-    [ $? -ne 0 ] && exit 1
+    if [ $? -ne 0 ]; then
+        exit 1
+    fi
     
     local world_id=$(get_world_id "$world_dir")
     
