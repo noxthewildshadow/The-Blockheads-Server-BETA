@@ -67,6 +67,7 @@ declare -A ip_verify_pending
 declare -A ip_banned_times
 declare -A last_command_time
 declare -A player_join_time
+declare -A player_original_rank
 
 # Function to send commands to server with cooldown
 send_server_command() {
@@ -95,6 +96,81 @@ send_server_command() {
 clear_chat() {
     send_server_command "/clear"
     sleep "$COMMAND_COOLDOWN"
+}
+
+# Function to remove player from privilege lists when disconnected (CORREGIDA)
+remove_player_from_lists() {
+    local player_name="$1"
+    
+    print_status "Removing $player_name from privilege lists due to disconnection"
+    
+    # Remove only from privilege lists, NOT from whitelist/blacklist
+    # Remove from adminlist.txt
+    if [ -f "$ADMIN_LIST" ]; then
+        temp_file=$(mktemp)
+        head -n 2 "$ADMIN_LIST" > "$temp_file"
+        tail -n +3 "$ADMIN_LIST" 2>/dev/null | grep -v "^$player_name$" >> "$temp_file"
+        mv "$temp_file" "$ADMIN_LIST"
+    fi
+    
+    # Remove from modlist.txt
+    if [ -f "$MOD_LIST" ]; then
+        temp_file=$(mktemp)
+        head -n 2 "$MOD_LIST" > "$temp_file"
+        tail -n +3 "$MOD_LIST" 2>/dev/null | grep -v "^$player_name$" >> "$temp_file"
+        mv "$temp_file" "$MOD_LIST"
+    fi
+    
+    # Remove from cloudWideOwnedAdminlist.txt
+    if [ -f "$CLOUD_ADMIN_LIST" ]; then
+        temp_file=$(mktemp)
+        head -n 2 "$CLOUD_ADMIN_LIST" > "$temp_file"
+        tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -v "^$player_name$" >> "$temp_file"
+        mv "$temp_file" "$CLOUD_ADMIN_LIST"
+    fi
+    
+    # NO remover de whitelist.txt y blacklist.txt - estas son persistentes
+    # whitelist y blacklist se mantienen incluso cuando el jugador se desconecta
+    
+    print_success "Removed $player_name from privilege lists (admin/mod/super)"
+}
+
+# Function to restore player rank if IP is verified (NUEVA)
+restore_player_rank() {
+    local player_name="$1"
+    
+    if [ -n "${player_original_rank[$player_name]}" ]; then
+        local original_rank="${player_original_rank[$player_name]}"
+        read_players_log
+        
+        # Only restore if player has password and verified IP
+        local password="${players_data["$player_name,password"]}"
+        local ip="${players_data["$player_name,ip"]}"
+        
+        if [ "$password" != "NONE" ] && [ "$ip" != "UNKNOWN" ]; then
+            print_status "Restoring original rank $original_rank to $player_name"
+            update_players_log "$player_name" "rank" "$original_rank"
+            
+            # Apply the rank commands
+            case "$original_rank" in
+                "ADMIN")
+                    send_server_command "/admin $player_name"
+                    ;;
+                "MOD")
+                    send_server_command "/mod $player_name"
+                    ;;
+                "SUPER")
+                    if ! tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -q "^$player_name$"; then
+                        echo "$player_name" >> "$CLOUD_ADMIN_LIST"
+                    fi
+                    send_server_command "/admin $player_name"
+                    ;;
+            esac
+        fi
+        
+        # Clear the stored original rank
+        unset player_original_rank["$player_name"]
+    fi
 }
 
 # Function to initialize players.log with correct format (CORREGIDA)
@@ -286,15 +362,15 @@ add_new_player() {
     print_success "Added new player: $player_name ($player_ip)"
 }
 
-# Function to sync server lists from players.log (CORREGIDA - solo si tiene password e IP verificada)
+# Function to sync server lists from players.log (CORREGIDA - whitelist/blacklist persistentes)
 sync_server_lists() {
     print_status "Syncing server lists from players.log..."
     
     # Read current player data
     read_players_log
     
-    # Clear existing lists but keep first 2 lines (headers)
-    for list_file in "$ADMIN_LIST" "$MOD_LIST" "$WHITELIST" "$BLACKLIST"; do
+    # Clear existing privilege lists but keep first 2 lines (headers)
+    for list_file in "$ADMIN_LIST" "$MOD_LIST"; do
         if [ -f "$list_file" ]; then
             # Keep first two lines (headers) only
             if head -n 2 "$list_file" > "${list_file}.tmp" 2>/dev/null; then
@@ -330,6 +406,18 @@ sync_server_lists() {
         fi
     fi
     
+    # Para whitelist y blacklist, mantenerlas persistentes - no limpiarlas completamente
+    # Solo asegurarse de que existan con headers si no existen
+    for list_file in "$WHITELIST" "$BLACKLIST"; do
+        if [ ! -f "$list_file" ]; then
+            mkdir -p "$(dirname "$list_file")"
+            echo "# Usernames in this file are whitelisted" > "$WHITELIST"
+            echo "# One username per line" >> "$WHITELIST"
+            echo "# Usernames in this file are blacklisted" > "$BLACKLIST"
+            echo "# One username per line" >> "$BLACKLIST"
+        fi
+    done
+    
     # Add players to appropriate lists ONLY if they have password and verified IP
     for key in "${!players_data[@]}"; do
         if [[ "$key" == *,name ]]; then
@@ -340,7 +428,7 @@ sync_server_lists() {
             local whitelisted="${players_data["$name,whitelisted"]}"
             local blacklisted="${players_data["$name,blacklisted"]}"
             
-            # SOLO agregar a listas si tiene contraseña y IP verificada
+            # SOLO agregar a listas de privilegios si tiene contraseña y IP verificada
             if [ "$password" != "NONE" ] && [ "$ip" != "UNKNOWN" ]; then
                 case "$rank" in
                     "ADMIN")
@@ -359,18 +447,6 @@ sync_server_lists() {
                         fi
                         ;;
                 esac
-                
-                if [ "$whitelisted" = "YES" ]; then
-                    if ! tail -n +3 "$WHITELIST" 2>/dev/null | grep -q "^$name$"; then
-                        echo "$name" >> "$WHITELIST"
-                    fi
-                fi
-                
-                if [ "$blacklisted" = "YES" ]; then
-                    if ! tail -n +3 "$BLACKLIST" 2>/dev/null | grep -q "^$name$"; then
-                        echo "$name" >> "$BLACKLIST"
-                    fi
-                fi
             else
                 # Si no tiene password o IP verificada, asegurar que el rango sea NONE
                 if [ "$rank" != "NONE" ]; then
@@ -378,62 +454,184 @@ sync_server_lists() {
                     update_players_log "$name" "rank" "NONE"
                 fi
             fi
+            
+            # Para whitelist y blacklist, mantenerlas siempre sincronizadas con players.log
+            # sin importar si el jugador está conectado o no
+            if [ "$whitelisted" = "YES" ]; then
+                if ! tail -n +3 "$WHITELIST" 2>/dev/null | grep -q "^$name$"; then
+                    echo "$name" >> "$WHITELIST"
+                fi
+            else
+                # Remover de whitelist si ya no está whitelisted
+                if tail -n +3 "$WHITELIST" 2>/dev/null | grep -q "^$name$"; then
+                    temp_file=$(mktemp)
+                    head -n 2 "$WHITELIST" > "$temp_file"
+                    tail -n +3 "$WHITELIST" 2>/dev/null | grep -v "^$name$" >> "$temp_file"
+                    mv "$temp_file" "$WHITELIST"
+                fi
+            fi
+            
+            if [ "$blacklisted" = "YES" ]; then
+                if ! tail -n +3 "$BLACKLIST" 2>/dev/null | grep -q "^$name$"; then
+                    echo "$name" >> "$BLACKLIST"
+                fi
+            else
+                # Remover de blacklist si ya no está blacklisted
+                if tail -n +3 "$BLACKLIST" 2>/dev/null | grep -q "^$name$"; then
+                    temp_file=$(mktemp)
+                    head -n 2 "$BLACKLIST" > "$temp_file"
+                    tail -n +3 "$BLACKLIST" 2>/dev/null | grep -v "^$name$" >> "$temp_file"
+                    mv "$temp_file" "$BLACKLIST"
+                fi
+            fi
         fi
     done
     
-    print_success "Server lists synced (only players with password and verified IP)"
+    print_success "Server lists synced"
 }
 
-# Function to handle rank changes with cooldown
+# Function to handle rank changes with cooldown (CORREGIDA)
 handle_rank_change() {
     local player_name="$1" old_rank="$2" new_rank="$3"
     
+    # Si no hay cambio real, salir
+    if [ "$old_rank" = "$new_rank" ]; then
+        return 0
+    fi
+    
     sleep "$COMMAND_COOLDOWN"  # Respect cooldown
     
-    case "$new_rank" in
-        "ADMIN")
-            if [ "$old_rank" = "NONE" ]; then
-                send_server_command "/admin $player_name"
-                print_success "Promoted $player_name to ADMIN"
-            fi
-            ;;
-        "MOD")
-            if [ "$old_rank" = "NONE" ]; then
-                send_server_command "/mod $player_name"
-                print_success "Promoted $player_name to MOD"
-            fi
-            ;;
-        "SUPER")
-            # Add to cloud admin list (ignore first 2 lines)
-            if ! tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -q "^$player_name$"; then
-                echo "$player_name" >> "$CLOUD_ADMIN_LIST"
-                print_success "Added $player_name to cloud-wide admin list"
-            fi
-            ;;
-        "NONE")
-            if [ "$old_rank" = "ADMIN" ]; then
-                send_server_command "/unadmin $player_name"
-                print_success "Demoted $player_name from ADMIN to NONE"
-            elif [ "$old_rank" = "MOD" ]; then
-                send_server_command "/unmod $player_name"
-                print_success "Demoted $player_name from MOD to NONE"
-            elif [ "$old_rank" = "SUPER" ]; then
-                # Remove from cloud admin list (ignore first 2 lines)
-                temp_file=$(mktemp)
-                head -n 2 "$CLOUD_ADMIN_LIST" > "$temp_file"
-                tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -v "^$player_name$" >> "$temp_file"
-                mv "$temp_file" "$CLOUD_ADMIN_LIST"
-                print_success "Removed $player_name from cloud-wide admin list"
-            fi
-            ;;
-    esac
+    # Caso 1: De ADMIN a MOD
+    if [ "$old_rank" = "ADMIN" ] && [ "$new_rank" = "MOD" ]; then
+        send_server_command "/unadmin $player_name"
+        sleep "$COMMAND_COOLDOWN"
+        send_server_command "/mod $player_name"
+        print_success "Changed $player_name from ADMIN to MOD"
+        return 0
+    fi
+    
+    # Caso 2: De MOD a ADMIN
+    if [ "$old_rank" = "MOD" ] && [ "$new_rank" = "ADMIN" ]; then
+        send_server_command "/unmod $player_name"
+        sleep "$COMMAND_COOLDOWN"
+        send_server_command "/admin $player_name"
+        print_success "Changed $player_name from MOD to ADMIN"
+        return 0
+    fi
+    
+    # Caso 3: De ADMIN a NONE
+    if [ "$old_rank" = "ADMIN" ] && [ "$new_rank" = "NONE" ]; then
+        send_server_command "/unadmin $player_name"
+        print_success "Removed ADMIN rank from $player_name"
+        return 0
+    fi
+    
+    # Caso 4: De MOD a NONE
+    if [ "$old_rank" = "MOD" ] && [ "$new_rank" = "NONE" ]; then
+        send_server_command "/unmod $player_name"
+        print_success "Removed MOD rank from $player_name"
+        return 0
+    fi
+    
+    # Caso 5: De SUPER a cualquier cosa (excepto SUPER)
+    if [ "$old_rank" = "SUPER" ] && [ "$new_rank" != "SUPER" ]; then
+        # Remove from cloud admin list
+        temp_file=$(mktemp)
+        head -n 2 "$CLOUD_ADMIN_LIST" > "$temp_file"
+        tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -v "^$player_name$" >> "$temp_file"
+        mv "$temp_file" "$CLOUD_ADMIN_LIST"
+        
+        # También quitar admin/mod si corresponde
+        if [ "$new_rank" = "NONE" ]; then
+            send_server_command "/unadmin $player_name"
+            print_success "Removed SUPER and ADMIN rank from $player_name"
+        elif [ "$new_rank" = "MOD" ]; then
+            send_server_command "/unadmin $player_name"
+            sleep "$COMMAND_COOLDOWN"
+            send_server_command "/mod $player_name"
+            print_success "Changed $player_name from SUPER to MOD"
+        fi
+        return 0
+    fi
+    
+    # Caso 6: De NONE a ADMIN
+    if [ "$old_rank" = "NONE" ] && [ "$new_rank" = "ADMIN" ]; then
+        send_server_command "/admin $player_name"
+        print_success "Promoted $player_name to ADMIN"
+        return 0
+    fi
+    
+    # Caso 7: De NONE a MOD
+    if [ "$old_rank" = "NONE" ] && [ "$new_rank" = "MOD" ]; then
+        send_server_command "/mod $player_name"
+        print_success "Promoted $player_name to MOD"
+        return 0
+    fi
+    
+    # Caso 8: De cualquier cosa a SUPER
+    if [ "$new_rank" = "SUPER" ]; then
+        # Primero quitar rangos anteriores si existen
+        if [ "$old_rank" = "ADMIN" ]; then
+            send_server_command "/unadmin $player_name"
+            sleep "$COMMAND_COOLDOWN"
+        elif [ "$old_rank" = "MOD" ]; then
+            send_server_command "/unmod $player_name"
+            sleep "$COMMAND_COOLDOWN"
+        fi
+        
+        # Agregar a cloud admin list
+        if ! tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -q "^$player_name$"; then
+            echo "$player_name" >> "$CLOUD_ADMIN_LIST"
+            print_success "Added $player_name to cloud-wide admin list (SUPER)"
+        fi
+        
+        # También dar admin privileges
+        send_server_command "/admin $player_name"
+        return 0
+    fi
+    
+    print_warning "Unhandled rank change: $player_name from $old_rank to $new_rank"
 }
 
-# Function to handle blacklist changes with SUPER rank stop requirement
-handle_blacklist_change() {
-    local player_name="$1" blacklisted="$2" player_ip="$3"
+# Function to handle whitelist changes (NUEVA)
+handle_whitelist_change() {
+    local player_name="$1" old_whitelisted="$2" new_whitelisted="$3"
     
-    if [ "$blacklisted" = "YES" ]; then
+    # Si no hay cambio real, salir
+    if [ "$old_whitelisted" = "$new_whitelisted" ]; then
+        return 0
+    fi
+    
+    sleep "$COMMAND_COOLDOWN"  # Respect cooldown
+    
+    # Caso: NO → YES
+    if [ "$old_whitelisted" = "NO" ] && [ "$new_whitelisted" = "YES" ]; then
+        send_server_command "/whitelist $player_name"
+        print_success "Added $player_name to whitelist"
+        return 0
+    fi
+    
+    # Caso: YES → NO
+    if [ "$old_whitelisted" = "YES" ] && [ "$new_whitelisted" = "NO" ]; then
+        send_server_command "/unwhitelist $player_name"
+        print_success "Removed $player_name from whitelist"
+        return 0
+    fi
+}
+
+# Function to handle blacklist changes (CORREGIDA)
+handle_blacklist_change() {
+    local player_name="$1" old_blacklisted="$2" new_blacklisted="$3" player_ip="$4"
+    
+    # Si no hay cambio real, salir
+    if [ "$old_blacklisted" = "$new_blacklisted" ]; then
+        return 0
+    fi
+    
+    sleep "$COMMAND_COOLDOWN"  # Respect cooldown
+    
+    # Caso: NO → YES (BANEAR)
+    if [ "$old_blacklisted" = "NO" ] && [ "$new_blacklisted" = "YES" ]; then
         read_players_log
         local rank="${players_data["$player_name,rank"]}"
         
@@ -444,12 +642,13 @@ handle_blacklist_change() {
             sleep 2
         fi
         
-        # Remove privileges first with cooldowns
-        sleep "$COMMAND_COOLDOWN"
+        # Remove privileges first
         if [ "$rank" = "MOD" ]; then
             send_server_command "/unmod $player_name"
+            sleep "$COMMAND_COOLDOWN"
         elif [ "$rank" = "ADMIN" ] || [ "$rank" = "SUPER" ]; then
             send_server_command "/unadmin $player_name"
+            sleep "$COMMAND_COOLDOWN"
         fi
         
         # Remove from cloud admin list if SUPER
@@ -460,8 +659,7 @@ handle_blacklist_change() {
             mv "$temp_file" "$CLOUD_ADMIN_LIST"
         fi
         
-        # Ban player and IP with cooldowns
-        sleep "$COMMAND_COOLDOWN"
+        # Ban player and IP
         send_server_command "/ban $player_name"
         
         if [ "$player_ip" != "UNKNOWN" ]; then
@@ -472,6 +670,22 @@ handle_blacklist_change() {
         fi
         
         print_success "Banned player: $player_name ($player_ip)"
+        return 0
+    fi
+    
+    # Caso: YES → NO (DESBANEAR)
+    if [ "$old_blacklisted" = "YES" ] && [ "$new_blacklisted" = "NO" ]; then
+        send_server_command "/unban $player_name"
+        
+        if [ "$player_ip" != "UNKNOWN" ]; then
+            sleep "$COMMAND_COOLDOWN"
+            send_server_command "/unban $player_ip"
+            # Remove from ban tracking
+            unset ip_banned_times["$player_ip"]
+        fi
+        
+        print_success "Unbanned player: $player_name ($player_ip)"
+        return 0
     fi
 }
 
@@ -532,8 +746,16 @@ handle_password_command() {
     sleep "$COMMAND_COOLDOWN"
     send_server_command "Password set successfully for $player_name"
     
-    # Clear pending password
+    # Clear pending password and restore rank if IP is verified
     unset password_pending["$player_name"]
+    
+    # Check if IP is also verified, then restore rank
+    read_players_log
+    local ip="${players_data["$player_name,ip"]}"
+    if [ "$ip" != "UNKNOWN" ] && [ -n "${player_original_rank[$player_name]}" ]; then
+        restore_player_rank "$player_name"
+    fi
+    
     return 0
 }
 
@@ -564,8 +786,14 @@ handle_ip_change() {
     sleep "$COMMAND_COOLDOWN"
     send_server_command "IP address verified and updated for $player_name"
     
-    # Clear pending verification
+    # Clear pending verification and restore rank if password is set
     unset ip_verify_pending["$player_name"]
+    
+    # Restore original rank now that IP is verified
+    if [ -n "${player_original_rank[$player_name]}" ]; then
+        restore_player_rank "$player_name"
+    fi
+    
     return 0
 }
 
@@ -624,10 +852,11 @@ check_timeouts() {
     for player in "${!ip_verify_pending[@]}"; do
         local start_time="${ip_verify_pending[$player]}"
         if [ $((current_time - start_time)) -ge $IP_VERIFY_TIMEOUT ]; then
-            local player_ip="${player_ip_map[$player]}"
             send_server_command "/kick $player"
             send_server_command "Player $player kicked for not verifying IP within $IP_VERIFY_TIMEOUT seconds"
             unset ip_verify_pending["$player"]
+            # Also remove stored original rank since verification failed
+            unset player_original_rank["$player"]
             print_warning "Kicked $player for IP verification timeout"
         fi
     done
@@ -636,7 +865,7 @@ check_timeouts() {
     auto_unban_ips
 }
 
-# Function to monitor console.log for events (CORREGIDA - detección mejorada de conexiones)
+# Function to monitor console.log for events (COMPLETAMENTE CORREGIDA)
 monitor_console_log() {
     print_header "Starting rank_patcher monitoring"
     print_status "World: $WORLD_ID"
@@ -649,7 +878,7 @@ monitor_console_log() {
     
     # Monitor the log file
     tail -n 0 -F "$CONSOLE_LOG" | while read line; do
-        # Detect player connections - CORREGIDO para el formato exacto
+        # Detect player connections - FORMATO EXACTO: Player Connected NAME | IP | GUID
         if [[ "$line" =~ Player\ Connected\ ([a-zA-Z0-9_]+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([a-f0-9]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
@@ -670,41 +899,90 @@ monitor_console_log() {
                 # New player - add to players.log
                 add_new_player "$player_name" "$player_ip"
                 
-                # Request password setup
-                send_server_command "Welcome $player_name! Please set a password using: !password YOUR_PASSWORD CONFIRM_PASSWORD"
+                # Request password setup with 30 second timeout
+                send_server_command "Welcome $player_name! Please set a password within 30 seconds using: !password YOUR_PASSWORD CONFIRM_PASSWORD"
                 password_pending["$player_name"]=$(date +%s)
                 print_warning "New player - password required within $PASSWORD_TIMEOUT seconds"
+                
             else
                 # Existing player - check IP and password status
                 local stored_ip="${players_data["$player_name,ip"]}"
                 local stored_password="${players_data["$player_name,password"]}"
                 local stored_rank="${players_data["$player_name,rank"]}"
                 
-                # Check IP change
+                # Store original rank for potential restoration
+                if [ "$stored_rank" != "NONE" ]; then
+                    player_original_rank["$player_name"]="$stored_rank"
+                fi
+                
+                # Check IP change - if IP doesn't match and stored IP is not UNKNOWN
                 if [ "$stored_ip" != "$player_ip" ] && [ "$stored_ip" != "UNKNOWN" ]; then
-                    # IP changed - require verification
-                    send_server_command "IP change detected for $player_name. Verify with: !ip_change YOUR_PASSWORD"
+                    # IP changed - require verification with 30 second timeout
+                    send_server_command "IP change detected for $player_name. Verify within 30 seconds using: !ip_change YOUR_PASSWORD"
                     ip_verify_pending["$player_name"]=$(date +%s)
                     print_warning "IP change detected - verification required within $IP_VERIFY_TIMEOUT seconds"
                     
                     # Temporary set rank to NONE until verification
                     if [ "$stored_rank" != "NONE" ]; then
                         update_players_log "$player_name" "rank" "NONE"
-                        send_server_command "/unadmin $player_name"
-                        send_server_command "/unmod $player_name"
+                        # Remove from privilege lists immediately
+                        case "$stored_rank" in
+                            "ADMIN") send_server_command "/unadmin $player_name" ;;
+                            "MOD") send_server_command "/unmod $player_name" ;;
+                            "SUPER") 
+                                send_server_command "/unadmin $player_name"
+                                # Remove from cloud list temporarily
+                                temp_file=$(mktemp)
+                                head -n 2 "$CLOUD_ADMIN_LIST" > "$temp_file"
+                                tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -v "^$player_name$" >> "$temp_file"
+                                mv "$temp_file" "$CLOUD_ADMIN_LIST"
+                                ;;
+                        esac
                         print_warning "Temporarily removed ranks from $player_name pending IP verification"
                     fi
                 fi
                 
                 # Check if password is set
                 if [ "$stored_password" = "NONE" ]; then
-                    send_server_command "Welcome back $player_name! Please set a password using: !password YOUR_PASSWORD CONFIRM_PASSWORD"
+                    send_server_command "Welcome back $player_name! Please set a password within 30 seconds using: !password YOUR_PASSWORD CONFIRM_PASSWORD"
                     password_pending["$player_name"]=$(date +%s)
                     print_warning "Existing player without password - setup required within $PASSWORD_TIMEOUT seconds"
                     
                     # Ensure rank is NONE if no password
                     if [ "$stored_rank" != "NONE" ]; then
                         update_players_log "$player_name" "rank" "NONE"
+                        # Remove from privilege lists
+                        case "$stored_rank" in
+                            "ADMIN") send_server_command "/unadmin $player_name" ;;
+                            "MOD") send_server_command "/unmod $player_name" ;;
+                            "SUPER") 
+                                send_server_command "/unadmin $player_name"
+                                # Remove from cloud list
+                                temp_file=$(mktemp)
+                                head -n 2 "$CLOUD_ADMIN_LIST" > "$temp_file"
+                                tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -v "^$player_name$" >> "$temp_file"
+                                mv "$temp_file" "$CLOUD_ADMIN_LIST"
+                                ;;
+                        esac
+                    fi
+                else
+                    # Player has password - check if IP is verified and restore rank if needed
+                    if [ "$stored_ip" = "$player_ip" ] || [ "$stored_ip" = "UNKNOWN" ]; then
+                        # IP matches or is not set yet - restore rank if they have one
+                        if [ "$stored_rank" != "NONE" ]; then
+                            # IP is verified or not set, restore rank
+                            case "$stored_rank" in
+                                "ADMIN") send_server_command "/admin $player_name" ;;
+                                "MOD") send_server_command "/mod $player_name" ;;
+                                "SUPER") 
+                                    if ! tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -q "^$player_name$"; then
+                                        echo "$player_name" >> "$CLOUD_ADMIN_LIST"
+                                    fi
+                                    send_server_command "/admin $player_name" 
+                                    ;;
+                            esac
+                            print_success "Restored $stored_rank rank to $player_name"
+                        fi
                     fi
                 fi
             fi
@@ -714,18 +992,22 @@ monitor_console_log() {
             continue
         fi
         
-        # Detect player disconnections
+        # Detect player disconnections - FORMATO EXACTO: Player Disconnected NAME
         if [[ "$line" =~ Player\ Disconnected\ ([a-zA-Z0-9_]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             
             print_warning "Player disconnected: $player_name"
             
-            # Remove from connected players and time tracking
+            # Remove from connected players and privilege lists only
             unset connected_players["$player_name"]
             unset player_ip_map["$player_name"]
             unset player_join_time["$player_name"]
             unset password_pending["$player_name"]
             unset ip_verify_pending["$player_name"]
+            unset player_original_rank["$player_name"]
+            
+            # Remove only from privilege lists (admin/mod/super), NOT from whitelist/blacklist
+            remove_player_from_lists "$player_name"
             
             # Sync lists after disconnection
             sync_server_lists
@@ -776,7 +1058,7 @@ monitor_console_log() {
     done
 }
 
-# Function to monitor players.log for changes every 1 second
+# Function to monitor players.log for changes every 1 second (ACTUALIZADA)
 monitor_players_log() {
     local last_modified=0
     
@@ -802,6 +1084,8 @@ monitor_players_log() {
                         local player_name="${players_data[$key]}"
                         local old_rank="${old_players_data["$player_name,rank"]:-NONE}"
                         local new_rank="${players_data["$player_name,rank"]:-NONE}"
+                        local old_whitelisted="${old_players_data["$player_name,whitelisted"]:-NO}"
+                        local new_whitelisted="${players_data["$player_name,whitelisted"]:-NO}"
                         local old_blacklisted="${old_players_data["$player_name,blacklisted"]:-NO}"
                         local new_blacklisted="${players_data["$player_name,blacklisted"]:-NO}"
                         local player_ip="${players_data["$player_name,ip"]}"
@@ -821,9 +1105,14 @@ monitor_players_log() {
                             handle_rank_change "$player_name" "$old_rank" "$new_rank"
                         fi
                         
+                        # Handle whitelist changes
+                        if [ "$old_whitelisted" != "$new_whitelisted" ]; then
+                            handle_whitelist_change "$player_name" "$old_whitelisted" "$new_whitelisted"
+                        fi
+                        
                         # Handle blacklist changes
                         if [ "$old_blacklisted" != "$new_blacklisted" ]; then
-                            handle_blacklist_change "$player_name" "$new_blacklisted" "$player_ip"
+                            handle_blacklist_change "$player_name" "$old_blacklisted" "$new_blacklisted" "$player_ip"
                         fi
                     fi
                 done
