@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # rank_patcher.sh - Complete player management system for The Blockheads server
-# CORREGIDO: Error de expresión regular en validación de contraseñas
+# VERSIÓN FINAL: Formato exacto, listas vacías, todos los requisitos implementados
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -94,7 +94,7 @@ send_server_message() {
     send_server_command "say $message"
 }
 
-# Function to initialize players.log
+# Function to initialize players.log with EXACT format
 initialize_players_log() {
     if [ ! -f "$PLAYERS_LOG" ]; then
         print_status "Creating new players.log file"
@@ -119,15 +119,15 @@ read_players_log() {
         [[ "$name" =~ ^# ]] && continue
         [[ -z "$name" ]] && continue
         
-        # Clean up fields and apply correct defaults
-        name=$(echo "$name" | xargs)
-        ip=$(echo "$ip" | xargs)
-        password=$(echo "$password" | xargs)
-        rank=$(echo "$rank" | xargs)
-        whitelisted=$(echo "$whitelisted" | xargs)
-        blacklisted=$(echo "$blacklisted" | xargs)
+        # Clean up fields and apply EXACT defaults - NO EXTRA SPACES
+        name=$(echo "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        ip=$(echo "$ip" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        password=$(echo "$password" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        rank=$(echo "$rank" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        whitelisted=$(echo "$whitelisted" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        blacklisted=$(echo "$blacklisted" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         
-        # Apply required defaults
+        # Apply required EXACT defaults
         [ -z "$name" ] && name="UNKNOWN"
         [ -z "$ip" ] && ip="UNKNOWN"
         [ -z "$password" ] && password="NONE"
@@ -146,7 +146,7 @@ read_players_log() {
     done < "$PLAYERS_LOG"
 }
 
-# Function to update players.log
+# Function to update players.log with EXACT format - NO EXTRA SPACES
 update_players_log() {
     local player_name="$1" field="$2" new_value="$3"
     
@@ -168,7 +168,7 @@ update_players_log() {
         *) print_error "Unknown field: $field"; return 1 ;;
     esac
     
-    # Write back to file with correct format
+    # Write back to file with EXACT format - NO EXTRA SPACES
     {
         echo "# Player Name | First IP | Password | Rank | Whitelisted | Blacklisted"
         
@@ -181,8 +181,8 @@ update_players_log() {
                 local whitelisted="${players_data["$name,whitelisted"]:-NO}"
                 local blacklisted="${players_data["$name,blacklisted"]:-NO}"
                 
-                printf "%-20s | %-15s | %-15s | %-6s | %-3s | %-3s\n" \
-                    "$name" "$ip" "$password" "$rank" "$whitelisted" "$blacklisted"
+                # FORMATO EXACTO: Sin espacios extra, separadores exactos
+                echo "$name | $ip | $password | $rank | $whitelisted | $blacklisted"
             fi
         done
     } > "$PLAYERS_LOG"
@@ -190,7 +190,7 @@ update_players_log() {
     print_success "Updated players.log: $player_name $field = $new_value"
 }
 
-# Function to add new player to players.log
+# Function to add new player to players.log with EXACT format
 add_new_player() {
     local player_name="$1" player_ip="$2"
     
@@ -206,7 +206,7 @@ add_new_player() {
         return 0
     fi
     
-    # Add new player with correct defaults
+    # Add new player with EXACT defaults
     players_data["$player_name,name"]="$player_name"
     players_data["$player_name,ip"]="$player_ip"
     players_data["$player_name,password"]="NONE"
@@ -214,7 +214,7 @@ add_new_player() {
     players_data["$player_name,whitelisted"]="NO"
     players_data["$player_name,blacklisted"]="NO"
     
-    # Write back to file
+    # Write back to file with EXACT format
     {
         echo "# Player Name | First IP | Password | Rank | Whitelisted | Blacklisted"
         
@@ -227,8 +227,8 @@ add_new_player() {
                 local whitelisted="${players_data["$name,whitelisted"]:-NO}"
                 local blacklisted="${players_data["$name,blacklisted"]:-NO}"
                 
-                printf "%-20s | %-15s | %-15s | %-6s | %-3s | %-3s\n" \
-                    "$name" "$ip" "$password" "$rank" "$whitelisted" "$blacklisted"
+                # FORMATO EXACTO: Sin espacios extra
+                echo "$name | $ip | $password | $rank | $whitelisted | $blacklisted"
             fi
         done
     } > "$PLAYERS_LOG"
@@ -236,42 +236,24 @@ add_new_player() {
     print_success "Added new player: $player_name ($player_ip)"
 }
 
-# Function to sync server lists from players.log (1-line header)
+# Function to sync server lists from players.log - EMPTY FILES
 sync_server_lists() {
     print_status "Syncing server lists from players.log..."
     
     # Read current player data
     read_players_log
     
-    # Clear existing lists but keep first line only
+    # Clear existing lists COMPLETELY - EMPTY FILES
     for list_file in "$ADMIN_LIST" "$MOD_LIST" "$WHITELIST" "$BLACKLIST"; do
-        if [ -f "$list_file" ]; then
-            # Keep only first line (header)
-            head -n 1 "$list_file" > "${list_file}.tmp" 2>/dev/null
-            if [ $? -eq 0 ] && [ -s "${list_file}.tmp" ]; then
-                mv "${list_file}.tmp" "$list_file"
-            else
-                # Create with single header line
-                echo "# Usernames in this file are considered admins" > "$list_file"
-            fi
-        else
-            # Create with single header
-            mkdir -p "$(dirname "$list_file")"
-            echo "# Usernames in this file are considered admins" > "$list_file"
-        fi
+        # Create empty file (no headers, no content)
+        > "$list_file"
     done
     
-    # Sync cloud admin list (1-line header)
-    if [ ! -f "$CLOUD_ADMIN_LIST" ]; then
-        mkdir -p "$(dirname "$CLOUD_ADMIN_LIST")"
-        echo "# Cloud-wide admin list" > "$CLOUD_ADMIN_LIST"
-    else
-        # Keep only first line
-        head -n 1 "$CLOUD_ADMIN_LIST" > "${CLOUD_ADMIN_LIST}.tmp" 2>/dev/null
-        mv "${CLOUD_ADMIN_LIST}.tmp" "$CLOUD_ADMIN_LIST" 2>/dev/null || true
-    fi
+    # Sync cloud admin list - EMPTY FILE
+    > "$CLOUD_ADMIN_LIST"
     
     # Add players to appropriate lists based on rank and status
+    # Still ignore first 2 lines when reading, but files are empty so no lines to ignore
     for key in "${!players_data[@]}"; do
         if [[ "$key" == *,name ]]; then
             local name="${players_data[$key]}"
@@ -283,38 +265,28 @@ sync_server_lists() {
             if [ "$ip" != "UNKNOWN" ] && [ -n "${connected_players[$name]}" ]; then
                 case "$rank" in
                     "ADMIN")
-                        if ! grep -q "^$name$" <(tail -n +2 "$ADMIN_LIST" 2>/dev/null); then
-                            echo "$name" >> "$ADMIN_LIST"
-                        fi
+                        echo "$name" >> "$ADMIN_LIST"
                         ;;
                     "MOD")
-                        if ! grep -q "^$name$" <(tail -n +2 "$MOD_LIST" 2>/dev/null); then
-                            echo "$name" >> "$MOD_LIST"
-                        fi
+                        echo "$name" >> "$MOD_LIST"
                         ;;
                     "SUPER")
-                        if ! grep -q "^$name$" <(tail -n +2 "$CLOUD_ADMIN_LIST" 2>/dev/null); then
-                            echo "$name" >> "$CLOUD_ADMIN_LIST"
-                        fi
+                        echo "$name" >> "$CLOUD_ADMIN_LIST"
                         ;;
                 esac
                 
                 if [ "$whitelisted" = "YES" ]; then
-                    if ! grep -q "^$name$" <(tail -n +2 "$WHITELIST" 2>/dev/null); then
-                        echo "$name" >> "$WHITELIST"
-                    fi
+                    echo "$name" >> "$WHITELIST"
                 fi
                 
                 if [ "$blacklisted" = "YES" ]; then
-                    if ! grep -q "^$name$" <(tail -n +2 "$BLACKLIST" 2>/dev/null); then
-                        echo "$name" >> "$BLACKLIST"
-                    fi
+                    echo "$name" >> "$BLACKLIST"
                 fi
             fi
         fi
     done
     
-    print_success "Server lists synced (1-line header mode)"
+    print_success "Server lists synced (empty files mode)"
 }
 
 # Function to handle rank changes with proper cooldowns
@@ -335,7 +307,8 @@ handle_rank_change() {
             fi
             ;;
         "SUPER")
-            if ! grep -q "^$player_name$" <(tail -n +2 "$CLOUD_ADMIN_LIST" 2>/dev/null); then
+            # For SUPER rank, add to cloud admin list (ignore first 2 lines when reading)
+            if ! tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -q "^$player_name$"; then
                 echo "$player_name" >> "$CLOUD_ADMIN_LIST"
                 print_success "Added $player_name to cloud-wide admin list"
             fi
@@ -348,10 +321,9 @@ handle_rank_change() {
                 send_server_command "/unmod $player_name"
                 print_success "Demoted $player_name from MOD to NONE"
             elif [ "$old_rank" = "SUPER" ]; then
-                # Remove from cloud admin list (keep first line)
+                # Remove from cloud admin list (ignore first 2 lines)
                 temp_file=$(mktemp)
-                head -n 1 "$CLOUD_ADMIN_LIST" > "$temp_file"
-                grep -v "^$player_name$" <(tail -n +2 "$CLOUD_ADMIN_LIST" 2>/dev/null) >> "$temp_file"
+                tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -v "^$player_name$" > "$temp_file"
                 mv "$temp_file" "$CLOUD_ADMIN_LIST"
                 print_success "Removed $player_name from cloud-wide admin list"
             fi
@@ -384,8 +356,7 @@ handle_blacklist_change() {
         # Remove from cloud admin list if SUPER
         if [ "$rank" = "SUPER" ]; then
             temp_file=$(mktemp)
-            head -n 1 "$CLOUD_ADMIN_LIST" > "$temp_file"
-            grep -v "^$player_name$" <(tail -n +2 "$CLOUD_ADMIN_LIST" 2>/dev/null) >> "$temp_file"
+            tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -v "^$player_name$" > "$temp_file"
             mv "$temp_file" "$CLOUD_ADMIN_LIST"
         fi
         
@@ -416,7 +387,7 @@ auto_unban_ips() {
     done
 }
 
-# Function to validate password - CORREGIDO: Error de expresión regular
+# Function to validate password - CORREGIDO
 validate_password() {
     local password="$1"
     local length=${#password}
@@ -426,8 +397,7 @@ validate_password() {
         return 1
     fi
     
-    # CORREGIDO: Expresión regular simplificada para evitar errores de sintaxis
-    # Verificar solo caracteres alfanuméricos y algunos símbolos básicos
+    # CORREGIDO: Expresión regular segura
     if ! echo "$password" | grep -qE '^[A-Za-z0-9!@#$%^_+-=]+$'; then
         echo "Password contains invalid characters. Only letters, numbers and !@#$%^_+-= are allowed"
         return 1
