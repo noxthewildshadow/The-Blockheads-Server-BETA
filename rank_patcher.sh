@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # rank_patcher.sh - Complete player management system for The Blockheads server
-# VERSIÓN FINAL: Formato exacto, listas vacías, todos los requisitos implementados
+# VERSIÓN CORREGIDA: Comandos /kick implementados y verificación mejorada
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -59,6 +59,7 @@ PASSWORD_TIMEOUT=60
 IP_VERIFY_TIMEOUT=30
 IP_BAN_DURATION=30
 WELCOME_DELAY=5
+LIST_SYNC_INTERVAL=5
 
 # Track connected players and their states
 declare -A connected_players
@@ -66,6 +67,7 @@ declare -A player_ip_map
 declare -A password_pending
 declare -A ip_verify_pending
 declare -A ip_banned_times
+declare -A last_list_sync
 
 # Function to send commands to server with proper cooldown
 send_server_command() {
@@ -81,6 +83,15 @@ send_server_command() {
         print_error "Failed to send command: $command"
         return 1
     fi
+}
+
+# Function to kick player
+kick_player() {
+    local player_name="$1"
+    local reason="$2"
+    
+    print_warning "Kicking player: $player_name - Reason: $reason"
+    send_server_command "/kick $player_name"
 }
 
 # Function to clear chat with cooldown
@@ -236,6 +247,23 @@ add_new_player() {
     print_success "Added new player: $player_name ($player_ip)"
 }
 
+# Function to check if IP is verified for a player
+is_ip_verified() {
+    local player_name="$1"
+    local current_ip="$2"
+    
+    read_players_log
+    local stored_ip="${players_data["$player_name,ip"]}"
+    
+    # If stored IP is UNKNOWN or matches current IP, consider verified
+    if [ "$stored_ip" = "UNKNOWN" ] || [ "$stored_ip" = "$current_ip" ]; then
+        return 0
+    fi
+    
+    # IP doesn't match and not UNKNOWN - requires verification
+    return 1
+}
+
 # Function to sync server lists from players.log - EMPTY FILES
 sync_server_lists() {
     print_status "Syncing server lists from players.log..."
@@ -253,7 +281,7 @@ sync_server_lists() {
     > "$CLOUD_ADMIN_LIST"
     
     # Add players to appropriate lists based on rank and status
-    # Still ignore first 2 lines when reading, but files are empty so no lines to ignore
+    # Only add if IP is verified and player is connected
     for key in "${!players_data[@]}"; do
         if [[ "$key" == *,name ]]; then
             local name="${players_data[$key]}"
@@ -261,8 +289,10 @@ sync_server_lists() {
             local rank="${players_data["$name,rank"]}"
             local whitelisted="${players_data["$name,whitelisted"]}"
             local blacklisted="${players_data["$name,blacklisted"]}"
+            local current_ip="${player_ip_map[$name]}"
             
-            if [ "$ip" != "UNKNOWN" ] && [ -n "${connected_players[$name]}" ]; then
+            # Only apply ranks if IP is verified AND player is connected
+            if [ -n "${connected_players[$name]}" ] && is_ip_verified "$name" "$current_ip"; then
                 case "$rank" in
                     "ADMIN")
                         echo "$name" >> "$ADMIN_LIST"
@@ -428,6 +458,9 @@ handle_password_command() {
     # Update password in players.log
     update_players_log "$player_name" "password" "$password"
     send_server_message "Password set successfully for $player_name"
+    
+    # Remove from password pending
+    unset password_pending["$player_name"]
     return 0
 }
 
@@ -517,6 +550,7 @@ send_ip_warning() {
     sleep "$WELCOME_DELAY"
     
     send_server_message "IP change detected for $player_name. Verify with: !ip_change YOUR_PASSWORD"
+    send_server_message "You have 30 seconds to verify your IP or you will be kicked and IP banned."
 }
 
 # Function to monitor console.log for events
@@ -607,7 +641,6 @@ monitor_console_log() {
                         local password="${BASH_REMATCH[1]}"
                         local confirm_password="${BASH_REMATCH[2]}"
                         handle_password_command "$player_name" "$password" "$confirm_password"
-                        unset password_pending["$player_name"]
                     else
                         send_server_message "Usage: !password NEW_PASSWORD CONFIRM_PASSWORD"
                     fi
@@ -688,30 +721,31 @@ monitor_players_log() {
     done
 }
 
-# Function to check timeouts
+# Function to check timeouts - CORREGIDO: Ahora ejecuta los comandos /kick
 check_timeouts() {
     local current_time=$(date +%s)
     
-    # Check password setup timeouts
+    # Check password setup timeouts - 60 seconds
     for player in "${!password_pending[@]}"; do
         local start_time="${password_pending[$player]}"
         if [ $((current_time - start_time)) -ge $PASSWORD_TIMEOUT ]; then
-            send_server_command "/kick $player"
-            send_server_message "Player $player kicked for not setting password within timeout"
+            kick_player "$player" "No password set within 60 seconds"
+            send_server_message "Player $player kicked for not setting password within 60 seconds"
             unset password_pending["$player"]
-            print_warning "Kicked $player for password setup timeout"
+            print_warning "Kicked $player for password setup timeout (60s)"
         fi
     done
     
-    # Check IP verification timeouts
+    # Check IP verification timeouts - 30 seconds
     for player in "${!ip_verify_pending[@]}"; do
         local start_time="${ip_verify_pending[$player]}"
         if [ $((current_time - start_time)) -ge $IP_VERIFY_TIMEOUT ]; then
             local player_ip="${player_ip_map[$player]}"
-            send_server_command "/kick $player"
+            kick_player "$player" "IP verification failed within 30 seconds"
             send_server_command "/ban $player_ip"
+            send_server_message "Player $player kicked and IP banned for IP verification timeout"
             unset ip_verify_pending["$player"]
-            print_warning "Kicked and IP banned $player for IP verification timeout"
+            print_warning "Kicked and IP banned $player for IP verification timeout (30s)"
             
             # Track ban for auto-unban
             ip_banned_times["$player_ip"]=$(date +%s)
@@ -722,9 +756,18 @@ check_timeouts() {
     auto_unban_ips
 }
 
+# Function to periodically sync lists every 5 seconds
+periodic_list_sync() {
+    while true; do
+        sleep "$LIST_SYNC_INTERVAL"
+        print_status "Periodic list sync (every $LIST_SYNC_INTERVAL seconds)"
+        sync_server_lists
+    done
+}
+
 # Main execution
 main() {
-    print_header "THE BLOCKHEADS RANK PATCHER"
+    print_header "THE BLOCKHEADS RANK PATCHER - CORREGIDO"
     print_status "Starting player management system..."
     
     # Check if console log exists
@@ -752,6 +795,9 @@ main() {
     monitor_players_log &
     local players_pid=$!
     
+    periodic_list_sync &
+    local sync_pid=$!
+    
     # Main loop for timeout checking
     while true; do
         check_timeouts
@@ -759,8 +805,8 @@ main() {
     done
     
     # Wait for background processes (should never reach here)
-    wait $console_pid $players_pid
+    wait $console_pid $players_pid $sync_pid
 }
 
 # Start main function
-main
+main "$@"
