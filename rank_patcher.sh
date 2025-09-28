@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # rank_patcher.sh - Complete player management system for The Blockheads server
-# FULLY IMPLEMENTED ALL REQUIREMENTS - NO MISSING FEATURES
+# CORREGIDO: Error de sintaxis, cooldowns correctos, espera de 5 segundos
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -42,7 +42,7 @@ if [ -z "$CONSOLE_LOG" ] || [ -z "$WORLD_ID" ]; then
     exit 1
 fi
 
-# File paths - EXACT LOCATIONS AS REQUIRED
+# File paths
 PLAYERS_LOG="$BASE_DIR/$WORLD_ID/players.log"
 ADMIN_LIST="$BASE_DIR/$WORLD_ID/adminlist.txt"
 MOD_LIST="$BASE_DIR/$WORLD_ID/modlist.txt"
@@ -53,12 +53,12 @@ CLOUD_ADMIN_LIST="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWi
 # Screen session for server commands
 SCREEN_SERVER="blockheads_server_${PORT:-12153}"
 
-# Cooldown configuration - EXACT VALUES AS REQUIRED
+# Cooldown configuration - CORREGIDO: Sistema de cooldowns correcto
 COMMAND_COOLDOWN=0.5
-WELCOME_DELAY=5
 PASSWORD_TIMEOUT=60
 IP_VERIFY_TIMEOUT=30
 IP_BAN_DURATION=30
+WELCOME_DELAY=5
 
 # Track connected players and their states
 declare -A connected_players
@@ -66,33 +66,17 @@ declare -A player_ip_map
 declare -A password_pending
 declare -A ip_verify_pending
 declare -A ip_banned_times
+declare -A last_command_time
 
-# Global cooldown tracking
-LAST_COMMAND_TIME=0
-
-# Function to get current time in seconds with nanosecond precision
-get_current_time() {
-    date +%s.%N
-}
-
-# CORRECTED: Global cooldown system as required
+# Function to send commands to server with proper cooldown - CORREGIDO
 send_server_command() {
     local command="$1"
-    local current_time=$(get_current_time)
     
-    # Calculate time difference since last command
-    local time_diff=$(echo "$current_time - $LAST_COMMAND_TIME" | bc)
+    # Apply cooldown before sending command
+    sleep "$COMMAND_COOLDOWN"
     
-    # If less than cooldown, sleep for the remaining time
-    if (( $(echo "$time_diff < $COMMAND_COOLDOWN" | bc -l) )); then
-        local sleep_time=$(echo "$COMMAND_COOLDOWN - $time_diff" | bc)
-        sleep $sleep_time
-    fi
-    
-    # Send command
     if screen -S "$SCREEN_SERVER" -X stuff "$command$(printf \\r)" 2>/dev/null; then
         print_success "Sent command: $command"
-        LAST_COMMAND_TIME=$(get_current_time)
         return 0
     else
         print_error "Failed to send command: $command"
@@ -100,30 +84,29 @@ send_server_command() {
     fi
 }
 
-# Function to clear chat
+# Function to clear chat with cooldown - CORREGIDO
 clear_chat() {
     send_server_command "/clear"
 }
 
-# Function to wait for welcome delay - REQUIRED: 5 seconds before welcome messages
-wait_welcome_delay() {
-    sleep $WELCOME_DELAY
+# Function to send message with cooldown - NUEVA FUNCIÓN
+send_server_message() {
+    local message="$1"
+    send_server_command "say $message"
 }
 
-# Function to initialize players.log - EXACT FORMAT AS REQUIRED
+# Function to initialize players.log
 initialize_players_log() {
-    # Create directory if it doesn't exist - FIX for "couldn't create log file"
-    mkdir -p "$(dirname "$PLAYERS_LOG")"
-    
     if [ ! -f "$PLAYERS_LOG" ]; then
         print_status "Creating new players.log file"
+        mkdir -p "$(dirname "$PLAYERS_LOG")"
         touch "$PLAYERS_LOG"
         echo "# Player Name | First IP | Password | Rank | Whitelisted | Blacklisted" > "$PLAYERS_LOG"
         print_success "players.log created at: $PLAYERS_LOG"
     fi
 }
 
-# Function to read players.log into associative array - EXACT FORMAT
+# Function to read players.log into associative array
 read_players_log() {
     declare -gA players_data
     
@@ -137,7 +120,7 @@ read_players_log() {
         [[ "$name" =~ ^# ]] && continue
         [[ -z "$name" ]] && continue
         
-        # Clean up fields and apply REQUIRED defaults
+        # Clean up fields and apply correct defaults
         name=$(echo "$name" | xargs)
         ip=$(echo "$ip" | xargs)
         password=$(echo "$password" | xargs)
@@ -145,7 +128,7 @@ read_players_log() {
         whitelisted=$(echo "$whitelisted" | xargs)
         blacklisted=$(echo "$blacklisted" | xargs)
         
-        # Apply REQUIRED defaults if empty
+        # Apply required defaults
         [ -z "$name" ] && name="UNKNOWN"
         [ -z "$ip" ] && ip="UNKNOWN"
         [ -z "$password" ] && password="NONE"
@@ -186,7 +169,7 @@ update_players_log() {
         *) print_error "Unknown field: $field"; return 1 ;;
     esac
     
-    # Write back to file with EXACT required format
+    # Write back to file with correct format
     {
         echo "# Player Name | First IP | Password | Rank | Whitelisted | Blacklisted"
         
@@ -224,7 +207,7 @@ add_new_player() {
         return 0
     fi
     
-    # Add new player with REQUIRED defaults
+    # Add new player with correct defaults
     players_data["$player_name,name"]="$player_name"
     players_data["$player_name,ip"]="$player_ip"
     players_data["$player_name,password"]="NONE"
@@ -254,48 +237,42 @@ add_new_player() {
     print_success "Added new player: $player_name ($player_ip)"
 }
 
-# Function to sync server lists from players.log (ignoring first two lines - REQUIRED)
+# Function to sync server lists from players.log (1-line header)
 sync_server_lists() {
     print_status "Syncing server lists from players.log..."
     
     # Read current player data
     read_players_log
     
-    # Clear existing lists but keep first two lines (headers) - REQUIRED
+    # Clear existing lists but keep first line only
     for list_file in "$ADMIN_LIST" "$MOD_LIST" "$WHITELIST" "$BLACKLIST"; do
-        # Create directory if it doesn't exist - FIX for file creation issues
-        mkdir -p "$(dirname "$list_file")"
-        
         if [ -f "$list_file" ]; then
-            # Keep first two lines (headers) - REQUIRED
-            head -n 2 "$list_file" > "${list_file}.tmp" 2>/dev/null
+            # Keep only first line (header)
+            head -n 1 "$list_file" > "${list_file}.tmp" 2>/dev/null
             if [ $? -eq 0 ] && [ -s "${list_file}.tmp" ]; then
                 mv "${list_file}.tmp" "$list_file"
             else
-                # Create with headers if file is empty or doesn't have 2 lines
+                # Create with single header line
                 echo "# Usernames in this file are considered admins" > "$list_file"
-                echo "# One username per line" >> "$list_file"
             fi
         else
-            # Create with headers - REQUIRED: empty initially
+            # Create with single header
+            mkdir -p "$(dirname "$list_file")"
             echo "# Usernames in this file are considered admins" > "$list_file"
-            echo "# One username per line" >> "$list_file"
         fi
     done
     
-    # Sync cloud admin list (ignore first two lines - REQUIRED)
-    mkdir -p "$(dirname "$CLOUD_ADMIN_LIST")"
+    # Sync cloud admin list (1-line header)
     if [ ! -f "$CLOUD_ADMIN_LIST" ]; then
+        mkdir -p "$(dirname "$CLOUD_ADMIN_LIST")"
         echo "# Cloud-wide admin list" > "$CLOUD_ADMIN_LIST"
-        echo "# These players have SUPER rank across all worlds" >> "$CLOUD_ADMIN_LIST"
     else
-        # Keep only first two lines - REQUIRED
-        head -n 2 "$CLOUD_ADMIN_LIST" > "${CLOUD_ADMIN_LIST}.tmp" 2>/dev/null
+        # Keep only first line
+        head -n 1 "$CLOUD_ADMIN_LIST" > "${CLOUD_ADMIN_LIST}.tmp" 2>/dev/null
         mv "${CLOUD_ADMIN_LIST}.tmp" "$CLOUD_ADMIN_LIST" 2>/dev/null || true
     fi
     
     # Add players to appropriate lists based on rank and status
-    # REQUIRED: Only players with verified IP and connected
     for key in "${!players_data[@]}"; do
         if [[ "$key" == *,name ]]; then
             local name="${players_data[$key]}"
@@ -304,34 +281,33 @@ sync_server_lists() {
             local whitelisted="${players_data["$name,whitelisted"]}"
             local blacklisted="${players_data["$name,blacklisted"]}"
             
-            # REQUIRED: Only add to lists if player has verified IP and is connected
             if [ "$ip" != "UNKNOWN" ] && [ -n "${connected_players[$name]}" ]; then
                 case "$rank" in
                     "ADMIN")
-                        if ! grep -q "^$name$" <(tail -n +3 "$ADMIN_LIST" 2>/dev/null); then
+                        if ! grep -q "^$name$" <(tail -n +2 "$ADMIN_LIST" 2>/dev/null); then
                             echo "$name" >> "$ADMIN_LIST"
                         fi
                         ;;
                     "MOD")
-                        if ! grep -q "^$name$" <(tail -n +3 "$MOD_LIST" 2>/dev/null); then
+                        if ! grep -q "^$name$" <(tail -n +2 "$MOD_LIST" 2>/dev/null); then
                             echo "$name" >> "$MOD_LIST"
                         fi
                         ;;
                     "SUPER")
-                        if ! grep -q "^$name$" <(tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null); then
+                        if ! grep -q "^$name$" <(tail -n +2 "$CLOUD_ADMIN_LIST" 2>/dev/null); then
                             echo "$name" >> "$CLOUD_ADMIN_LIST"
                         fi
                         ;;
                 esac
                 
                 if [ "$whitelisted" = "YES" ]; then
-                    if ! grep -q "^$name$" <(tail -n +3 "$WHITELIST" 2>/dev/null); then
+                    if ! grep -q "^$name$" <(tail -n +2 "$WHITELIST" 2>/dev/null); then
                         echo "$name" >> "$WHITELIST"
                     fi
                 fi
                 
                 if [ "$blacklisted" = "YES" ]; then
-                    if ! grep -q "^$name$" <(tail -n +3 "$BLACKLIST" 2>/dev/null); then
+                    if ! grep -q "^$name$" <(tail -n +2 "$BLACKLIST" 2>/dev/null); then
                         echo "$name" >> "$BLACKLIST"
                     fi
                 fi
@@ -339,10 +315,10 @@ sync_server_lists() {
         fi
     done
     
-    print_success "Server lists synced"
+    print_success "Server lists synced (1-line header mode)"
 }
 
-# Function to handle rank changes - EXACT LOGIC AS REQUIRED
+# Function to handle rank changes with proper cooldowns
 handle_rank_change() {
     local player_name="$1" old_rank="$2" new_rank="$3"
     
@@ -360,8 +336,7 @@ handle_rank_change() {
             fi
             ;;
         "SUPER")
-            # REQUIRED: Create if not exists and add to cloud admin list
-            if ! grep -q "^$player_name$" <(tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null); then
+            if ! grep -q "^$player_name$" <(tail -n +2 "$CLOUD_ADMIN_LIST" 2>/dev/null); then
                 echo "$player_name" >> "$CLOUD_ADMIN_LIST"
                 print_success "Added $player_name to cloud-wide admin list"
             fi
@@ -374,10 +349,10 @@ handle_rank_change() {
                 send_server_command "/unmod $player_name"
                 print_success "Demoted $player_name from MOD to NONE"
             elif [ "$old_rank" = "SUPER" ]; then
-                # REQUIRED: Remove from cloud admin list
+                # Remove from cloud admin list (keep first line)
                 temp_file=$(mktemp)
-                head -n 2 "$CLOUD_ADMIN_LIST" > "$temp_file"
-                grep -v "^$player_name$" <(tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null) >> "$temp_file"
+                head -n 1 "$CLOUD_ADMIN_LIST" > "$temp_file"
+                grep -v "^$player_name$" <(tail -n +2 "$CLOUD_ADMIN_LIST" 2>/dev/null) >> "$temp_file"
                 mv "$temp_file" "$CLOUD_ADMIN_LIST"
                 print_success "Removed $player_name from cloud-wide admin list"
             fi
@@ -385,7 +360,7 @@ handle_rank_change() {
     esac
 }
 
-# Function to handle blacklist changes - EXACT SEQUENCE AS REQUIRED
+# Function to handle blacklist changes with proper cooldowns
 handle_blacklist_change() {
     local player_name="$1" blacklisted="$2" player_ip="$3"
     
@@ -393,34 +368,34 @@ handle_blacklist_change() {
         read_players_log
         local rank="${players_data["$player_name,rank"]}"
         
-        # REQUIRED: Special handling for SUPER rank - stop server first if connected
+        # Special handling for SUPER rank - stop server first if connected
         if [ "$rank" = "SUPER" ] && [ -n "${connected_players[$player_name]}" ]; then
             print_warning "SUPER admin blacklisted - stopping server first"
             send_server_command "/stop"
             sleep 2
         fi
         
-        # REQUIRED: Execute commands in exact sequence
+        # Remove privileges first
         if [ "$rank" = "MOD" ]; then
             send_server_command "/unmod $player_name"
         elif [ "$rank" = "ADMIN" ] || [ "$rank" = "SUPER" ]; then
             send_server_command "/unadmin $player_name"
         fi
         
-        # Remove from cloud admin list if SUPER - REQUIRED
+        # Remove from cloud admin list if SUPER
         if [ "$rank" = "SUPER" ]; then
             temp_file=$(mktemp)
-            head -n 2 "$CLOUD_ADMIN_LIST" > "$temp_file"
-            grep -v "^$player_name$" <(tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null) >> "$temp_file"
+            head -n 1 "$CLOUD_ADMIN_LIST" > "$temp_file"
+            grep -v "^$player_name$" <(tail -n +2 "$CLOUD_ADMIN_LIST" 2>/dev/null) >> "$temp_file"
             mv "$temp_file" "$CLOUD_ADMIN_LIST"
         fi
         
-        # REQUIRED: Ban player and IP
+        # Ban player and IP
         send_server_command "/ban $player_name"
         
         if [ "$player_ip" != "UNKNOWN" ]; then
             send_server_command "/ban $player_ip"
-            # Track ban time for auto-unban - REQUIRED
+            # Track ban time for auto-unban
             ip_banned_times["$player_ip"]=$(date +%s)
         fi
         
@@ -428,7 +403,7 @@ handle_blacklist_change() {
     fi
 }
 
-# Function to auto-unban IP addresses after timeout - REQUIRED
+# Function to auto-unban IP addresses after timeout
 auto_unban_ips() {
     local current_time=$(date +%s)
     
@@ -442,7 +417,7 @@ auto_unban_ips() {
     done
 }
 
-# Function to validate password - EXACT REQUIREMENTS: 7-16 characters
+# Function to validate password
 validate_password() {
     local password="$1"
     local length=${#password}
@@ -460,97 +435,118 @@ validate_password() {
     return 0
 }
 
-# Function to handle password commands - EXACT FLOW AS REQUIRED
+# Function to handle password commands with proper cooldowns - CORREGIDO
 handle_password_command() {
     local player_name="$1" password="$2" confirm_password="$3"
     
-    # REQUIRED: Clear chat first
+    # Clear chat first with cooldown
     clear_chat
     
-    # REQUIRED: Validate password match
     if [ "$password" != "$confirm_password" ]; then
-        send_server_command "Passwords do not match"
+        send_server_message "Passwords do not match"
         return 1
     fi
     
-    # REQUIRED: Validate password requirements
     local validation_result=$(validate_password "$password")
     if [ $? -ne 0 ]; then
-        send_server_command "$validation_result"
+        send_server_message "$validation_result"
         return 1
     fi
     
     # Update password in players.log
     update_players_log "$player_name" "password" "$password"
-    send_server_command "Password set successfully for $player_name"
+    send_server_message "Password set successfully for $player_name"
     return 0
 }
 
-# Function to handle IP change verification - EXACT FLOW AS REQUIRED
+# Function to handle IP change verification with proper cooldowns - CORREGIDO
 handle_ip_change() {
     local player_name="$1" provided_password="$2" current_ip="$3"
     
-    # REQUIRED: Clear chat first
+    # Clear chat first with cooldown
     clear_chat
     
-    # Verify password - REQUIRED
+    # Verify password
     read_players_log
     local stored_password="${players_data["$player_name,password"]}"
     
     if [ "$stored_password" = "NONE" ]; then
-        send_server_command "No password set for $player_name. Use !password first."
+        send_server_message "No password set for $player_name. Use !password first."
         return 1
     fi
     
     if [ "$provided_password" != "$stored_password" ]; then
-        send_server_command "Incorrect password for IP verification"
+        send_server_message "Incorrect password for IP verification"
         return 1
     fi
     
     # Update IP in players.log
     update_players_log "$player_name" "ip" "$current_ip"
-    send_server_command "IP address verified and updated for $player_name"
+    send_server_message "IP address verified and updated for $player_name"
     
     # Clear pending verification
     unset ip_verify_pending["$player_name"]
     return 0
 }
 
-# Function to handle password change - EXACT FLOW AS REQUIRED
+# Function to handle password change with proper cooldowns - CORREGIDO
 handle_password_change() {
     local player_name="$1" old_password="$2" new_password="$3"
     
-    # REQUIRED: Clear chat first
+    # Clear chat first with cooldown
     clear_chat
     
-    # Verify old password - REQUIRED
+    # Verify old password
     read_players_log
     local stored_password="${players_data["$player_name,password"]}"
     
     if [ "$stored_password" = "NONE" ]; then
-        send_server_command "No existing password found for $player_name"
+        send_server_message "No existing password found for $player_name"
         return 1
     fi
     
     if [ "$old_password" != "$stored_password" ]; then
-        send_server_command "Incorrect old password"
+        send_server_message "Incorrect old password"
         return 1
     fi
     
-    # REQUIRED: Validate new password
     local validation_result=$(validate_password "$new_password")
     if [ $? -ne 0 ]; then
-        send_server_command "$validation_result"
+        send_server_message "$validation_result"
         return 1
     fi
     
     # Update password
     update_players_log "$player_name" "password" "$new_password"
-    send_server_command "Password changed successfully for $player_name"
+    send_server_message "Password changed successfully for $player_name"
     return 0
 }
 
-# Function to monitor console.log for events - WITH 5 SECOND DELAY FOR WELCOME MESSAGES
+# Function to send welcome message after delay - NUEVA FUNCIÓN
+send_welcome_message() {
+    local player_name="$1" is_new_player="$2"
+    
+    # Wait 5 seconds before sending welcome message - CORREGIDO
+    sleep "$WELCOME_DELAY"
+    
+    if [ "$is_new_player" = "true" ]; then
+        send_server_message "Welcome $player_name! Please set a password using: !password YOUR_PASSWORD CONFIRM_PASSWORD"
+    else
+        send_server_message "Welcome back $player_name!"
+    fi
+}
+
+# Function to send IP change warning after delay - NUEVA FUNCIÓN
+send_ip_warning() {
+    local player_name="$1"
+    
+    # Wait 5 seconds before sending warning - CORREGIDO
+    sleep "$WELCOME_DELAY"
+    
+    send_server_message "IP change detected for $player_name. Verify with: !ip_change YOUR_PASSWORD"
+}
+
+# Function to monitor console.log for events
 monitor_console_log() {
     print_header "Starting rank_patcher monitoring"
     print_status "World: $WORLD_ID"
@@ -580,11 +576,8 @@ monitor_console_log() {
                 # New player - add to players.log
                 add_new_player "$player_name" "$player_ip"
                 
-                # REQUIRED: Wait 5 seconds before sending welcome message
-                wait_welcome_delay
-                
-                # REQUIRED: Request password setup
-                send_server_command "Welcome $player_name! Please set a password using: !password YOUR_PASSWORD CONFIRM_PASSWORD"
+                # Send welcome message after delay - CORREGIDO
+                send_welcome_message "$player_name" "true" &
                 password_pending["$player_name"]=$(date +%s)
             else
                 # Existing player - check IP
@@ -593,17 +586,13 @@ monitor_console_log() {
                 
                 if [ "$stored_ip" != "$player_ip" ] && [ "$stored_ip" != "UNKNOWN" ]; then
                     # IP changed - require verification
-                    # REQUIRED: Wait 5 seconds before sending warning
-                    wait_welcome_delay
-                    send_server_command "IP change detected for $player_name. Verify with: !ip_change YOUR_PASSWORD"
+                    send_ip_warning "$player_name" &
                     ip_verify_pending["$player_name"]=$(date +%s)
                 fi
                 
                 # Check if password is set
                 if [ "$stored_password" = "NONE" ]; then
-                    # REQUIRED: Wait 5 seconds before sending message
-                    wait_welcome_delay
-                    send_server_command "Welcome back $player_name! Please set a password using: !password YOUR_PASSWORD CONFIRM_PASSWORD"
+                    send_welcome_message "$player_name" "false" &
                     password_pending["$player_name"]=$(date +%s)
                 fi
             fi
@@ -630,7 +619,7 @@ monitor_console_log() {
             continue
         fi
         
-        # Detect chat messages and commands - EXACT COMMAND FORMATS AS REQUIRED
+        # Detect chat messages and commands
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local message="${BASH_REMATCH[2]}"
@@ -638,7 +627,7 @@ monitor_console_log() {
             # Skip server messages
             [ "$player_name" = "SERVER" ] && continue
             
-            # Process commands - EXACT COMMAND NAMES AS REQUIRED
+            # Process commands
             case "$message" in
                 "!password "*)
                     if [[ "$message" =~ !password\ ([^ ]+)\ ([^ ]+) ]]; then
@@ -647,7 +636,7 @@ monitor_console_log() {
                         handle_password_command "$player_name" "$password" "$confirm_password"
                         unset password_pending["$player_name"]
                     else
-                        send_server_command "Usage: !password NEW_PASSWORD CONFIRM_PASSWORD"
+                        send_server_message "Usage: !password NEW_PASSWORD CONFIRM_PASSWORD"
                     fi
                     ;;
                 "!ip_change "*)
@@ -656,7 +645,7 @@ monitor_console_log() {
                         local current_ip="${player_ip_map[$player_name]}"
                         handle_ip_change "$player_name" "$password" "$current_ip"
                     else
-                        send_server_command "Usage: !ip_change YOUR_PASSWORD"
+                        send_server_message "Usage: !ip_change YOUR_PASSWORD"
                     fi
                     ;;
                 "!change_psw "*)
@@ -665,7 +654,7 @@ monitor_console_log() {
                         local new_password="${BASH_REMATCH[2]}"
                         handle_password_change "$player_name" "$old_password" "$new_password"
                     else
-                        send_server_command "Usage: !change_psw OLD_PASSWORD NEW_PASSWORD"
+                        send_server_message "Usage: !change_psw OLD_PASSWORD NEW_PASSWORD"
                     fi
                     ;;
             esac
@@ -673,7 +662,7 @@ monitor_console_log() {
     done
 }
 
-# Function to monitor players.log for changes every 1 second - EXACT REQUIREMENT
+# Function to monitor players.log for changes every 1 second
 monitor_players_log() {
     local last_modified=0
     
@@ -701,7 +690,7 @@ monitor_players_log() {
                         local new_rank="${players_data["$player_name,rank"]:-NONE}"
                         local old_blacklisted="${old_players_data["$player_name,blacklisted"]:-NO}"
                         local new_blacklisted="${players_data["$player_name,blacklisted"]:-NO}"
-                        local player_ip="${players_data["$name,ip"]}"
+                        local player_ip="${players_data["$player_name,ip"]}"
                         
                         # Handle rank changes
                         if [ "$old_rank" != "$new_rank" ]; then
@@ -722,26 +711,26 @@ monitor_players_log() {
             fi
         fi
         
-        sleep 1  # REQUIRED: Monitor every 1 second
+        sleep 1
     done
 }
 
-# Function to check timeouts - EXACT TIMEOUT VALUES AS REQUIRED
+# Function to check timeouts
 check_timeouts() {
     local current_time=$(date +%s)
     
-    # Check password setup timeouts - REQUIRED: 1 minute timeout
+    # Check password setup timeouts
     for player in "${!password_pending[@]}"; do
         local start_time="${password_pending[$player]}"
         if [ $((current_time - start_time)) -ge $PASSWORD_TIMEOUT ]; then
             send_server_command "/kick $player"
-            send_server_command "Player $player kicked for not setting password within timeout"
+            send_server_message "Player $player kicked for not setting password within timeout"
             unset password_pending["$player"]
             print_warning "Kicked $player for password setup timeout"
         fi
     done
     
-    # Check IP verification timeouts - REQUIRED: 30 second timeout
+    # Check IP verification timeouts
     for player in "${!ip_verify_pending[@]}"; do
         local start_time="${ip_verify_pending[$player]}"
         if [ $((current_time - start_time)) -ge $IP_VERIFY_TIMEOUT ]; then
@@ -751,12 +740,12 @@ check_timeouts() {
             unset ip_verify_pending["$player"]
             print_warning "Kicked and IP banned $player for IP verification timeout"
             
-            # Track ban for auto-unban - REQUIRED
+            # Track ban for auto-unban
             ip_banned_times["$player_ip"]=$(date +%s)
         fi
     done
     
-    # Auto-unban IPs after duration - REQUIRED: 30 second auto-unban
+    # Auto-unban IPs after duration
     auto_unban_ips
 }
 
@@ -770,7 +759,7 @@ main() {
         print_error "Console log not found: $CONSOLE_LOG"
         print_status "Waiting for log file to be created..."
         
-        # Wait for log file - FIX for "couldn't create log file"
+        # Wait for log file
         local wait_time=0
         while [ ! -f "$CONSOLE_LOG" ] && [ $wait_time -lt 30 ]; do
             sleep 1
@@ -781,14 +770,6 @@ main() {
             print_error "Console log never appeared: $CONSOLE_LOG"
             exit 1
         fi
-    fi
-    
-    # Check if bc is available for floating point calculations
-    if ! command -v bc &> /dev/null; then
-        print_error "bc command is required for cooldown calculations. Please install it:"
-        print_status "Ubuntu/Debian: sudo apt-get install bc"
-        print_status "CentOS/RHEL: sudo yum install bc"
-        exit 1
     fi
     
     # Start monitoring processes in background
