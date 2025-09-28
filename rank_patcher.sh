@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # rank_patcher.sh - Complete player management system for The Blockheads server
-# CORREGIDO: Error de sintaxis, cooldowns correctos, espera de 5 segundos
+# CORREGIDO: Error de expresión regular en validación de contraseñas
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -53,7 +53,7 @@ CLOUD_ADMIN_LIST="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWi
 # Screen session for server commands
 SCREEN_SERVER="blockheads_server_${PORT:-12153}"
 
-# Cooldown configuration - CORREGIDO: Sistema de cooldowns correcto
+# Cooldown configuration
 COMMAND_COOLDOWN=0.5
 PASSWORD_TIMEOUT=60
 IP_VERIFY_TIMEOUT=30
@@ -66,9 +66,8 @@ declare -A player_ip_map
 declare -A password_pending
 declare -A ip_verify_pending
 declare -A ip_banned_times
-declare -A last_command_time
 
-# Function to send commands to server with proper cooldown - CORREGIDO
+# Function to send commands to server with proper cooldown
 send_server_command() {
     local command="$1"
     
@@ -84,12 +83,12 @@ send_server_command() {
     fi
 }
 
-# Function to clear chat with cooldown - CORREGIDO
+# Function to clear chat with cooldown
 clear_chat() {
     send_server_command "/clear"
 }
 
-# Function to send message with cooldown - NUEVA FUNCIÓN
+# Function to send message with cooldown
 send_server_message() {
     local message="$1"
     send_server_command "say $message"
@@ -417,7 +416,7 @@ auto_unban_ips() {
     done
 }
 
-# Function to validate password
+# Function to validate password - CORREGIDO: Error de expresión regular
 validate_password() {
     local password="$1"
     local length=${#password}
@@ -427,15 +426,17 @@ validate_password() {
         return 1
     fi
     
-    if ! [[ "$password" =~ ^[a-zA-Z0-9!@#$%^&*()_+-=]+$ ]]; then
-        echo "Password contains invalid characters"
+    # CORREGIDO: Expresión regular simplificada para evitar errores de sintaxis
+    # Verificar solo caracteres alfanuméricos y algunos símbolos básicos
+    if ! echo "$password" | grep -qE '^[A-Za-z0-9!@#$%^_+-=]+$'; then
+        echo "Password contains invalid characters. Only letters, numbers and !@#$%^_+-= are allowed"
         return 1
     fi
     
     return 0
 }
 
-# Function to handle password commands with proper cooldowns - CORREGIDO
+# Function to handle password commands with proper cooldowns
 handle_password_command() {
     local player_name="$1" password="$2" confirm_password="$3"
     
@@ -447,7 +448,8 @@ handle_password_command() {
         return 1
     fi
     
-    local validation_result=$(validate_password "$password")
+    local validation_result
+    validation_result=$(validate_password "$password")
     if [ $? -ne 0 ]; then
         send_server_message "$validation_result"
         return 1
@@ -459,7 +461,7 @@ handle_password_command() {
     return 0
 }
 
-# Function to handle IP change verification with proper cooldowns - CORREGIDO
+# Function to handle IP change verification with proper cooldowns
 handle_ip_change() {
     local player_name="$1" provided_password="$2" current_ip="$3"
     
@@ -489,7 +491,7 @@ handle_ip_change() {
     return 0
 }
 
-# Function to handle password change with proper cooldowns - CORREGIDO
+# Function to handle password change with proper cooldowns
 handle_password_change() {
     local player_name="$1" old_password="$2" new_password="$3"
     
@@ -510,7 +512,8 @@ handle_password_change() {
         return 1
     fi
     
-    local validation_result=$(validate_password "$new_password")
+    local validation_result
+    validation_result=$(validate_password "$new_password")
     if [ $? -ne 0 ]; then
         send_server_message "$validation_result"
         return 1
@@ -522,11 +525,11 @@ handle_password_change() {
     return 0
 }
 
-# Function to send welcome message after delay - NUEVA FUNCIÓN
+# Function to send welcome message after delay
 send_welcome_message() {
     local player_name="$1" is_new_player="$2"
     
-    # Wait 5 seconds before sending welcome message - CORREGIDO
+    # Wait 5 seconds before sending welcome message
     sleep "$WELCOME_DELAY"
     
     if [ "$is_new_player" = "true" ]; then
@@ -536,11 +539,11 @@ send_welcome_message() {
     fi
 }
 
-# Function to send IP change warning after delay - NUEVA FUNCIÓN
+# Function to send IP change warning after delay
 send_ip_warning() {
     local player_name="$1"
     
-    # Wait 5 seconds before sending warning - CORREGIDO
+    # Wait 5 seconds before sending warning
     sleep "$WELCOME_DELAY"
     
     send_server_message "IP change detected for $player_name. Verify with: !ip_change YOUR_PASSWORD"
@@ -576,7 +579,7 @@ monitor_console_log() {
                 # New player - add to players.log
                 add_new_player "$player_name" "$player_ip"
                 
-                # Send welcome message after delay - CORREGIDO
+                # Send welcome message after delay
                 send_welcome_message "$player_name" "true" &
                 password_pending["$player_name"]=$(date +%s)
             else
