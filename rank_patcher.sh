@@ -54,6 +54,7 @@ declare -A password_pending
 declare -A ip_verify_pending
 declare -A password_timers
 declare -A ip_verify_timers
+declare -A ip_verified
 
 send_server_command() {
     local command="$1"
@@ -211,6 +212,22 @@ add_new_player() {
     print_success "Added new player: $player_name ($player_ip)"
 }
 
+is_ip_verified() {
+    local player_name="$1"
+    local current_ip="$2"
+    
+    read_players_log
+    local stored_ip="${players_data["$player_name,ip"]}"
+    
+    if [ "$stored_ip" = "UNKNOWN" ] || [ "$stored_ip" = "$current_ip" ]; then
+        ip_verified["$player_name"]=1
+        return 0
+    fi
+    
+    ip_verified["$player_name"]=0
+    return 1
+}
+
 start_password_timeout() {
     local player_name="$1"
     
@@ -344,6 +361,9 @@ handle_ip_change() {
         unset ip_verify_timers["$player_name"]
     fi
     unset ip_verify_pending["$player_name"]
+    ip_verified["$player_name"]=1
+    
+    sync_server_lists
     
     return 0
 }
@@ -366,17 +386,21 @@ sync_server_lists() {
             local rank="${players_data["$name,rank"]}"
             local whitelisted="${players_data["$name,whitelisted"]}"
             local blacklisted="${players_data["$name,blacklisted"]}"
+            local current_ip="${player_ip_map[$name]}"
             
-            if [ -n "${connected_players[$name]}" ] && [ "$ip" != "UNKNOWN" ]; then
+            if [ -n "${connected_players[$name]}" ] && [ "${ip_verified[$name]}" = "1" ]; then
                 case "$rank" in
                     "ADMIN")
                         echo "$name" >> "$ADMIN_LIST"
+                        print_status "Added $name to admin list (IP verified)"
                         ;;
                     "MOD")
                         echo "$name" >> "$MOD_LIST"
+                        print_status "Added $name to mod list (IP verified)"
                         ;;
                     "SUPER")
                         echo "$name" >> "$CLOUD_ADMIN_LIST"
+                        print_status "Added $name to cloud admin list (IP verified)"
                         ;;
                 esac
                 
@@ -387,6 +411,8 @@ sync_server_lists() {
                 if [ "$blacklisted" = "YES" ]; then
                     echo "$name" >> "$BLACKLIST"
                 fi
+            elif [ -n "${connected_players[$name]}" ] && [ -n "${ip_verify_pending[$name]}" ]; then
+                print_warning "Player $name connected with different IP - rank privileges suspended until verification"
             fi
         fi
     done
@@ -418,6 +444,7 @@ monitor_console_log() {
             if [ -z "${players_data["$player_name,name"]}" ]; then
                 add_new_player "$player_name" "$player_ip"
                 
+                ip_verified["$player_name"]=1
                 password_pending["$player_name"]=1
                 start_password_timeout "$player_name"
                 send_password_reminder "$player_name"
@@ -425,7 +452,12 @@ monitor_console_log() {
                 local stored_ip="${players_data["$player_name,ip"]}"
                 local stored_password="${players_data["$player_name,password"]}"
                 
-                if [ "$stored_ip" != "$player_ip" ] && [ "$stored_ip" != "UNKNOWN" ]; then
+                if is_ip_verified "$player_name" "$player_ip"; then
+                    print_success "IP verified for $player_name"
+                    ip_verified["$player_name"]=1
+                else
+                    print_warning "IP change detected for $player_name: $stored_ip -> $player_ip"
+                    ip_verified["$player_name"]=0
                     ip_verify_pending["$player_name"]=1
                     start_ip_verify_timeout "$player_name" "$player_ip"
                     send_ip_warning "$player_name"
@@ -449,6 +481,7 @@ monitor_console_log() {
             
             unset connected_players["$player_name"]
             unset player_ip_map["$player_name"]
+            unset ip_verified["$player_name"]
             
             if [ -n "${password_timers[$player_name]}" ]; then
                 kill "${password_timers[$player_name]}" 2>/dev/null
