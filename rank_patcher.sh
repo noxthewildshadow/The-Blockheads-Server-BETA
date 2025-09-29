@@ -59,6 +59,9 @@ declare -A ip_verified
 declare -A last_player_states
 declare -A super_remove_timers
 
+# Variable global para el último tiempo de verificación
+LAST_PLAYERS_LOG_CHECK=0
+
 send_server_command() {
     local command="$1"
     
@@ -598,13 +601,12 @@ sync_server_lists() {
 
 monitor_players_log_changes() {
     local current_time=$(date +%s)
-    static last_check_time=0
     
     # Check for changes every 2 seconds
-    if [ $((current_time - last_check_time)) -lt 2 ]; then
+    if [ $((current_time - LAST_PLAYERS_LOG_CHECK)) -lt 2 ]; then
         return
     fi
-    last_check_time=$current_time
+    LAST_PLAYERS_LOG_CHECK=$current_time
     
     if [ ! -f "$PLAYERS_LOG" ]; then
         return
