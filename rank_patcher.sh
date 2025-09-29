@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # rank_patcher.sh - Complete player management system for The Blockheads server
-# VERSIÓN CORREGIDA: Comandos /kick implementados y verificación mejorada
+# VERSIÓN CORREGIDA: Comandos enviados directamente sin 'say'
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -85,7 +85,7 @@ send_server_command() {
     fi
 }
 
-# Function to kick player
+# Function to kick player - CORREGIDO: Envío directo sin 'say'
 kick_player() {
     local player_name="$1"
     local reason="$2"
@@ -99,7 +99,7 @@ clear_chat() {
     send_server_command "/clear"
 }
 
-# Function to send message with cooldown
+# Function to send message with cooldown - CORREGIDO: Usa 'say' solo para mensajes de chat
 send_server_message() {
     local message="$1"
     send_server_command "say $message"
@@ -319,7 +319,7 @@ sync_server_lists() {
     print_success "Server lists synced (empty files mode)"
 }
 
-# Function to handle rank changes with proper cooldowns
+# Function to handle rank changes with proper cooldowns - CORREGIDO: Comandos directos
 handle_rank_change() {
     local player_name="$1" old_rank="$2" new_rank="$3"
     
@@ -361,7 +361,7 @@ handle_rank_change() {
     esac
 }
 
-# Function to handle blacklist changes with proper cooldowns
+# Function to handle blacklist changes with proper cooldowns - CORREGIDO: Comandos directos
 handle_blacklist_change() {
     local player_name="$1" blacklisted="$2" player_ip="$3"
     
@@ -390,7 +390,7 @@ handle_blacklist_change() {
             mv "$temp_file" "$CLOUD_ADMIN_LIST"
         fi
         
-        # Ban player and IP
+        # Ban player and IP - CORREGIDO: Comandos directos
         send_server_command "/ban $player_name"
         
         if [ "$player_ip" != "UNKNOWN" ]; then
@@ -403,7 +403,7 @@ handle_blacklist_change() {
     fi
 }
 
-# Function to auto-unban IP addresses after timeout
+# Function to auto-unban IP addresses after timeout - CORREGIDO: Comandos directos
 auto_unban_ips() {
     local current_time=$(date +%s)
     
@@ -417,7 +417,7 @@ auto_unban_ips() {
     done
 }
 
-# Function to validate password - CORREGIDO
+# Function to validate password
 validate_password() {
     local password="$1"
     local length=${#password}
@@ -427,7 +427,6 @@ validate_password() {
         return 1
     fi
     
-    # CORREGIDO: Expresión regular segura
     if ! echo "$password" | grep -qE '^[A-Za-z0-9!@#$%^_+-=]+$'; then
         echo "Password contains invalid characters. Only letters, numbers and !@#$%^_+-= are allowed"
         return 1
@@ -721,7 +720,7 @@ monitor_players_log() {
     done
 }
 
-# Function to check timeouts - CORREGIDO: Ahora ejecuta los comandos /kick
+# Function to check timeouts - CORREGIDO: Ahora ejecuta /kick directamente
 check_timeouts() {
     local current_time=$(date +%s)
     
@@ -729,10 +728,10 @@ check_timeouts() {
     for player in "${!password_pending[@]}"; do
         local start_time="${password_pending[$player]}"
         if [ $((current_time - start_time)) -ge $PASSWORD_TIMEOUT ]; then
+            print_warning "Password timeout reached for $player - kicking player"
             kick_player "$player" "No password set within 60 seconds"
             send_server_message "Player $player kicked for not setting password within 60 seconds"
             unset password_pending["$player"]
-            print_warning "Kicked $player for password setup timeout (60s)"
         fi
     done
     
@@ -741,11 +740,11 @@ check_timeouts() {
         local start_time="${ip_verify_pending[$player]}"
         if [ $((current_time - start_time)) -ge $IP_VERIFY_TIMEOUT ]; then
             local player_ip="${player_ip_map[$player]}"
+            print_warning "IP verification timeout reached for $player - kicking and banning IP"
             kick_player "$player" "IP verification failed within 30 seconds"
             send_server_command "/ban $player_ip"
             send_server_message "Player $player kicked and IP banned for IP verification timeout"
             unset ip_verify_pending["$player"]
-            print_warning "Kicked and IP banned $player for IP verification timeout (30s)"
             
             # Track ban for auto-unban
             ip_banned_times["$player_ip"]=$(date +%s)
@@ -767,7 +766,7 @@ periodic_list_sync() {
 
 # Main execution
 main() {
-    print_header "THE BLOCKHEADS RANK PATCHER - CORREGIDO"
+    print_header "THE BLOCKHEADS RANK PATCHER - COMANDOS DIRECTOS"
     print_status "Starting player management system..."
     
     # Check if console log exists
