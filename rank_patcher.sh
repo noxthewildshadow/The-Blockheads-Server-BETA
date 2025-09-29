@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # rank_patcher.sh - Complete player management system for The Blockheads server
-# VERSIÓN CORREGIDA: Comandos puros sin prefijos
+# VERSIÓN CORREGIDA: Detección correcta de conexiones y advertencias repetidas
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -60,6 +60,7 @@ IP_VERIFY_TIMEOUT=30
 IP_BAN_DURATION=30
 WELCOME_DELAY=5
 LIST_SYNC_INTERVAL=5
+WARNING_INTERVAL=10
 
 # Track connected players and their states
 declare -A connected_players
@@ -67,6 +68,7 @@ declare -A player_ip_map
 declare -A password_pending
 declare -A ip_verify_pending
 declare -A ip_banned_times
+declare -A last_warning_time
 
 # Function to send commands to server with proper cooldown
 send_server_command() {
@@ -450,6 +452,7 @@ handle_password_command() {
     
     # Remove from password pending
     unset password_pending["$player_name"]
+    unset last_warning_time["$player_name"]
     return 0
 }
 
@@ -520,6 +523,7 @@ send_welcome_message() {
     
     if [ "$is_new_player" = "true" ]; then
         send_server_command "Welcome $player_name! Please set a password using: !password YOUR_PASSWORD CONFIRM_PASSWORD"
+        send_server_command "You have 60 seconds to set your password or you will be kicked."
     else
         send_server_command "Welcome back $player_name!"
     fi
@@ -536,7 +540,14 @@ send_ip_warning() {
     send_server_command "You have 30 seconds to verify your IP or you will be kicked and IP banned."
 }
 
-# Function to monitor console.log for events
+# Function to send password warning
+send_password_warning() {
+    local player_name="$1" time_left="$2"
+    
+    send_server_command "WARNING $player_name: You have $time_left seconds to set your password with !password YOUR_PASSWORD CONFIRM_PASSWORD or you will be kicked!"
+}
+
+# Function to monitor console.log for events - CORREGIDO: Detección correcta de formato
 monitor_console_log() {
     print_header "Starting rank_patcher monitoring"
     print_status "World: $WORLD_ID"
@@ -549,8 +560,8 @@ monitor_console_log() {
     
     # Monitor the log file
     tail -n 0 -F "$CONSOLE_LOG" | while read line; do
-        # Detect player connections
-        if [[ "$line" =~ Player\ Connected\ ([a-zA-Z0-9_]+)\ \|\ ([0-9a-fA-F.:]+) ]]; then
+        # Detect player connections - FORMATO CORREGIDO
+        if [[ "$line" =~ Player\ Connected\ ([a-zA-Z0-9_]+)\ \|\ ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\ \|\ [a-f0-9]+ ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
             
@@ -569,6 +580,7 @@ monitor_console_log() {
                 # Send welcome message after delay
                 send_welcome_message "$player_name" "true" &
                 password_pending["$player_name"]=$(date +%s)
+                last_warning_time["$player_name"]=0
             else
                 # Existing player - check IP
                 local stored_ip="${players_data["$player_name,ip"]}"
@@ -584,6 +596,7 @@ monitor_console_log() {
                 if [ "$stored_password" = "NONE" ]; then
                     send_welcome_message "$player_name" "false" &
                     password_pending["$player_name"]=$(date +%s)
+                    last_warning_time["$player_name"]=0
                 fi
             fi
             
@@ -603,6 +616,7 @@ monitor_console_log() {
             unset player_ip_map["$player_name"]
             unset password_pending["$player_name"]
             unset ip_verify_pending["$player_name"]
+            unset last_warning_time["$player_name"]
             
             # Sync lists after disconnection
             sync_server_lists
@@ -704,17 +718,44 @@ monitor_players_log() {
     done
 }
 
-# Function to check timeouts - CORREGIDO: Ejecuta /kick directamente
+# Function to check timeouts - CORREGIDO: Advertencias repetidas y kicks
 check_timeouts() {
     local current_time=$(date +%s)
     
-    # Check password setup timeouts - 60 seconds
+    # Check password setup timeouts - 60 seconds con advertencias
     for player in "${!password_pending[@]}"; do
         local start_time="${password_pending[$player]}"
-        if [ $((current_time - start_time)) -ge $PASSWORD_TIMEOUT ]; then
+        local time_elapsed=$((current_time - start_time))
+        local time_left=$((PASSWORD_TIMEOUT - time_elapsed))
+        
+        if [ $time_elapsed -ge $PASSWORD_TIMEOUT ]; then
             print_warning "Password timeout reached for $player - kicking player"
             kick_player "$player" "No password set within 60 seconds"
+            send_server_command "Player $player kicked for not setting password within 60 seconds"
             unset password_pending["$player"]
+            unset last_warning_time["$player"]
+        else
+            # Send warnings at intervals
+            local last_warn="${last_warning_time[$player]:-0}"
+            local time_since_last_warn=$((current_time - last_warn))
+            
+            # Send warnings at 50, 40, 30, 20, 10 seconds remaining
+            if [ $time_left -le 50 ] && [ $time_left -gt 40 ] && [ $time_since_last_warn -ge 10 ]; then
+                send_password_warning "$player" "$time_left"
+                last_warning_time["$player"]=$current_time
+            elif [ $time_left -le 40 ] && [ $time_left -gt 30 ] && [ $time_since_last_warn -ge 10 ]; then
+                send_password_warning "$player" "$time_left"
+                last_warning_time["$player"]=$current_time
+            elif [ $time_left -le 30 ] && [ $time_left -gt 20 ] && [ $time_since_last_warn -ge 10 ]; then
+                send_password_warning "$player" "$time_left"
+                last_warning_time["$player"]=$current_time
+            elif [ $time_left -le 20 ] && [ $time_left -gt 10 ] && [ $time_since_last_warn -ge 10 ]; then
+                send_password_warning "$player" "$time_left"
+                last_warning_time["$player"]=$current_time
+            elif [ $time_left -le 10 ] && [ $time_since_last_warn -ge 5 ]; then
+                send_password_warning "$player" "$time_left"
+                last_warning_time["$player"]=$current_time
+            fi
         fi
     done
     
@@ -726,6 +767,7 @@ check_timeouts() {
             print_warning "IP verification timeout reached for $player - kicking and banning IP"
             kick_player "$player" "IP verification failed within 30 seconds"
             send_server_command "/ban $player_ip"
+            send_server_command "Player $player kicked and IP banned for IP verification timeout"
             unset ip_verify_pending["$player"]
             
             # Track ban for auto-unban
@@ -748,7 +790,7 @@ periodic_list_sync() {
 
 # Main execution
 main() {
-    print_header "THE BLOCKHEADS RANK PATCHER - COMANDOS PUROS"
+    print_header "THE BLOCKHEADS RANK PATCHER - DETECCIÓN CORREGIDA"
     print_status "Starting player management system..."
     
     # Check if console log exists
