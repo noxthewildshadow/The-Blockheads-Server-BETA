@@ -1,7 +1,6 @@
 #!/bin/bash
 
 # server_manager.sh - Enhanced server manager with complete rank_patcher integration
-# CORREGIDO: Error de sintaxis eliminado
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -128,7 +127,7 @@ start_rank_patcher() {
     fi
 }
 
-# Function to start server - CORREGIDO: Error de sintaxis eliminado
+# Function to start server
 start_server() {
     local world_id="$1"
     local port="${2:-$DEFAULT_PORT}"
@@ -412,7 +411,7 @@ show_usage() {
     print_warning "After creating the world, press CTRL+C to exit"
 }
 
-# Main execution - CORREGIDO: Estructura simplificada para evitar errores
+# Main execution
 case "$1" in
     start)
         if [ -z "$2" ]; then
