@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# rank_patcher.sh - Optimized player management system for The Blockheads
+# rank_patcher.sh - Optimized for Ubuntu Server 22.04 + GNUstep
+# Player management system for The Blockheads server
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -20,12 +21,13 @@ print_header() {
     echo -e "===============================================================${NC}"
 }
 
-# Configuración
+# Configuración específica para Ubuntu 22.04 + GNUstep
 BASE_DIR="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
 CONSOLE_LOG="$1"
 WORLD_ID="$2"
 PORT="$3"
 
+# Validación de parámetros
 if [ -z "$WORLD_ID" ] && [ -n "$CONSOLE_LOG" ]; then
     WORLD_ID=$(echo "$CONSOLE_LOG" | grep -oE 'saves/[^/]+' | cut -d'/' -f2)
 fi
@@ -36,6 +38,7 @@ if [ -z "$CONSOLE_LOG" ] || [ -z "$WORLD_ID" ]; then
     exit 1
 fi
 
+# Rutas específicas de GNUstep
 PLAYERS_LOG="$BASE_DIR/$WORLD_ID/players.log"
 ADMIN_LIST="$BASE_DIR/$WORLD_ID/adminlist.txt"
 MOD_LIST="$BASE_DIR/$WORLD_ID/modlist.txt"
@@ -45,11 +48,11 @@ CLOUD_ADMIN_LIST="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWi
 
 SCREEN_SERVER="blockheads_server_${PORT:-12153}"
 
-# Timeouts
+# Timeouts (ajustados para Ubuntu Server)
 PASSWORD_TIMEOUT=60
 IP_VERIFY_TIMEOUT=30
 
-# Arrays para tracking
+# Arrays para tracking de estado
 declare -A connected_players
 declare -A player_ip_map
 declare -A password_pending
@@ -60,7 +63,8 @@ declare -A ip_verified
 declare -A current_players_data
 declare -A previous_players_data
 
-# Función para enviar comandos al servidor
+# ========== FUNCIONES PRINCIPALES ==========
+
 send_server_command() {
     local command="$1"
     
@@ -69,14 +73,18 @@ send_server_command() {
         return 1
     fi
     
+    # Verificar screen session específica para Ubuntu
     if ! screen -list | grep -q "$SCREEN_SERVER"; then
         print_error "Screen session not found: $SCREEN_SERVER"
+        print_error "Available screens:"
+        screen -list | grep "blockheads" || echo "No blockheads screens found"
         return 1
     fi
     
+    # Enviar comando usando el formato correcto para Ubuntu
     if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$command$(printf \\r)"; then
         print_success "Command sent: $command"
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - COMMAND: $command" >> "/tmp/rank_patcher_commands.log"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - COMMAND: $command" >> "/tmp/rank_patcher_${PORT:-12153}.log"
         return 0
     else
         print_error "Failed to send command: $command"
@@ -84,7 +92,6 @@ send_server_command() {
     fi
 }
 
-# Función para leer players.log
 read_players_log() {
     if [ ! -f "$PLAYERS_LOG" ]; then
         print_error "players.log not found: $PLAYERS_LOG"
@@ -96,19 +103,20 @@ read_players_log() {
         unset current_players_data["$key"]
     done
     
+    # Leer players.log con formato específico de The Blockheads
     while IFS='|' read -r name ip password rank whitelisted blacklisted; do
         [[ "$name" =~ ^# ]] && continue
         [[ -z "$name" ]] && continue
         
-        # Limpiar espacios
-        name=$(echo "$name" | xargs)
-        ip=$(echo "$ip" | xargs)
-        password=$(echo "$password" | xargs)
-        rank=$(echo "$rank" | xargs)
-        whitelisted=$(echo "$whitelisted" | xargs)
-        blacklisted=$(echo "$blacklisted" | xargs)
+        # Limpiar espacios (compatible con Ubuntu 22.04)
+        name=$(echo "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        ip=$(echo "$ip" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        password=$(echo "$password" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        rank=$(echo "$rank" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        whitelisted=$(echo "$whitelisted" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        blacklisted=$(echo "$blacklisted" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         
-        # Valores por defecto
+        # Valores por defecto específicos de The Blockheads
         [ -z "$name" ] && name="UNKNOWN"
         [ -z "$ip" ] && ip="UNKNOWN"
         [ -z "$password" ] && password="NONE"
@@ -129,7 +137,6 @@ read_players_log() {
     return 0
 }
 
-# Verificar si IP está verificada
 is_ip_verified() {
     local player_name="$1"
     local current_ip="$2"
@@ -146,12 +153,14 @@ is_ip_verified() {
     return 1
 }
 
-# Timeouts
+# ========== SISTEMA DE TIMEOUTS ==========
+
 start_password_timeout() {
     local player_name="$1"
     
     print_warning "Password timeout started for $player_name (60s)"
     
+    # Cancelar timeout anterior si existe
     if [ -n "${password_timers[$player_name]}" ]; then
         kill "${password_timers[$player_name]}" 2>/dev/null
     fi
@@ -173,6 +182,7 @@ start_ip_verify_timeout() {
     
     print_warning "IP verification timeout started for $player_name (30s)"
     
+    # Cancelar timeout anterior si existe
     if [ -n "${ip_verify_timers[$player_name]}" ]; then
         kill "${ip_verify_timers[$player_name]}" 2>/dev/null
     fi
@@ -190,35 +200,12 @@ start_ip_verify_timeout() {
     ip_verify_timers["$player_name"]=$!
 }
 
-# Manejo de listas cloud
-add_player_to_cloud_list() {
-    local player_name="$1"
-    
-    if [ ! -f "$CLOUD_ADMIN_LIST" ]; then
-        touch "$CLOUD_ADMIN_LIST"
-    fi
-    
-    if ! grep -q "^$player_name$" "$CLOUD_ADMIN_LIST" 2>/dev/null; then
-        echo "$player_name" >> "$CLOUD_ADMIN_LIST"
-        print_success "Added $player_name to cloud admin list"
-    fi
-}
+# ========== GESTIÓN DE RANGOS Y LISTAS ==========
 
-remove_player_from_cloud_list() {
-    local player_name="$1"
-    
-    if [ -f "$CLOUD_ADMIN_LIST" ]; then
-        temp_file=$(mktemp)
-        grep -v "^$player_name$" "$CLOUD_ADMIN_LIST" > "$temp_file"
-        mv "$temp_file" "$CLOUD_ADMIN_LIST"
-        print_success "Removed $player_name from cloud admin list"
-    fi
-}
-
-# Aplicar rangos y listas al jugador
 apply_player_ranks() {
     local player_name="$1"
     
+    # Verificar que el jugador esté conectado y con IP verificada
     if [ -z "${connected_players[$player_name]}" ] || [ "${ip_verified[$player_name]}" != "1" ]; then
         print_warning "Cannot apply ranks to $player_name - not connected or IP not verified"
         return 1
@@ -230,29 +217,26 @@ apply_player_ranks() {
     local blacklisted="${current_players_data["$player_name,blacklisted"]}"
     local current_ip="${player_ip_map[$player_name]}"
     
-    print_status "Applying ranks to $player_name: Rank=$rank, Whitelisted=$whitelisted, Blacklisted=$blacklisted"
+    print_header "APPLYING RANKS TO: $player_name"
+    print_status "Rank: $rank, Whitelisted: $whitelisted, Blacklisted: $blacklisted"
     
-    # Aplicar rangos
+    # Aplicar comandos de rango según The Blockheads
     case "$rank" in
         "ADMIN")
             send_server_command "/admin $player_name"
             send_server_command "/unmod $player_name"
-            remove_player_from_cloud_list "$player_name"
             ;;
         "MOD")
             send_server_command "/mod $player_name"
             send_server_command "/unadmin $player_name"
-            remove_player_from_cloud_list "$player_name"
             ;;
         "SUPER")
             send_server_command "/unadmin $player_name"
             send_server_command "/unmod $player_name"
-            add_player_to_cloud_list "$player_name"
             ;;
         "NONE")
             send_server_command "/unadmin $player_name"
             send_server_command "/unmod $player_name"
-            remove_player_from_cloud_list "$player_name"
             ;;
     esac
     
@@ -275,23 +259,22 @@ apply_player_ranks() {
         fi
     fi
     
-    print_success "Applied all ranks and lists to $player_name"
+    print_success "All ranks and lists applied to $player_name"
     return 0
 }
 
-# Sincronizar listas del servidor
 sync_server_lists() {
     print_status "Syncing server lists from players.log..."
     
     read_players_log
     
-    # Limpiar listas
+    # Limpiar listas existentes
     > "$ADMIN_LIST"
     > "$MOD_LIST"
     > "$WHITELIST"
     > "$BLACKLIST"
     
-    # Llenar listas basado en players.log para jugadores conectados y verificados
+    # Poblar listas basado en players.log (solo jugadores conectados y verificados)
     for key in "${!current_players_data[@]}"; do
         if [[ "$key" == *,name ]]; then
             local name="${current_players_data[$key]}"
@@ -315,10 +298,12 @@ sync_server_lists() {
     print_success "Server lists synced"
 }
 
-# Manejo de comandos de chat
+# ========== MANEJO DE COMANDOS DE CHAT ==========
+
 handle_password_command() {
     local player_name="$1" password="$2" confirm_password="$3"
     
+    # Validaciones
     if [ "$password" != "$confirm_password" ]; then
         send_server_command "Passwords do not match"
         return 1
@@ -338,6 +323,7 @@ handle_password_command() {
     read_players_log
     current_players_data["$player_name,password"]="$password"
     
+    # Reescribir players.log completo
     {
         echo "# Player Name | First IP | Password | Rank | Whitelisted | Blacklisted"
         for key in "${!current_players_data[@]}"; do
@@ -355,7 +341,7 @@ handle_password_command() {
     
     send_server_command "Password set successfully for $player_name"
     
-    # Cancelar timeout
+    # Cancelar timeout de password
     if [ -n "${password_timers[$player_name]}" ]; then
         kill "${password_timers[$player_name]}" 2>/dev/null
         unset password_timers["$player_name"]
@@ -384,6 +370,7 @@ handle_ip_change() {
     # Actualizar IP en players.log
     current_players_data["$player_name,ip"]="$current_ip"
     
+    # Reescribir players.log completo
     {
         echo "# Player Name | First IP | Password | Rank | Whitelisted | Blacklisted"
         for key in "${!current_players_data[@]}"; do
@@ -416,16 +403,20 @@ handle_ip_change() {
     return 0
 }
 
-# Monitoreo de players.log con inotifywait
+# ========== MONITOREO CON INOTIFYWAIT ==========
+
 monitor_players_log() {
-    if ! command -v inotifywait &> /dev/null; then
-        print_error "inotifywait not found. Install inotify-tools:"
-        print_error "Ubuntu/Debian: sudo apt install inotify-tools"
-        print_error "CentOS/RHEL: sudo yum install inotify-tools"
-        exit 1
-    fi
-    
     print_header "Starting players.log monitoring with inotifywait"
+    
+    # Verificar inotifywait en Ubuntu 22.04
+    if ! command -v inotifywait &> /dev/null; then
+        print_error "inotifywait not found. Installing inotify-tools..."
+        sudo apt update && sudo apt install -y inotify-tools
+        if ! command -v inotifywait &> /dev/null; then
+            print_error "Failed to install inotify-tools"
+            exit 1
+        fi
+    fi
     
     # Estado inicial
     read_players_log
@@ -433,8 +424,9 @@ monitor_players_log() {
         previous_players_data["$key"]="${current_players_data[$key]}"
     done
     
+    # Monitoreo en tiempo real con inotifywait
     inotifywait -m -e modify "$PLAYERS_LOG" --format '%w %e' | while read file event; do
-        sleep 0.01
+        sleep 0.01  # Pequeña pausa para escritura completa
         
         # Guardar estado anterior
         declare -A old_players_data
@@ -445,7 +437,7 @@ monitor_players_log() {
         # Leer nuevo estado
         read_players_log
         
-        # Detectar cambios y aplicar
+        # Detectar cambios y aplicar comandos inmediatamente
         local changes_detected=0
         for key in "${!current_players_data[@]}"; do
             if [[ "$key" == *,name ]]; then
@@ -458,12 +450,12 @@ monitor_players_log() {
                 local old_whitelisted="${old_players_data["$player_name,whitelisted"]:-NO}"
                 local old_blacklisted="${old_players_data["$player_name,blacklisted"]:-NO}"
                 
-                # Detectar cambios
+                # Detectar cambios relevantes
                 if [ "$current_rank" != "$old_rank" ] || \
                    [ "$current_whitelisted" != "$old_whitelisted" ] || \
                    [ "$current_blacklisted" != "$old_blacklisted" ]; then
                    
-                    print_header "CHANGES DETECTED for $player_name"
+                    print_header "🚨 CHANGES DETECTED FOR: $player_name"
                     [ "$current_rank" != "$old_rank" ] && \
                         print_status "Rank: $old_rank -> $current_rank"
                     [ "$current_whitelisted" != "$old_whitelisted" ] && \
@@ -489,11 +481,12 @@ monitor_players_log() {
     done
 }
 
-# Monitoreo del console.log
+# ========== MONITOREO DE CONSOLA ==========
+
 monitor_console_log() {
     print_header "Starting console.log monitoring"
     
-    # Esperar a que el archivo exista
+    # Esperar a que el archivo exista (compatible con Ubuntu 22.04)
     local wait_time=0
     while [ ! -f "$CONSOLE_LOG" ] && [ $wait_time -lt 30 ]; do
         sleep 1
@@ -505,8 +498,9 @@ monitor_console_log() {
         return 1
     fi
     
+    # Monitoreo de conexiones/desconexiones específicas de The Blockheads
     tail -n 0 -F "$CONSOLE_LOG" | while read line; do
-        # Detectar conexión de jugador
+        # Detectar conexión de jugador - formato específico de The Blockheads
         if [[ "$line" =~ Player\ Connected\ ([a-zA-Z0-9_]+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
@@ -516,11 +510,13 @@ monitor_console_log() {
             connected_players["$player_name"]=1
             player_ip_map["$player_name"]="$player_ip"
             
-            # Verificar si el jugador existe en players.log
+            # Verificar si es un jugador nuevo o existente
             read_players_log
             if [ -z "${current_players_data["$player_name,name"]}" ]; then
-                # Nuevo jugador - agregar a players.log
+                # NUEVO JUGADOR
                 print_status "New player detected - adding to players.log"
+                
+                # Agregar a players.log
                 current_players_data["$player_name,name"]="$player_name"
                 current_players_data["$player_name,ip"]="$player_ip"
                 current_players_data["$player_name,password"]="NONE"
@@ -549,7 +545,7 @@ monitor_console_log() {
                 send_server_command "Welcome $player_name! Set password with: !password YOUR_PASSWORD CONFIRM_PASSWORD"
                 
             else
-                # Jugador existente - verificar IP
+                # JUGADOR EXISTENTE - Verificar IP
                 if is_ip_verified "$player_name" "$player_ip"; then
                     print_success "IP verified for $player_name"
                     ip_verified["$player_name"]=1
@@ -563,17 +559,17 @@ monitor_console_log() {
                     start_ip_verify_timeout "$player_name" "$player_ip"
                     send_server_command "SECURITY ALERT: $player_name, verify IP with: !ip_change YOUR_PASSWORD"
                     
-                    # Remover rangos temporalmente
+                    # Remover rangos temporalmente por seguridad
                     send_server_command "/unadmin $player_name"
                     send_server_command "/unmod $player_name"
                 fi
                 
-                # Verificar si necesita password
+                # Verificar si necesita establecer password
                 local stored_password="${current_players_data["$player_name,password"]}"
                 if [ "$stored_password" = "NONE" ]; then
                     password_pending["$player_name"]=1
                     start_password_timeout "$player_name"
-                    send_server_command "Welcome $player_name! Set password with: !password YOUR_PASSWORD CONFIRM_PASSWORD"
+                    send_server_command "Welcome back $player_name! Set password with: !password YOUR_PASSWORD CONFIRM_PASSWORD"
                 fi
             fi
             
@@ -581,7 +577,7 @@ monitor_console_log() {
             continue
         fi
         
-        # Detectar desconexión
+        # Detectar desconexión de jugador
         if [[ "$line" =~ Player\ Disconnected\ ([a-zA-Z0-9_]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             
@@ -610,7 +606,7 @@ monitor_console_log() {
             continue
         fi
         
-        # Detectar comandos de chat
+        # Detectar comandos de chat de jugadores
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local message="${BASH_REMATCH[2]}"
@@ -643,17 +639,20 @@ monitor_console_log() {
     done
 }
 
-# Función principal
+# ========== FUNCIÓN PRINCIPAL ==========
+
 main() {
-    print_header "THE BLOCKHEADS RANK PATCHER - OPTIMIZED"
+    print_header "THE BLOCKHEADS RANK PATCHER - UBUNTU 22.04 + GNUSTEP"
     print_status "World: $WORLD_ID"
     print_status "Port: ${PORT:-12153}"
     print_status "Console: $CONSOLE_LOG"
     print_status "Players: $PLAYERS_LOG"
     
-    # Verificar que screen session existe
+    # Verificar que la screen session existe
     if ! screen -list | grep -q "$SCREEN_SERVER"; then
         print_error "Server screen session not found: $SCREEN_SERVER"
+        print_error "Available screens:"
+        screen -list
         exit 1
     fi
     
@@ -662,12 +661,14 @@ main() {
         print_status "Creating players.log..."
         mkdir -p "$(dirname "$PLAYERS_LOG")"
         echo "# Player Name | First IP | Password | Rank | Whitelisted | Blacklisted" > "$PLAYERS_LOG"
+        print_success "players.log created"
     fi
     
     # Sincronización inicial
+    print_status "Performing initial sync..."
     sync_server_lists
     
-    # Iniciar monitores
+    # Iniciar monitores en paralelo
     print_header "STARTING MONITORS"
     
     monitor_console_log &
@@ -676,17 +677,44 @@ main() {
     monitor_players_log &
     local players_pid=$!
     
-    print_success "Monitors started successfully"
+    print_success "All monitors started successfully"
     print_status "Console monitor PID: $console_pid"
     print_status "Players log monitor PID: $players_pid"
+    print_status "Command log: /tmp/rank_patcher_${PORT:-12153}.log"
+    
+    # Configurar trap para limpieza
+    trap "print_error 'Shutting down...'; kill $console_pid $players_pid 2>/dev/null; exit 0" INT TERM
     
     # Esperar a que cualquier proceso termine
     wait -n
-    print_error "One monitor stopped - terminating"
+    print_error "One monitor stopped - terminating all processes"
     
     kill $console_pid $players_pid 2>/dev/null
     exit 1
 }
 
-# Ejecutar
-main "$@"
+# Verificar e instalar dependencias si es necesario
+check_dependencies() {
+    local deps=("screen" "inotifywait")
+    local missing=()
+    
+    for dep in "${deps[@]}"; do
+        if ! command -v "$dep" &> /dev/null; then
+            missing+=("$dep")
+        fi
+    done
+    
+    if [ ${#missing[@]} -gt 0 ]; then
+        print_warning "Missing dependencies: ${missing[*]}"
+        print_status "Installing dependencies..."
+        sudo apt update
+        sudo apt install -y screen inotify-tools
+        print_success "Dependencies installed"
+    fi
+}
+
+# Punto de entrada
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    check_dependencies
+    main "$@"
+fi
