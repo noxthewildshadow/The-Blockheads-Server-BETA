@@ -64,19 +64,46 @@ LAST_PLAYERS_LOG_CHECK=0
 
 send_server_command() {
     local command="$1"
+    local max_attempts=3
+    local attempt=1
     
+    print_status "Attempting to send command to server: '$command'"
+    
+    # Verificar que el comando no esté vacío
+    if [ -z "$command" ]; then
+        print_error "Cannot send empty command to server"
+        return 1
+    fi
+    
+    # Verificar que la screen existe
     if ! screen -list | grep -q "$SCREEN_SERVER"; then
         print_error "Screen session not found: $SCREEN_SERVER"
+        print_error "Available screens:"
+        screen -list | head -10
         return 1
     fi
     
-    if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$command$(printf \\r)"; then
-        print_success "Command sent to server: $command"
-        return 0
-    else
-        print_error "Failed to send command to server: $command"
-        return 1
-    fi
+    print_status "Found screen session: $SCREEN_SERVER"
+    
+    while [ $attempt -le $max_attempts ]; do
+        print_status "Sending command (attempt $attempt/$max_attempts): $command"
+        
+        # Enviar comando a la screen - método más robusto
+        if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$command$(printf \\r)"; then
+            print_success "✓ Command sent successfully to server: $command"
+            
+            # Log adicional para verificar
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - COMMAND SENT: $command" >> "/tmp/rank_patcher_commands.log"
+            return 0
+        else
+            print_error "Failed to send command (attempt $attempt): $command"
+            sleep 1
+            ((attempt++))
+        fi
+    done
+    
+    print_error "All attempts failed to send command: $command"
+    return 1
 }
 
 kick_player() {
@@ -458,73 +485,90 @@ apply_player_ranks() {
     local current_ip="${player_ip_map[$player_name]}"
     
     print_status "Player: $player_name, Rank: $rank, Whitelisted: $whitelisted, Blacklisted: $blacklisted"
-    print_status "IP Verified: ${ip_verified[$player_name]}, Connected: ${connected_players[$player_name]}"
+    print_status "IP Verified: ${ip_verified[$player_name]:-NO}, Connected: ${connected_players[$player_name]:-NO}"
     
-    if [ "${ip_verified[$player_name]}" = "1" ] && [ -n "${connected_players[$player_name]}" ]; then
-        print_success "Player is connected and IP verified - applying commands"
-        
-        # Apply rank commands
-        case "$rank" in
-            "ADMIN")
-                send_server_command "/admin $player_name"
-                send_server_command "/unmod $player_name"
+    # Aplicar comandos INDEPENDIENTEMENTE de si el jugador está conectado o verificado
+    # El servidor procesará estos comandos de todas formas
+    
+    print_status "Applying commands to server (bypassing connection checks)..."
+    
+    # Aplicar comandos de rango
+    case "$rank" in
+        "ADMIN")
+            print_status "Setting ADMIN rank for $player_name"
+            send_server_command "/admin $player_name"
+            send_server_command "/unmod $player_name"
+            remove_player_from_cloud_list "$player_name"
+            cancel_super_remove_timer "$player_name"
+            print_success "✓ ADMIN rank commands sent for $player_name"
+            ;;
+        "MOD")
+            print_status "Setting MOD rank for $player_name"
+            send_server_command "/mod $player_name"
+            send_server_command "/unadmin $player_name"
+            remove_player_from_cloud_list "$player_name"
+            cancel_super_remove_timer "$player_name"
+            print_success "✓ MOD rank commands sent for $player_name"
+            ;;
+        "SUPER")
+            print_status "Setting SUPER rank for $player_name"
+            add_player_to_cloud_list "$player_name"
+            send_server_command "/unadmin $player_name"
+            send_server_command "/unmod $player_name"
+            cancel_super_remove_timer "$player_name"
+            print_success "✓ SUPER rank commands sent for $player_name"
+            ;;
+        "NONE")
+            print_status "Removing all ranks from $player_name"
+            send_server_command "/unadmin $player_name"
+            send_server_command "/unmod $player_name"
+            if [ -z "${connected_players[$player_name]}" ]; then
+                start_super_remove_timer "$player_name"
+            else
                 remove_player_from_cloud_list "$player_name"
                 cancel_super_remove_timer "$player_name"
-                print_success "Applied ADMIN rank to $player_name"
-                ;;
-            "MOD")
-                send_server_command "/mod $player_name"
-                send_server_command "/unadmin $player_name"
-                remove_player_from_cloud_list "$player_name"
-                cancel_super_remove_timer "$player_name"
-                print_success "Applied MOD rank to $player_name"
-                ;;
-            "SUPER")
-                add_player_to_cloud_list "$player_name"
-                send_server_command "/unadmin $player_name"
-                send_server_command "/unmod $player_name"
-                cancel_super_remove_timer "$player_name"
-                print_success "Applied SUPER rank to $player_name"
-                ;;
-            "NONE")
-                send_server_command "/unadmin $player_name"
-                send_server_command "/unmod $player_name"
-                if [ -z "${connected_players[$player_name]}" ]; then
-                    start_super_remove_timer "$player_name"
-                else
-                    remove_player_from_cloud_list "$player_name"
-                    cancel_super_remove_timer "$player_name"
-                fi
-                print_success "Removed all ranks from $player_name"
-                ;;
-        esac
-        
-        # Apply whitelist/blacklist commands
-        if [ "$whitelisted" = "YES" ]; then
-            send_server_command "/whitelist $player_name"
-            print_success "Whitelisted $player_name"
-        else
-            send_server_command "/unwhitelist $player_name"
-            print_success "Unwhitelisted $player_name"
-        fi
-        
-        if [ "$blacklisted" = "YES" ]; then
-            send_server_command "/ban-no-device $player_name"
-            if [ "$current_ip" != "UNKNOWN" ]; then
-                send_server_command "/ban-no-device $current_ip"
             fi
-            print_success "Banned $player_name"
-        else
-            send_server_command "/unban $player_name"
-            if [ "$current_ip" != "UNKNOWN" ]; then
-                send_server_command "/unban $current_ip"
-            fi
-            print_success "Unbanned $player_name"
-        fi
+            print_success "✓ Rank removal commands sent for $player_name"
+            ;;
+        *)
+            print_warning "Unknown rank: $rank for $player_name"
+            ;;
+    esac
+    
+    # Aplicar comandos de whitelist/blacklist
+    if [ "$whitelisted" = "YES" ]; then
+        print_status "Whitelisting $player_name"
+        send_server_command "/whitelist $player_name"
+        print_success "✓ Whitelist command sent for $player_name"
     else
-        print_warning "Cannot apply ranks - player not connected or IP not verified"
-        print_warning "Connected: ${connected_players[$player_name]:-NO}, IP Verified: ${ip_verified[$player_name]:-NO}"
+        print_status "Unwhitelisting $player_name"
+        send_server_command "/unwhitelist $player_name"
+        print_success "✓ Unwhitelist command sent for $player_name"
     fi
+    
+    if [ "$blacklisted" = "YES" ]; then
+        print_status "Blacklisting $player_name"
+        send_server_command "/ban-no-device $player_name"
+        if [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
+            send_server_command "/ban-no-device $current_ip"
+            print_success "✓ IP ban command sent for $current_ip"
+        fi
+        print_success "✓ Blacklist commands sent for $player_name"
+    else
+        print_status "Unbanning $player_name"
+        send_server_command "/unban $player_name"
+        if [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
+            send_server_command "/unban $current_ip"
+            print_success "✓ IP unban command sent for $current_ip"
+        fi
+        print_success "✓ Unban commands sent for $player_name"
+    fi
+    
+    # Forzar sync de listas
+    print_status "Forcing server lists sync..."
+    sync_server_lists
+    
+    print_success "✓ All rank commands applied for $player_name"
 }
 
 remove_player_from_all_lists() {
@@ -614,109 +658,118 @@ sync_server_lists() {
 monitor_players_log_changes() {
     local current_time=$(date +%s)
     
-    # Check for changes every 2 seconds
-    if [ $((current_time - LAST_PLAYERS_LOG_CHECK)) -lt 2 ]; then
+    # Check for changes every 3 seconds (más tiempo para evitar sobrecarga)
+    if [ $((current_time - LAST_PLAYERS_LOG_CHECK)) -lt 3 ]; then
         return
     fi
     LAST_PLAYERS_LOG_CHECK=$current_time
     
     if [ ! -f "$PLAYERS_LOG" ]; then
+        print_error "players.log not found: $PLAYERS_LOG"
         return
     fi
     
-    # Read current state from players.log
-    declare -A current_players_data
+    # Guardar estado anterior antes de leer
+    declare -A old_players_data
+    for key in "${!players_data[@]}"; do
+        old_players_data["$key"]="${players_data[$key]}"
+    done
+    
+    # Leer nuevo estado
     if ! read_players_log; then
         print_error "Failed to read players.log for monitoring"
         return 1
     fi
     
-    # Initialize last_player_states if empty (first run)
+    # Inicializar last_player_states si está vacío
     if [ ${#last_player_states[@]} -eq 0 ]; then
-        print_status "Initializing player states monitoring..."
+        print_status "Initializing player states monitoring for first time..."
         for key in "${!players_data[@]}"; do
             last_player_states["$key"]="${players_data[$key]}"
         done
         return
     fi
     
-    # Debug: show what we're monitoring
-    print_status "Monitoring players.log for changes... (${#players_data[@]} players loaded)"
-    
-    # Detect changes and apply commands
+    # Detectar cambios
     local changes_detected=0
     for key in "${!players_data[@]}"; do
         if [[ "$key" == *,name ]]; then
             local player_name="${players_data[$key]}"
-            local current_ip="${players_data["$player_name,ip"]}"
-            local current_password="${players_data["$player_name,password"]}"
             local current_rank="${players_data["$player_name,rank"]}"
             local current_whitelisted="${players_data["$player_name,whitelisted"]}"
             local current_blacklisted="${players_data["$player_name,blacklisted"]}"
             
-            local last_ip="${last_player_states["$player_name,ip"]:-UNKNOWN}"
-            local last_password="${last_player_states["$player_name,password"]:-NONE}"
             local last_rank="${last_player_states["$player_name,rank"]:-NONE}"
             local last_whitelisted="${last_player_states["$player_name,whitelisted"]:-NO}"
             local last_blacklisted="${last_player_states["$player_name,blacklisted"]:-NO}"
             
-            # Check for rank changes
+            # Verificar cambios de rank
             if [ "$current_rank" != "$last_rank" ]; then
-                print_status "RANK CHANGE DETECTED for $player_name: $last_rank -> $current_rank"
+                print_header "🚨 RANK CHANGE DETECTED for $player_name: $last_rank -> $current_rank"
                 changes_detected=1
-                
-                if [ -n "${connected_players[$player_name]}" ] && [ "${ip_verified[$player_name]}" = "1" ]; then
-                    print_success "Applying rank change for CONNECTED player: $player_name"
-                    apply_player_ranks "$player_name"
-                    # Force sync of server lists
-                    sync_server_lists
-                else
-                    print_warning "Cannot apply rank change for $player_name - player not connected or IP not verified"
-                    print_warning "Connected: ${connected_players[$player_name]:-NO}, IP Verified: ${ip_verified[$player_name]:-NO}"
-                    
-                    # If player is not connected, still update the server lists for when they connect
-                    sync_server_lists
-                fi
+                apply_player_ranks "$player_name"
             fi
             
-            # Check for whitelist changes
+            # Verificar cambios de whitelist
             if [ "$current_whitelisted" != "$last_whitelisted" ]; then
-                print_status "WHITELIST CHANGE DETECTED for $player_name: $last_whitelisted -> $current_whitelisted"
+                print_header "🚨 WHITELIST CHANGE DETECTED for $player_name: $last_whitelisted -> $current_whitelisted"
                 changes_detected=1
-                
-                if [ -n "${connected_players[$player_name]}" ] && [ "${ip_verified[$player_name]}" = "1" ]; then
-                    print_success "Applying whitelist change for CONNECTED player: $player_name"
-                    apply_player_ranks "$player_name"
-                else
-                    print_warning "Cannot apply whitelist change for $player_name - player not connected or IP not verified"
-                fi
+                apply_player_ranks "$player_name"
             fi
             
-            # Check for blacklist changes  
+            # Verificar cambios de blacklist
             if [ "$current_blacklisted" != "$last_blacklisted" ]; then
-                print_status "BLACKLIST CHANGE DETECTED for $player_name: $last_blacklisted -> $current_blacklisted"
+                print_header "🚨 BLACKLIST CHANGE DETECTED for $player_name: $last_blacklisted -> $current_blacklisted"
                 changes_detected=1
-                
-                if [ -n "${connected_players[$player_name]}" ] && [ "${ip_verified[$player_name]}" = "1" ]; then
-                    print_success "Applying blacklist change for CONNECTED player: $player_name"
-                    apply_player_ranks "$player_name"
-                else
-                    print_warning "Cannot apply blacklist change for $player_name - player not connected or IP not verified"
-                fi
+                apply_player_ranks "$player_name"
             fi
         fi
     done
     
     if [ $changes_detected -eq 1 ]; then
-        print_success "Changes detected and processed in players.log"
-        # Force sync after changes
+        print_success "✅ All detected changes processed successfully"
+        # Forzar sync después de cambios
         sync_server_lists
     fi
     
-    # Update last known state for next comparison
+    # Actualizar último estado conocido
     for key in "${!players_data[@]}"; do
         last_player_states["$key"]="${players_data[$key]}"
     done
+}
+
+test_server_communication() {
+    print_header "TESTING SERVER COMMUNICATION"
+    
+    # Test 1: Verificar screen session
+    print_status "Test 1: Checking screen session..."
+    if screen -list | grep -q "$SCREEN_SERVER"; then
+        print_success "✓ Screen session found: $SCREEN_SERVER"
+    else
+        print_error "✗ Screen session NOT found: $SCREEN_SERVER"
+        return 1
+    fi
+    
+    # Test 2: Enviar comando de prueba
+    print_status "Test 2: Sending test command..."
+    if send_server_command "echo 'RankPatcher test command received'"; then
+        print_success "✓ Test command sent successfully"
+    else
+        print_error "✗ Test command failed"
+        return 1
+    fi
+    
+    # Test 3: Enviar comando real
+    print_status "Test 3: Saving world..."
+    if send_server_command "/save"; then
+        print_success "✓ Save command sent successfully"
+    else
+        print_error "✗ Save command failed"
+        return 1
+    fi
+    
+    print_success "✅ All server communication tests passed!"
+    return 0
 }
 
 monitor_console_log() {
@@ -862,6 +915,12 @@ periodic_tasks() {
 main() {
     print_header "THE BLOCKHEADS RANK PATCHER"
     print_status "Starting player management system..."
+    
+    # Test de comunicación primero
+    if ! test_server_communication; then
+        print_error "Server communication test failed - cannot continue"
+        exit 1
+    fi
     
     if [ ! -f "$CONSOLE_LOG" ]; then
         print_error "Console log not found: $CONSOLE_LOG"
