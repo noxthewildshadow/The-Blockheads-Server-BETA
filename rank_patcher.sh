@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # rank_patcher.sh - Complete player management system for The Blockheads server
-# VERSIÓN CORREGIDA: Comandos enviados directamente sin 'say'
+# VERSIÓN CORREGIDA: Comandos puros sin prefijos
 
 # Enhanced Colors for output
 RED='\033[0;31m'
@@ -67,7 +67,6 @@ declare -A player_ip_map
 declare -A password_pending
 declare -A ip_verify_pending
 declare -A ip_banned_times
-declare -A last_list_sync
 
 # Function to send commands to server with proper cooldown
 send_server_command() {
@@ -85,7 +84,7 @@ send_server_command() {
     fi
 }
 
-# Function to kick player - CORREGIDO: Envío directo sin 'say'
+# Function to kick player
 kick_player() {
     local player_name="$1"
     local reason="$2"
@@ -94,15 +93,9 @@ kick_player() {
     send_server_command "/kick $player_name"
 }
 
-# Function to clear chat with cooldown
+# Function to clear chat
 clear_chat() {
     send_server_command "/clear"
-}
-
-# Function to send message with cooldown - CORREGIDO: Usa 'say' solo para mensajes de chat
-send_server_message() {
-    local message="$1"
-    send_server_command "say $message"
 }
 
 # Function to initialize players.log with EXACT format
@@ -316,10 +309,10 @@ sync_server_lists() {
         fi
     done
     
-    print_success "Server lists synced (empty files mode)"
+    print_success "Server lists synced"
 }
 
-# Function to handle rank changes with proper cooldowns - CORREGIDO: Comandos directos
+# Function to handle rank changes with proper cooldowns
 handle_rank_change() {
     local player_name="$1" old_rank="$2" new_rank="$3"
     
@@ -337,7 +330,7 @@ handle_rank_change() {
             fi
             ;;
         "SUPER")
-            # For SUPER rank, add to cloud admin list (ignore first 2 lines when reading)
+            # For SUPER rank, add to cloud admin list
             if ! tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -q "^$player_name$"; then
                 echo "$player_name" >> "$CLOUD_ADMIN_LIST"
                 print_success "Added $player_name to cloud-wide admin list"
@@ -351,7 +344,7 @@ handle_rank_change() {
                 send_server_command "/unmod $player_name"
                 print_success "Demoted $player_name from MOD to NONE"
             elif [ "$old_rank" = "SUPER" ]; then
-                # Remove from cloud admin list (ignore first 2 lines)
+                # Remove from cloud admin list
                 temp_file=$(mktemp)
                 tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -v "^$player_name$" > "$temp_file"
                 mv "$temp_file" "$CLOUD_ADMIN_LIST"
@@ -361,7 +354,7 @@ handle_rank_change() {
     esac
 }
 
-# Function to handle blacklist changes with proper cooldowns - CORREGIDO: Comandos directos
+# Function to handle blacklist changes with proper cooldowns
 handle_blacklist_change() {
     local player_name="$1" blacklisted="$2" player_ip="$3"
     
@@ -390,7 +383,7 @@ handle_blacklist_change() {
             mv "$temp_file" "$CLOUD_ADMIN_LIST"
         fi
         
-        # Ban player and IP - CORREGIDO: Comandos directos
+        # Ban player and IP
         send_server_command "/ban $player_name"
         
         if [ "$player_ip" != "UNKNOWN" ]; then
@@ -403,7 +396,7 @@ handle_blacklist_change() {
     fi
 }
 
-# Function to auto-unban IP addresses after timeout - CORREGIDO: Comandos directos
+# Function to auto-unban IP addresses after timeout
 auto_unban_ips() {
     local current_time=$(date +%s)
     
@@ -435,95 +428,86 @@ validate_password() {
     return 0
 }
 
-# Function to handle password commands with proper cooldowns
+# Function to handle password commands
 handle_password_command() {
     local player_name="$1" password="$2" confirm_password="$3"
     
-    # Clear chat first with cooldown
-    clear_chat
-    
     if [ "$password" != "$confirm_password" ]; then
-        send_server_message "Passwords do not match"
+        send_server_command "Passwords do not match"
         return 1
     fi
     
     local validation_result
     validation_result=$(validate_password "$password")
     if [ $? -ne 0 ]; then
-        send_server_message "$validation_result"
+        send_server_command "$validation_result"
         return 1
     fi
     
     # Update password in players.log
     update_players_log "$player_name" "password" "$password"
-    send_server_message "Password set successfully for $player_name"
+    send_server_command "Password set successfully for $player_name"
     
     # Remove from password pending
     unset password_pending["$player_name"]
     return 0
 }
 
-# Function to handle IP change verification with proper cooldowns
+# Function to handle IP change verification
 handle_ip_change() {
     local player_name="$1" provided_password="$2" current_ip="$3"
-    
-    # Clear chat first with cooldown
-    clear_chat
     
     # Verify password
     read_players_log
     local stored_password="${players_data["$player_name,password"]}"
     
     if [ "$stored_password" = "NONE" ]; then
-        send_server_message "No password set for $player_name. Use !password first."
+        send_server_command "No password set for $player_name. Use !password first."
         return 1
     fi
     
     if [ "$provided_password" != "$stored_password" ]; then
-        send_server_message "Incorrect password for IP verification"
+        send_server_command "Incorrect password for IP verification"
         return 1
     fi
     
     # Update IP in players.log
     update_players_log "$player_name" "ip" "$current_ip"
-    send_server_message "IP address verified and updated for $player_name"
+    send_server_command "IP address verified and updated for $player_name"
     
     # Clear pending verification
     unset ip_verify_pending["$player_name"]
     return 0
 }
 
-# Function to handle password change with proper cooldowns
+# Function to handle password change
 handle_password_change() {
     local player_name="$1" old_password="$2" new_password="$3"
-    
-    # Clear chat first with cooldown
-    clear_chat
     
     # Verify old password
     read_players_log
     local stored_password="${players_data["$player_name,password"]}"
     
     if [ "$stored_password" = "NONE" ]; then
-        send_server_message "No existing password found for $player_name"
+        send_server_command "No existing password found for $player_name"
         return 1
     fi
     
     if [ "$old_password" != "$stored_password" ]; then
-        send_server_message "Incorrect old password"
+        send_server_command "Incorrect old password"
         return 1
     fi
     
     local validation_result
     validation_result=$(validate_password "$new_password")
     if [ $? -ne 0 ]; then
-        send_server_message "$validation_result"
+        send_server_command "$validation_result"
         return 1
     fi
     
     # Update password
     update_players_log "$player_name" "password" "$new_password"
-    send_server_message "Password changed successfully for $player_name"
+    send_server_command "Password changed successfully for $player_name"
     return 0
 }
 
@@ -535,9 +519,9 @@ send_welcome_message() {
     sleep "$WELCOME_DELAY"
     
     if [ "$is_new_player" = "true" ]; then
-        send_server_message "Welcome $player_name! Please set a password using: !password YOUR_PASSWORD CONFIRM_PASSWORD"
+        send_server_command "Welcome $player_name! Please set a password using: !password YOUR_PASSWORD CONFIRM_PASSWORD"
     else
-        send_server_message "Welcome back $player_name!"
+        send_server_command "Welcome back $player_name!"
     fi
 }
 
@@ -548,8 +532,8 @@ send_ip_warning() {
     # Wait 5 seconds before sending warning
     sleep "$WELCOME_DELAY"
     
-    send_server_message "IP change detected for $player_name. Verify with: !ip_change YOUR_PASSWORD"
-    send_server_message "You have 30 seconds to verify your IP or you will be kicked and IP banned."
+    send_server_command "IP change detected for $player_name. Verify with: !ip_change YOUR_PASSWORD"
+    send_server_command "You have 30 seconds to verify your IP or you will be kicked and IP banned."
 }
 
 # Function to monitor console.log for events
@@ -641,7 +625,7 @@ monitor_console_log() {
                         local confirm_password="${BASH_REMATCH[2]}"
                         handle_password_command "$player_name" "$password" "$confirm_password"
                     else
-                        send_server_message "Usage: !password NEW_PASSWORD CONFIRM_PASSWORD"
+                        send_server_command "Usage: !password NEW_PASSWORD CONFIRM_PASSWORD"
                     fi
                     ;;
                 "!ip_change "*)
@@ -650,7 +634,7 @@ monitor_console_log() {
                         local current_ip="${player_ip_map[$player_name]}"
                         handle_ip_change "$player_name" "$password" "$current_ip"
                     else
-                        send_server_message "Usage: !ip_change YOUR_PASSWORD"
+                        send_server_command "Usage: !ip_change YOUR_PASSWORD"
                     fi
                     ;;
                 "!change_psw "*)
@@ -659,7 +643,7 @@ monitor_console_log() {
                         local new_password="${BASH_REMATCH[2]}"
                         handle_password_change "$player_name" "$old_password" "$new_password"
                     else
-                        send_server_message "Usage: !change_psw OLD_PASSWORD NEW_PASSWORD"
+                        send_server_command "Usage: !change_psw OLD_PASSWORD NEW_PASSWORD"
                     fi
                     ;;
             esac
@@ -720,7 +704,7 @@ monitor_players_log() {
     done
 }
 
-# Function to check timeouts - CORREGIDO: Ahora ejecuta /kick directamente
+# Function to check timeouts - CORREGIDO: Ejecuta /kick directamente
 check_timeouts() {
     local current_time=$(date +%s)
     
@@ -730,7 +714,6 @@ check_timeouts() {
         if [ $((current_time - start_time)) -ge $PASSWORD_TIMEOUT ]; then
             print_warning "Password timeout reached for $player - kicking player"
             kick_player "$player" "No password set within 60 seconds"
-            send_server_message "Player $player kicked for not setting password within 60 seconds"
             unset password_pending["$player"]
         fi
     done
@@ -743,7 +726,6 @@ check_timeouts() {
             print_warning "IP verification timeout reached for $player - kicking and banning IP"
             kick_player "$player" "IP verification failed within 30 seconds"
             send_server_command "/ban $player_ip"
-            send_server_message "Player $player kicked and IP banned for IP verification timeout"
             unset ip_verify_pending["$player"]
             
             # Track ban for auto-unban
@@ -766,7 +748,7 @@ periodic_list_sync() {
 
 # Main execution
 main() {
-    print_header "THE BLOCKHEADS RANK PATCHER - COMANDOS DIRECTOS"
+    print_header "THE BLOCKHEADS RANK PATCHER - COMANDOS PUROS"
     print_status "Starting player management system..."
     
     # Check if console log exists
