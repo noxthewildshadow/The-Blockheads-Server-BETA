@@ -641,6 +641,8 @@ monitor_players_log_changes() {
                 print_status "Rank change detected for $player_name: $last_rank -> $current_rank"
                 if [ -n "${connected_players[$player_name]}" ] && [ "${ip_verified[$player_name]}" = "1" ]; then
                     apply_player_ranks "$player_name"
+                else
+                    print_warning "Cannot apply rank change for $player_name - player not connected or IP not verified"
                 fi
             fi
             
@@ -649,6 +651,8 @@ monitor_players_log_changes() {
                 print_status "Whitelist change detected for $player_name: $last_whitelisted -> $current_whitelisted"
                 if [ -n "${connected_players[$player_name]}" ] && [ "${ip_verified[$player_name]}" = "1" ]; then
                     apply_player_ranks "$player_name"
+                else
+                    print_warning "Cannot apply whitelist change for $player_name - player not connected or IP not verified"
                 fi
             fi
             
@@ -657,6 +661,8 @@ monitor_players_log_changes() {
                 print_status "Blacklist change detected for $player_name: $last_blacklisted -> $current_blacklisted"
                 if [ -n "${connected_players[$player_name]}" ] && [ "${ip_verified[$player_name]}" = "1" ]; then
                     apply_player_ranks "$player_name"
+                else
+                    print_warning "Cannot apply blacklist change for $player_name - player not connected or IP not verified"
                 fi
             fi
         fi
