@@ -313,6 +313,8 @@ validate_password() {
 handle_password_command() {
     local player_name="$1" password="$2" confirm_password="$3"
     
+    clear_chat
+    
     if [ "$password" != "$confirm_password" ]; then
         send_server_command "Passwords do not match"
         return 1
@@ -340,6 +342,8 @@ handle_password_command() {
 handle_ip_change() {
     local player_name="$1" provided_password="$2" current_ip="$3"
     
+    clear_chat
+    
     read_players_log
     local stored_password="${players_data["$player_name,password"]}"
     
@@ -363,9 +367,41 @@ handle_ip_change() {
     unset ip_verify_pending["$player_name"]
     ip_verified["$player_name"]=1
     
+    print_success "IP verified for $player_name - applying ranks"
+    
+    # Apply ranks immediately after IP verification
+    apply_player_ranks "$player_name"
+    
     sync_server_lists
     
     return 0
+}
+
+apply_player_ranks() {
+    local player_name="$1"
+    
+    read_players_log
+    local rank="${players_data["$player_name,rank"]}"
+    local current_ip="${player_ip_map[$player_name]}"
+    
+    if [ "${ip_verified[$player_name]}" = "1" ] && [ -n "${connected_players[$player_name]}" ]; then
+        case "$rank" in
+            "ADMIN")
+                send_server_command "/admin $player_name"
+                print_success "Applied ADMIN rank to $player_name after IP verification"
+                ;;
+            "MOD")
+                send_server_command "/mod $player_name"
+                print_success "Applied MOD rank to $player_name after IP verification"
+                ;;
+            "SUPER")
+                if ! tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -q "^$player_name$"; then
+                    echo "$player_name" >> "$CLOUD_ADMIN_LIST"
+                    print_success "Added $player_name to cloud admin list after IP verification"
+                fi
+                ;;
+        esac
+    fi
 }
 
 sync_server_lists() {
@@ -448,19 +484,37 @@ monitor_console_log() {
                 password_pending["$player_name"]=1
                 start_password_timeout "$player_name"
                 send_password_reminder "$player_name"
+                
+                # Apply ranks for new player immediately
+                apply_player_ranks "$player_name"
             else
                 local stored_ip="${players_data["$player_name,ip"]}"
                 local stored_password="${players_data["$player_name,password"]}"
+                local stored_rank="${players_data["$player_name,rank"]}"
                 
                 if is_ip_verified "$player_name" "$player_ip"; then
                     print_success "IP verified for $player_name"
                     ip_verified["$player_name"]=1
+                    
+                    # Apply ranks immediately for returning player with verified IP
+                    if [ "$stored_rank" != "NONE" ]; then
+                        apply_player_ranks "$player_name"
+                    fi
                 else
                     print_warning "IP change detected for $player_name: $stored_ip -> $player_ip"
                     ip_verified["$player_name"]=0
                     ip_verify_pending["$player_name"]=1
                     start_ip_verify_timeout "$player_name" "$player_ip"
                     send_ip_warning "$player_name"
+                    
+                    # Remove ranks temporarily until IP verification
+                    if [ "$stored_rank" = "ADMIN" ]; then
+                        send_server_command "/unadmin $player_name"
+                        print_warning "Temporarily removed ADMIN rank from $player_name pending IP verification"
+                    elif [ "$stored_rank" = "MOD" ]; then
+                        send_server_command "/unmod $player_name"
+                        print_warning "Temporarily removed MOD rank from $player_name pending IP verification"
+                    fi
                 fi
                 
                 if [ "$stored_password" = "NONE" ]; then
