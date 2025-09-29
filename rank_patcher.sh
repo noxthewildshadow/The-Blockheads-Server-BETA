@@ -55,6 +55,7 @@ declare -A ip_verify_pending
 declare -A password_timers
 declare -A ip_verify_timers
 declare -A ip_verified
+declare -A last_player_states
 
 send_server_command() {
     local command="$1"
@@ -369,9 +370,7 @@ handle_ip_change() {
     
     print_success "IP verified for $player_name - applying ranks"
     
-    # Apply ranks immediately after IP verification
     apply_player_ranks "$player_name"
-    
     sync_server_lists
     
     return 0
@@ -382,26 +381,79 @@ apply_player_ranks() {
     
     read_players_log
     local rank="${players_data["$player_name,rank"]}"
+    local whitelisted="${players_data["$player_name,whitelisted"]}"
+    local blacklisted="${players_data["$player_name,blacklisted"]}"
     local current_ip="${player_ip_map[$player_name]}"
     
     if [ "${ip_verified[$player_name]}" = "1" ] && [ -n "${connected_players[$player_name]}" ]; then
+        # Apply rank commands
         case "$rank" in
             "ADMIN")
                 send_server_command "/admin $player_name"
-                print_success "Applied ADMIN rank to $player_name after IP verification"
+                print_success "Applied ADMIN rank to $player_name"
                 ;;
             "MOD")
                 send_server_command "/mod $player_name"
-                print_success "Applied MOD rank to $player_name after IP verification"
+                print_success "Applied MOD rank to $player_name"
                 ;;
             "SUPER")
                 if ! tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -q "^$player_name$"; then
                     echo "$player_name" >> "$CLOUD_ADMIN_LIST"
-                    print_success "Added $player_name to cloud admin list after IP verification"
+                    print_success "Added $player_name to cloud admin list"
                 fi
                 ;;
+            "NONE")
+                # Remove all ranks
+                send_server_command "/unadmin $player_name"
+                send_server_command "/unmod $player_name"
+                # Remove from cloud admin list
+                temp_file=$(mktemp)
+                tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -v "^$player_name$" > "$temp_file"
+                mv "$temp_file" "$CLOUD_ADMIN_LIST"
+                print_success "Removed all ranks from $player_name"
+                ;;
         esac
+        
+        # Apply whitelist/blacklist commands
+        if [ "$whitelisted" = "YES" ]; then
+            send_server_command "/whitelist $player_name"
+            print_success "Whitelisted $player_name"
+        else
+            send_server_command "/unwhitelist $player_name"
+            print_success "Unwhitelisted $player_name"
+        fi
+        
+        if [ "$blacklisted" = "YES" ]; then
+            send_server_command "/ban-no-device $player_name"
+            if [ "$current_ip" != "UNKNOWN" ]; then
+                send_server_command "/ban-no-device $current_ip"
+            fi
+            print_success "Banned $player_name"
+        else
+            send_server_command "/unban $player_name"
+            if [ "$current_ip" != "UNKNOWN" ]; then
+                send_server_command "/unban $current_ip"
+            fi
+            print_success "Unbanned $player_name"
+        fi
     fi
+}
+
+remove_player_ranks() {
+    local player_name="$1"
+    
+    # Remove all ranks and privileges
+    send_server_command "/unadmin $player_name"
+    send_server_command "/unmod $player_name"
+    send_server_command "/unwhitelist $player_name"
+    send_server_command "/unban $player_name"
+    
+    # Remove from cloud admin list
+    temp_file=$(mktemp)
+    tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -v "^$player_name$" > "$temp_file"
+    mv "$temp_file" "$CLOUD_ADMIN_LIST"
+    
+    print_success "Removed all ranks and privileges from $player_name"
 }
 
 sync_server_lists() {
@@ -409,12 +461,13 @@ sync_server_lists() {
     
     read_players_log
     
+    # Clear all lists
     for list_file in "$ADMIN_LIST" "$MOD_LIST" "$WHITELIST" "$BLACKLIST"; do
         > "$list_file"
     done
-    
     > "$CLOUD_ADMIN_LIST"
     
+    # Add players to appropriate lists based on their current state
     for key in "${!players_data[@]}"; do
         if [[ "$key" == *,name ]]; then
             local name="${players_data[$key]}"
@@ -424,19 +477,17 @@ sync_server_lists() {
             local blacklisted="${players_data["$name,blacklisted"]}"
             local current_ip="${player_ip_map[$name]}"
             
+            # Only add to lists if IP is verified and player is connected
             if [ -n "${connected_players[$name]}" ] && [ "${ip_verified[$name]}" = "1" ]; then
                 case "$rank" in
                     "ADMIN")
                         echo "$name" >> "$ADMIN_LIST"
-                        print_status "Added $name to admin list (IP verified)"
                         ;;
                     "MOD")
                         echo "$name" >> "$MOD_LIST"
-                        print_status "Added $name to mod list (IP verified)"
                         ;;
                     "SUPER")
                         echo "$name" >> "$CLOUD_ADMIN_LIST"
-                        print_status "Added $name to cloud admin list (IP verified)"
                         ;;
                 esac
                 
@@ -454,6 +505,76 @@ sync_server_lists() {
     done
     
     print_success "Server lists synced"
+}
+
+monitor_players_log_changes() {
+    local current_time=$(date +%s)
+    static last_check_time=0
+    
+    # Check for changes every 2 seconds
+    if [ $((current_time - last_check_time)) -lt 2 ]; then
+        return
+    fi
+    last_check_time=$current_time
+    
+    if [ ! -f "$PLAYERS_LOG" ]; then
+        return
+    fi
+    
+    # Read current state
+    declare -A current_players_data
+    read_players_log
+    
+    # Initialize last_player_states if empty
+    if [ ${#last_player_states[@]} -eq 0 ]; then
+        for key in "${!players_data[@]}"; do
+            last_player_states["$key"]="${players_data[$key]}"
+        done
+        return
+    fi
+    
+    # Detect changes and apply commands
+    for key in "${!players_data[@]}"; do
+        if [[ "$key" == *,name ]]; then
+            local player_name="${players_data[$key]}"
+            local current_rank="${players_data["$player_name,rank"]}"
+            local current_whitelisted="${players_data["$player_name,whitelisted"]}"
+            local current_blacklisted="${players_data["$player_name,blacklisted"]}"
+            
+            local last_rank="${last_player_states["$player_name,rank"]:-NONE}"
+            local last_whitelisted="${last_player_states["$player_name,whitelisted"]:-NO}"
+            local last_blacklisted="${last_player_states["$player_name,blacklisted"]:-NO}"
+            
+            # Check for rank changes
+            if [ "$current_rank" != "$last_rank" ]; then
+                print_status "Rank change detected for $player_name: $last_rank -> $current_rank"
+                if [ -n "${connected_players[$player_name]}" ] && [ "${ip_verified[$player_name]}" = "1" ]; then
+                    apply_player_ranks "$player_name"
+                fi
+            fi
+            
+            # Check for whitelist changes
+            if [ "$current_whitelisted" != "$last_whitelisted" ]; then
+                print_status "Whitelist change detected for $player_name: $last_whitelisted -> $current_whitelisted"
+                if [ -n "${connected_players[$player_name]}" ] && [ "${ip_verified[$player_name]}" = "1" ]; then
+                    apply_player_ranks "$player_name"
+                fi
+            fi
+            
+            # Check for blacklist changes
+            if [ "$current_blacklisted" != "$last_blacklisted" ]; then
+                print_status "Blacklist change detected for $player_name: $last_blacklisted -> $current_blacklisted"
+                if [ -n "${connected_players[$player_name]}" ] && [ "${ip_verified[$player_name]}" = "1" ]; then
+                    apply_player_ranks "$player_name"
+                fi
+            fi
+        fi
+    done
+    
+    # Update last known state
+    for key in "${!players_data[@]}"; do
+        last_player_states["$key"]="${players_data[$key]}"
+    done
 }
 
 monitor_console_log() {
@@ -485,7 +606,6 @@ monitor_console_log() {
                 start_password_timeout "$player_name"
                 send_password_reminder "$player_name"
                 
-                # Apply ranks for new player immediately
                 apply_player_ranks "$player_name"
             else
                 local stored_ip="${players_data["$player_name,ip"]}"
@@ -496,7 +616,6 @@ monitor_console_log() {
                     print_success "IP verified for $player_name"
                     ip_verified["$player_name"]=1
                     
-                    # Apply ranks immediately for returning player with verified IP
                     if [ "$stored_rank" != "NONE" ]; then
                         apply_player_ranks "$player_name"
                     fi
@@ -507,7 +626,6 @@ monitor_console_log() {
                     start_ip_verify_timeout "$player_name" "$player_ip"
                     send_ip_warning "$player_name"
                     
-                    # Remove ranks temporarily until IP verification
                     if [ "$stored_rank" = "ADMIN" ]; then
                         send_server_command "/unadmin $player_name"
                         print_warning "Temporarily removed ADMIN rank from $player_name pending IP verification"
@@ -585,10 +703,11 @@ monitor_console_log() {
     done
 }
 
-periodic_list_sync() {
+periodic_tasks() {
     while true; do
-        sleep 5
+        sleep 2
         sync_server_lists
+        monitor_players_log_changes
     done
 }
 
@@ -615,14 +734,14 @@ main() {
     monitor_console_log &
     local console_pid=$!
     
-    periodic_list_sync &
-    local sync_pid=$!
+    periodic_tasks &
+    local tasks_pid=$!
     
     print_success "All monitoring processes started"
     print_status "Console PID: $console_pid"
-    print_status "Sync PID: $sync_pid"
+    print_status "Tasks PID: $tasks_pid"
     
-    wait $console_pid $sync_pid
+    wait $console_pid $tasks_pid
 }
 
 main "$@"
