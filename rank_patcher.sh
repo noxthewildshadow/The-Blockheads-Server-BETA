@@ -47,6 +47,7 @@ SCREEN_SERVER="blockheads_server_${PORT:-12153}"
 
 PASSWORD_TIMEOUT=60
 IP_VERIFY_TIMEOUT=30
+SUPER_REMOVE_DELAY=15
 
 declare -A connected_players
 declare -A player_ip_map
@@ -56,6 +57,7 @@ declare -A password_timers
 declare -A ip_verify_timers
 declare -A ip_verified
 declare -A last_player_states
+declare -A super_remove_timers
 
 send_server_command() {
     local command="$1"
@@ -272,6 +274,33 @@ start_ip_verify_timeout() {
     ip_verify_timers["$player_name"]=$!
 }
 
+start_super_remove_timer() {
+    local player_name="$1"
+    
+    print_warning "Starting SUPER remove timer for $player_name (15 seconds)"
+    
+    if [ -n "${super_remove_timers[$player_name]}" ]; then
+        kill "${super_remove_timers[$player_name]}" 2>/dev/null
+    fi
+    
+    (
+        sleep $SUPER_REMOVE_DELAY
+        remove_player_from_cloud_list "$player_name"
+        unset super_remove_timers["$player_name"]
+    ) &
+    super_remove_timers["$player_name"]=$!
+}
+
+cancel_super_remove_timer() {
+    local player_name="$1"
+    
+    if [ -n "${super_remove_timers[$player_name]}" ]; then
+        kill "${super_remove_timers[$player_name]}" 2>/dev/null
+        unset super_remove_timers["$player_name"]
+        print_success "Cancelled SUPER remove timer for $player_name"
+    fi
+}
+
 send_password_reminder() {
     local player_name="$1"
     
@@ -376,6 +405,34 @@ handle_ip_change() {
     return 0
 }
 
+add_player_to_cloud_list() {
+    local player_name="$1"
+    
+    if [ ! -f "$CLOUD_ADMIN_LIST" ]; then
+        touch "$CLOUD_ADMIN_LIST"
+    fi
+    
+    # Check if player is already in the list (ignoring first line)
+    if ! tail -n +2 "$CLOUD_ADMIN_LIST" | grep -q "^$player_name$"; then
+        # Add player to cloud admin list
+        echo "$player_name" >> "$CLOUD_ADMIN_LIST"
+        print_success "Added $player_name to cloud admin list"
+    fi
+}
+
+remove_player_from_cloud_list() {
+    local player_name="$1"
+    
+    if [ -f "$CLOUD_ADMIN_LIST" ]; then
+        # Remove player from cloud admin list (ignoring first line)
+        temp_file=$(mktemp)
+        head -n 1 "$CLOUD_ADMIN_LIST" > "$temp_file" 2>/dev/null
+        tail -n +2 "$CLOUD_ADMIN_LIST" | grep -v "^$player_name$" >> "$temp_file"
+        mv "$temp_file" "$CLOUD_ADMIN_LIST"
+        print_success "Removed $player_name from cloud admin list"
+    fi
+}
+
 apply_player_ranks() {
     local player_name="$1"
     
@@ -390,26 +447,42 @@ apply_player_ranks() {
         case "$rank" in
             "ADMIN")
                 send_server_command "/admin $player_name"
+                # Remove from MOD if was MOD before
+                send_server_command "/unmod $player_name"
+                # Remove from cloud admin list
+                remove_player_from_cloud_list "$player_name"
+                cancel_super_remove_timer "$player_name"
                 print_success "Applied ADMIN rank to $player_name"
                 ;;
             "MOD")
                 send_server_command "/mod $player_name"
+                # Remove from ADMIN if was ADMIN before
+                send_server_command "/unadmin $player_name"
+                # Remove from cloud admin list
+                remove_player_from_cloud_list "$player_name"
+                cancel_super_remove_timer "$player_name"
                 print_success "Applied MOD rank to $player_name"
                 ;;
             "SUPER")
-                if ! tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -q "^$player_name$"; then
-                    echo "$player_name" >> "$CLOUD_ADMIN_LIST"
-                    print_success "Added $player_name to cloud admin list"
-                fi
+                # Add to cloud admin list directly (no server command for SUPER)
+                add_player_to_cloud_list "$player_name"
+                # Remove from ADMIN and MOD
+                send_server_command "/unadmin $player_name"
+                send_server_command "/unmod $player_name"
+                cancel_super_remove_timer "$player_name"
+                print_success "Applied SUPER rank to $player_name"
                 ;;
             "NONE")
                 # Remove all ranks
                 send_server_command "/unadmin $player_name"
                 send_server_command "/unmod $player_name"
-                # Remove from cloud admin list
-                temp_file=$(mktemp)
-                tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -v "^$player_name$" > "$temp_file"
-                mv "$temp_file" "$CLOUD_ADMIN_LIST"
+                # Remove from cloud admin list after delay if disconnected
+                if [ -z "${connected_players[$player_name]}" ]; then
+                    start_super_remove_timer "$player_name"
+                else
+                    remove_player_from_cloud_list "$player_name"
+                    cancel_super_remove_timer "$player_name"
+                fi
                 print_success "Removed all ranks from $player_name"
                 ;;
         esac
@@ -439,21 +512,41 @@ apply_player_ranks() {
     fi
 }
 
-remove_player_ranks() {
+remove_player_from_all_lists() {
     local player_name="$1"
     
-    # Remove all ranks and privileges
-    send_server_command "/unadmin $player_name"
-    send_server_command "/unmod $player_name"
-    send_server_command "/unwhitelist $player_name"
-    send_server_command "/unban $player_name"
+    # Remove from admin list
+    if [ -f "$ADMIN_LIST" ]; then
+        temp_file=$(mktemp)
+        grep -v "^$player_name$" "$ADMIN_LIST" > "$temp_file"
+        mv "$temp_file" "$ADMIN_LIST"
+    fi
     
-    # Remove from cloud admin list
-    temp_file=$(mktemp)
-    tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -v "^$player_name$" > "$temp_file"
-    mv "$temp_file" "$CLOUD_ADMIN_LIST"
+    # Remove from mod list
+    if [ -f "$MOD_LIST" ]; then
+        temp_file=$(mktemp)
+        grep -v "^$player_name$" "$MOD_LIST" > "$temp_file"
+        mv "$temp_file" "$MOD_LIST"
+    fi
     
-    print_success "Removed all ranks and privileges from $player_name"
+    # Remove from whitelist
+    if [ -f "$WHITELIST" ]; then
+        temp_file=$(mktemp)
+        grep -v "^$player_name$" "$WHITELIST" > "$temp_file"
+        mv "$temp_file" "$WHITELIST"
+    fi
+    
+    # Remove from blacklist
+    if [ -f "$BLACKLIST" ]; then
+        temp_file=$(mktemp)
+        grep -v "^$player_name$" "$BLACKLIST" > "$temp_file"
+        mv "$temp_file" "$BLACKLIST"
+    fi
+    
+    # Remove from cloud admin list after delay
+    start_super_remove_timer "$player_name"
+    
+    print_success "Removed $player_name from all server lists"
 }
 
 sync_server_lists() {
@@ -465,7 +558,6 @@ sync_server_lists() {
     for list_file in "$ADMIN_LIST" "$MOD_LIST" "$WHITELIST" "$BLACKLIST"; do
         > "$list_file"
     done
-    > "$CLOUD_ADMIN_LIST"
     
     # Add players to appropriate lists based on their current state
     for key in "${!players_data[@]}"; do
@@ -485,9 +577,6 @@ sync_server_lists() {
                         ;;
                     "MOD")
                         echo "$name" >> "$MOD_LIST"
-                        ;;
-                    "SUPER")
-                        echo "$name" >> "$CLOUD_ADMIN_LIST"
                         ;;
                 esac
                 
@@ -597,6 +686,9 @@ monitor_console_log() {
             connected_players["$player_name"]=1
             player_ip_map["$player_name"]="$player_ip"
             
+            # Cancel SUPER remove timer if player reconnects
+            cancel_super_remove_timer "$player_name"
+            
             read_players_log
             if [ -z "${players_data["$player_name,name"]}" ]; then
                 add_new_player "$player_name" "$player_ip"
@@ -650,6 +742,9 @@ monitor_console_log() {
             local player_name="${BASH_REMATCH[1]}"
             
             print_warning "Player disconnected: $player_name"
+            
+            # Remove player from all lists immediately
+            remove_player_from_all_lists "$player_name"
             
             unset connected_players["$player_name"]
             unset player_ip_map["$player_name"]
