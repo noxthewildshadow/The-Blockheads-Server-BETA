@@ -56,19 +56,16 @@ declare -A ip_verify_pending
 declare -A password_timers
 declare -A ip_verify_timers
 declare -A ip_verified
-declare -A last_player_states
 declare -A super_remove_timers
-declare -A pending_rank_apply
 
-# Variable global para el último tiempo de verificación
-LAST_PLAYERS_LOG_CHECK=0
+# Variables para el estado de players.log
+declare -A current_players_data
+declare -A previous_players_data
 
 send_server_command() {
     local command="$1"
     local max_attempts=3
     local attempt=1
-    
-    print_status "Attempting to send command to server: '$command'"
     
     # Verificar que el comando no esté vacío
     if [ -z "$command" ]; then
@@ -79,26 +76,17 @@ send_server_command() {
     # Verificar que la screen existe
     if ! screen -list | grep -q "$SCREEN_SERVER"; then
         print_error "Screen session not found: $SCREEN_SERVER"
-        print_error "Available screens:"
-        screen -list | head -10
         return 1
     fi
     
-    print_status "Found screen session: $SCREEN_SERVER"
-    
     while [ $attempt -le $max_attempts ]; do
-        print_status "Sending command (attempt $attempt/$max_attempts): $command"
-        
-        # Enviar comando a la screen - método más robusto
         if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$command$(printf \\r)"; then
-            print_success "✓ Command sent successfully to server: $command"
-            
-            # Log adicional para verificar
+            print_success "Command sent to server: $command"
             echo "$(date '+%Y-%m-%d %H:%M:%S') - COMMAND SENT: $command" >> "/tmp/rank_patcher_commands.log"
             return 0
         else
             print_error "Failed to send command (attempt $attempt): $command"
-            sleep 1
+            sleep 0.1
             ((attempt++))
         fi
     done
@@ -130,16 +118,14 @@ initialize_players_log() {
 }
 
 read_players_log() {
-    declare -gA players_data
-    
     if [ ! -f "$PLAYERS_LOG" ]; then
         print_error "players.log not found: $PLAYERS_LOG"
         return 1
     fi
     
-    # Clear the array
-    for key in "${!players_data[@]}"; do
-        unset players_data["$key"]
+    # Limpiar array actual
+    for key in "${!current_players_data[@]}"; do
+        unset current_players_data["$key"]
     done
     
     local line_count=0
@@ -147,6 +133,7 @@ read_players_log() {
         [[ "$name" =~ ^# ]] && continue
         [[ -z "$name" ]] && continue
         
+        # Limpiar espacios
         name=$(echo "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         ip=$(echo "$ip" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         password=$(echo "$password" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -154,6 +141,7 @@ read_players_log() {
         whitelisted=$(echo "$whitelisted" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         blacklisted=$(echo "$blacklisted" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         
+        # Valores por defecto
         [ -z "$name" ] && name="UNKNOWN"
         [ -z "$ip" ] && ip="UNKNOWN"
         [ -z "$password" ] && password="NONE"
@@ -162,17 +150,16 @@ read_players_log() {
         [ -z "$blacklisted" ] && blacklisted="NO"
         
         if [ "$name" != "UNKNOWN" ]; then
-            players_data["$name,name"]="$name"
-            players_data["$name,ip"]="$ip"
-            players_data["$name,password"]="$password"
-            players_data["$name,rank"]="$rank"
-            players_data["$name,whitelisted"]="$whitelisted"
-            players_data["$name,blacklisted"]="$blacklisted"
+            current_players_data["$name,name"]="$name"
+            current_players_data["$name,ip"]="$ip"
+            current_players_data["$name,password"]="$password"
+            current_players_data["$name,rank"]="$rank"
+            current_players_data["$name,whitelisted"]="$whitelisted"
+            current_players_data["$name,blacklisted"]="$blacklisted"
             ((line_count++))
         fi
     done < "$PLAYERS_LOG"
     
-    print_status "Loaded $line_count players from players.log"
     return 0
 }
 
@@ -187,25 +174,25 @@ update_players_log() {
     read_players_log
     
     case "$field" in
-        "ip") players_data["$player_name,ip"]="$new_value" ;;
-        "password") players_data["$player_name,password"]="$new_value" ;;
-        "rank") players_data["$player_name,rank"]="$new_value" ;;
-        "whitelisted") players_data["$player_name,whitelisted"]="$new_value" ;;
-        "blacklisted") players_data["$player_name,blacklisted"]="$new_value" ;;
+        "ip") current_players_data["$player_name,ip"]="$new_value" ;;
+        "password") current_players_data["$player_name,password"]="$new_value" ;;
+        "rank") current_players_data["$player_name,rank"]="$new_value" ;;
+        "whitelisted") current_players_data["$player_name,whitelisted"]="$new_value" ;;
+        "blacklisted") current_players_data["$player_name,blacklisted"]="$new_value" ;;
         *) print_error "Unknown field: $field"; return 1 ;;
     esac
     
     {
         echo "# Player Name | First IP | Password | Rank | Whitelisted | Blacklisted"
         
-        for key in "${!players_data[@]}"; do
+        for key in "${!current_players_data[@]}"; do
             if [[ "$key" == *,name ]]; then
-                local name="${players_data[$key]}"
-                local ip="${players_data["$name,ip"]:-UNKNOWN}"
-                local password="${players_data["$name,password"]:-NONE}"
-                local rank="${players_data["$name,rank"]:-NONE}"
-                local whitelisted="${players_data["$name,whitelisted"]:-NO}"
-                local blacklisted="${players_data["$name,blacklisted"]:-NO}"
+                local name="${current_players_data[$key]}"
+                local ip="${current_players_data["$name,ip"]:-UNKNOWN}"
+                local password="${current_players_data["$name,password"]:-NONE}"
+                local rank="${current_players_data["$name,rank"]:-NONE}"
+                local whitelisted="${current_players_data["$name,whitelisted"]:-NO}"
+                local blacklisted="${current_players_data["$name,blacklisted"]:-NO}"
                 
                 echo "$name | $ip | $password | $rank | $whitelisted | $blacklisted"
             fi
@@ -224,29 +211,29 @@ add_new_player() {
     fi
     
     read_players_log
-    if [ -n "${players_data["$player_name,name"]}" ]; then
+    if [ -n "${current_players_data["$player_name,name"]}" ]; then
         print_warning "Player already exists: $player_name"
         return 0
     fi
     
-    players_data["$player_name,name"]="$player_name"
-    players_data["$player_name,ip"]="$player_ip"
-    players_data["$player_name,password"]="NONE"
-    players_data["$player_name,rank"]="NONE"
-    players_data["$player_name,whitelisted"]="NO"
-    players_data["$player_name,blacklisted"]="NO"
+    current_players_data["$player_name,name"]="$player_name"
+    current_players_data["$player_name,ip"]="$player_ip"
+    current_players_data["$player_name,password"]="NONE"
+    current_players_data["$player_name,rank"]="NONE"
+    current_players_data["$player_name,whitelisted"]="NO"
+    current_players_data["$player_name,blacklisted"]="NO"
     
     {
         echo "# Player Name | First IP | Password | Rank | Whitelisted | Blacklisted"
         
-        for key in "${!players_data[@]}"; do
+        for key in "${!current_players_data[@]}"; do
             if [[ "$key" == *,name ]]; then
-                local name="${players_data[$key]}"
-                local ip="${players_data["$name,ip"]:-UNKNOWN}"
-                local password="${players_data["$name,password"]:-NONE}"
-                local rank="${players_data["$name,rank"]:-NONE}"
-                local whitelisted="${players_data["$name,whitelisted"]:-NO}"
-                local blacklisted="${players_data["$name,blacklisted"]:-NO}"
+                local name="${current_players_data[$key]}"
+                local ip="${current_players_data["$name,ip"]:-UNKNOWN}"
+                local password="${current_players_data["$name,password"]:-NONE}"
+                local rank="${current_players_data["$name,rank"]:-NONE}"
+                local whitelisted="${current_players_data["$name,whitelisted"]:-NO}"
+                local blacklisted="${current_players_data["$name,blacklisted"]:-NO}"
                 
                 echo "$name | $ip | $password | $rank | $whitelisted | $blacklisted"
             fi
@@ -261,7 +248,7 @@ is_ip_verified() {
     local current_ip="$2"
     
     read_players_log
-    local stored_ip="${players_data["$player_name,ip"]}"
+    local stored_ip="${current_players_data["$player_name,ip"]}"
     
     if [ "$stored_ip" = "UNKNOWN" ] || [ "$stored_ip" = "$current_ip" ]; then
         ip_verified["$player_name"]=1
@@ -416,7 +403,7 @@ handle_ip_change() {
     clear_chat
     
     read_players_log
-    local stored_password="${players_data["$player_name,password"]}"
+    local stored_password="${current_players_data["$player_name,password"]}"
     
     if [ "$stored_password" = "NONE" ]; then
         send_server_command "No password set for $player_name. Use !password first."
@@ -480,9 +467,9 @@ apply_player_ranks() {
     print_header "APPLYING RANKS FOR: $player_name"
     
     read_players_log
-    local rank="${players_data["$player_name,rank"]}"
-    local whitelisted="${players_data["$player_name,whitelisted"]}"
-    local blacklisted="${players_data["$player_name,blacklisted"]}"
+    local rank="${current_players_data["$player_name,rank"]}"
+    local whitelisted="${current_players_data["$player_name,whitelisted"]}"
+    local blacklisted="${current_players_data["$player_name,blacklisted"]}"
     local current_ip="${player_ip_map[$player_name]}"
     
     print_status "Player: $player_name, Rank: $rank, Whitelisted: $whitelisted, Blacklisted: $blacklisted"
@@ -564,23 +551,10 @@ apply_player_ranks() {
             print_success "✓ Unban commands sent for $player_name"
         fi
         
-        # Forzar sync de listas
-        print_status "Forcing server lists sync..."
-        sync_server_lists
-        
         print_success "✓ All rank commands applied for $player_name"
-        
-        # Marcar como aplicado
-        unset pending_rank_apply["$player_name"]
     else
         print_warning "Cannot apply ranks - player not connected or IP not verified"
         print_warning "Connected: ${connected_players[$player_name]:-NO}, IP Verified: ${ip_verified[$player_name]:-NO}"
-        
-        # Marcar para aplicar más tarde cuando se cumplan las condiciones
-        if [ -n "${connected_players[$player_name]}" ]; then
-            print_status "Queueing rank application for when IP is verified: $player_name"
-            pending_rank_apply["$player_name"]=1
-        fi
     fi
 }
 
@@ -632,13 +606,13 @@ sync_server_lists() {
     done
     
     # Add players to appropriate lists based on their current state
-    for key in "${!players_data[@]}"; do
+    for key in "${!current_players_data[@]}"; do
         if [[ "$key" == *,name ]]; then
-            local name="${players_data[$key]}"
-            local ip="${players_data["$name,ip"]}"
-            local rank="${players_data["$name,rank"]}"
-            local whitelisted="${players_data["$name,whitelisted"]}"
-            local blacklisted="${players_data["$name,blacklisted"]}"
+            local name="${current_players_data[$key]}"
+            local ip="${current_players_data["$name,ip"]}"
+            local rank="${current_players_data["$name,rank"]}"
+            local whitelisted="${current_players_data["$name,whitelisted"]}"
+            local blacklisted="${current_players_data["$name,blacklisted"]}"
             local current_ip="${player_ip_map[$name]}"
             
             # Only add to lists if IP is verified and player is connected
@@ -668,95 +642,87 @@ sync_server_lists() {
     print_success "Server lists synced"
 }
 
-check_pending_rank_applications() {
-    for player_name in "${!pending_rank_apply[@]}"; do
-        if [ -n "${connected_players[$player_name]}" ] && [ "${ip_verified[$player_name]}" = "1" ]; then
-            print_status "Applying pending ranks for reconnected player: $player_name"
-            apply_player_ranks "$player_name"
-        fi
-    done
-}
-
-monitor_players_log_changes() {
-    local current_time=$(date +%s)
+monitor_players_log() {
+    print_header "Starting players.log monitoring with inotifywait"
     
-    # Check for changes every 3 seconds (más tiempo para evitar sobrecarga)
-    if [ $((current_time - LAST_PLAYERS_LOG_CHECK)) -lt 3 ]; then
-        return
-    fi
-    LAST_PLAYERS_LOG_CHECK=$current_time
-    
-    if [ ! -f "$PLAYERS_LOG" ]; then
-        print_error "players.log not found: $PLAYERS_LOG"
-        return
+    # Verificar si inotifywait está disponible
+    if ! command -v inotifywait &> /dev/null; then
+        print_error "inotifywait no está instalado. Instala inotify-tools:"
+        print_error "Ubuntu/Debian: sudo apt install inotify-tools"
+        print_error "CentOS/RHEL: sudo yum install inotify-tools"
+        exit 1
     fi
     
-    # Guardar estado anterior antes de leer
-    declare -A old_players_data
-    for key in "${!players_data[@]}"; do
-        old_players_data["$key"]="${players_data[$key]}"
+    # Inicializar estado anterior
+    read_players_log
+    for key in "${!current_players_data[@]}"; do
+        previous_players_data["$key"]="${current_players_data[$key]}"
     done
     
-    # Leer nuevo estado
-    if ! read_players_log; then
-        print_error "Failed to read players.log for monitoring"
-        return 1
-    fi
-    
-    # Inicializar last_player_states si está vacío
-    if [ ${#last_player_states[@]} -eq 0 ]; then
-        print_status "Initializing player states monitoring for first time..."
-        for key in "${!players_data[@]}"; do
-            last_player_states["$key"]="${players_data[$key]}"
+    # Monitorear cambios en players.log con inotifywait
+    inotifywait -m -e modify "$PLAYERS_LOG" --format '%w %e' | while read file event; do
+        # Pequeña pausa para asegurar que el archivo se haya escrito completamente
+        sleep 0.01
+        
+        print_status "players.log modified - checking for changes..."
+        
+        # Guardar estado actual antes de leer
+        declare -A old_players_data
+        for key in "${!current_players_data[@]}"; do
+            old_players_data["$key"]="${current_players_data[$key]}"
         done
-        return
-    fi
-    
-    # Detectar cambios
-    local changes_detected=0
-    for key in "${!players_data[@]}"; do
-        if [[ "$key" == *,name ]]; then
-            local player_name="${players_data[$key]}"
-            local current_rank="${players_data["$player_name,rank"]}"
-            local current_whitelisted="${players_data["$player_name,whitelisted"]}"
-            local current_blacklisted="${players_data["$player_name,blacklisted"]}"
-            
-            local last_rank="${last_player_states["$player_name,rank"]:-NONE}"
-            local last_whitelisted="${last_player_states["$player_name,whitelisted"]:-NO}"
-            local last_blacklisted="${last_player_states["$player_name,blacklisted"]:-NO}"
-            
-            # Verificar cambios de rank
-            if [ "$current_rank" != "$last_rank" ]; then
-                print_header "🚨 RANK CHANGE DETECTED for $player_name: $last_rank -> $current_rank"
-                changes_detected=1
-                apply_player_ranks "$player_name"
-            fi
-            
-            # Verificar cambios de whitelist
-            if [ "$current_whitelisted" != "$last_whitelisted" ]; then
-                print_header "🚨 WHITELIST CHANGE DETECTED for $player_name: $last_whitelisted -> $current_whitelisted"
-                changes_detected=1
-                apply_player_ranks "$player_name"
-            fi
-            
-            # Verificar cambios de blacklist
-            if [ "$current_blacklisted" != "$last_blacklisted" ]; then
-                print_header "🚨 BLACKLIST CHANGE DETECTED for $player_name: $last_blacklisted -> $current_blacklisted"
-                changes_detected=1
-                apply_player_ranks "$player_name"
-            fi
+        
+        # Leer nuevo estado
+        if ! read_players_log; then
+            print_error "Failed to read players.log"
+            continue
         fi
-    done
-    
-    if [ $changes_detected -eq 1 ]; then
-        print_success "✅ All detected changes processed successfully"
-        # Forzar sync después de cambios
-        sync_server_lists
-    fi
-    
-    # Actualizar último estado conocido
-    for key in "${!players_data[@]}"; do
-        last_player_states["$key"]="${players_data[$key]}"
+        
+        # Detectar cambios y aplicar comandos
+        local changes_detected=0
+        for key in "${!current_players_data[@]}"; do
+            if [[ "$key" == *,name ]]; then
+                local player_name="${current_players_data[$key]}"
+                local current_rank="${current_players_data["$player_name,rank"]}"
+                local current_whitelisted="${current_players_data["$player_name,whitelisted"]}"
+                local current_blacklisted="${current_players_data["$player_name,blacklisted"]}"
+                
+                local previous_rank="${old_players_data["$player_name,rank"]:-NONE}"
+                local previous_whitelisted="${old_players_data["$player_name,whitelisted"]:-NO}"
+                local previous_blacklisted="${old_players_data["$player_name,blacklisted"]:-NO}"
+                
+                # Verificar cambios de rank
+                if [ "$current_rank" != "$previous_rank" ]; then
+                    print_header "🚨 RANK CHANGE DETECTED for $player_name: $previous_rank -> $current_rank"
+                    changes_detected=1
+                    apply_player_ranks "$player_name"
+                fi
+                
+                # Verificar cambios de whitelist
+                if [ "$current_whitelisted" != "$previous_whitelisted" ]; then
+                    print_header "🚨 WHITELIST CHANGE DETECTED for $player_name: $previous_whitelisted -> $current_whitelisted"
+                    changes_detected=1
+                    apply_player_ranks "$player_name"
+                fi
+                
+                # Verificar cambios de blacklist
+                if [ "$current_blacklisted" != "$previous_blacklisted" ]; then
+                    print_header "🚨 BLACKLIST CHANGE DETECTED for $player_name: $previous_blacklisted -> $current_blacklisted"
+                    changes_detected=1
+                    apply_player_ranks "$player_name"
+                fi
+            fi
+        done
+        
+        if [ $changes_detected -eq 1 ]; then
+            print_success "✅ Changes detected and processed - syncing server lists"
+            sync_server_lists
+        fi
+        
+        # Actualizar estado anterior
+        for key in "${!current_players_data[@]}"; do
+            previous_players_data["$key"]="${current_players_data[$key]}"
+        done
     done
 }
 
@@ -781,29 +747,27 @@ test_server_communication() {
         return 1
     fi
     
-    # Test 3: Enviar comando real
-    print_status "Test 3: Saving world..."
-    if send_server_command "/save"; then
-        print_success "✓ Save command sent successfully"
-    else
-        print_error "✗ Save command failed"
-        return 1
-    fi
-    
     print_success "✅ All server communication tests passed!"
     return 0
 }
 
 monitor_console_log() {
-    print_header "Starting rank_patcher monitoring"
-    print_status "World: $WORLD_ID"
-    print_status "Console log: $CONSOLE_LOG"
-    print_status "Players log: $PLAYERS_LOG"
+    print_header "Starting console.log monitoring"
     
-    initialize_players_log
-    sync_server_lists
+    # Esperar a que el archivo exista
+    local wait_time=0
+    while [ ! -f "$CONSOLE_LOG" ] && [ $wait_time -lt 30 ]; do
+        sleep 1
+        ((wait_time++))
+    done
+    
+    if [ ! -f "$CONSOLE_LOG" ]; then
+        print_error "Console log never appeared: $CONSOLE_LOG"
+        return 1
+    fi
     
     tail -n 0 -F "$CONSOLE_LOG" | while read line; do
+        # Detectar conexión de jugador - formato: 2025-09-28 20:50:26.463 ... Player Connected NOMBRE | IP | HASH
         if [[ "$line" =~ Player\ Connected\ ([a-zA-Z0-9_]+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
@@ -818,7 +782,7 @@ monitor_console_log() {
             cancel_super_remove_timer "$player_name"
             
             read_players_log
-            if [ -z "${players_data["$player_name,name"]}" ]; then
+            if [ -z "${current_players_data["$player_name,name"]}" ]; then
                 add_new_player "$player_name" "$player_ip"
                 
                 ip_verified["$player_name"]=1
@@ -828,9 +792,9 @@ monitor_console_log() {
                 
                 apply_player_ranks "$player_name"
             else
-                local stored_ip="${players_data["$player_name,ip"]}"
-                local stored_password="${players_data["$player_name,password"]}"
-                local stored_rank="${players_data["$player_name,rank"]}"
+                local stored_ip="${current_players_data["$player_name,ip"]}"
+                local stored_password="${current_players_data["$player_name,password"]}"
+                local stored_rank="${current_players_data["$player_name,rank"]}"
                 
                 if is_ip_verified "$player_name" "$player_ip"; then
                     print_success "IP verified for $player_name"
@@ -866,6 +830,7 @@ monitor_console_log() {
             continue
         fi
         
+        # Detectar desconexión de jugador - formato: 2025-09-27 00:01:53.191 ... Player Disconnected NOMBRE
         if [[ "$line" =~ Player\ Disconnected\ ([a-zA-Z0-9_]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             
@@ -894,6 +859,7 @@ monitor_console_log() {
             continue
         fi
         
+        # Detectar comandos de chat
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local message="${BASH_REMATCH[2]}"
@@ -926,18 +892,12 @@ monitor_console_log() {
     done
 }
 
-periodic_tasks() {
-    while true; do
-        sleep 2
-        sync_server_lists
-        monitor_players_log_changes
-        check_pending_rank_applications
-    done
-}
-
 main() {
-    print_header "THE BLOCKHEADS RANK PATCHER"
-    print_status "Starting player management system..."
+    print_header "THE BLOCKHEADS RANK PATCHER - OPTIMIZED VERSION"
+    print_status "World: $WORLD_ID"
+    print_status "Port: ${PORT:-12153}"
+    print_status "Console log: $CONSOLE_LOG"
+    print_status "Players log: $PLAYERS_LOG"
     
     # Test de comunicación primero
     if ! test_server_communication; then
@@ -945,33 +905,29 @@ main() {
         exit 1
     fi
     
-    if [ ! -f "$CONSOLE_LOG" ]; then
-        print_error "Console log not found: $CONSOLE_LOG"
-        print_status "Waiting for log file to be created..."
-        
-        local wait_time=0
-        while [ ! -f "$CONSOLE_LOG" ] && [ $wait_time -lt 30 ]; do
-            sleep 1
-            ((wait_time++))
-        done
-        
-        if [ ! -f "$CONSOLE_LOG" ]; then
-            print_error "Console log never appeared: $CONSOLE_LOG"
-            exit 1
-        fi
-    fi
+    initialize_players_log
+    sync_server_lists
+    
+    # Iniciar monitores en paralelo
+    print_header "STARTING MONITORS"
     
     monitor_console_log &
     local console_pid=$!
     
-    periodic_tasks &
-    local tasks_pid=$!
+    monitor_players_log &
+    local players_pid=$!
     
-    print_success "All monitoring processes started"
-    print_status "Console PID: $console_pid"
-    print_status "Tasks PID: $tasks_pid"
+    print_success "All monitors started successfully"
+    print_status "Console monitor PID: $console_pid"
+    print_status "Players log monitor PID: $players_pid"
+    print_status "Commands log: /tmp/rank_patcher_commands.log"
     
-    wait $console_pid $tasks_pid
+    # Esperar a que cualquiera de los procesos termine
+    wait -n
+    print_error "One of the monitors stopped - terminating all processes"
+    
+    kill $console_pid $players_pid 2>/dev/null
+    exit 1
 }
 
 main "$@"
