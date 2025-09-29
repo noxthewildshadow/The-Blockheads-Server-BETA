@@ -11,7 +11,6 @@ fi
 
 if [ -z "$CONSOLE_LOG" ] || [ -z "$WORLD_ID" ]; then
     echo "Usage: $0 <console_log_path> [world_id] [port]"
-    echo "Example: $0 /path/to/console.log world123 12153"
     exit 1
 fi
 
@@ -46,8 +45,17 @@ send_server_command() {
 
 kick_player() {
     local player_name="$1"
-    screen -S "$SCREEN_SERVER" -X stuff "/kick $player_name$(printf \\r)"
-    sleep "$COMMAND_COOLDOWN"
+    send_server_command "/kick $player_name"
+}
+
+ban_ip() {
+    local ip="$1"
+    send_server_command "/ban $ip"
+}
+
+unban_ip() {
+    local ip="$1"
+    send_server_command "/unban $ip"
 }
 
 clear_chat() {
@@ -239,7 +247,7 @@ handle_rank_change() {
             ;;
         "SUPER")
             if ! tail -n +3 "$CLOUD_ADMIN_LIST" 2>/dev/null | grep -q "^$player_name$"; then
-                echo "$player_name" >> "$CLOUD_ADMIN_LIST"
+                echo "$name" >> "$CLOUD_ADMIN_LIST"
             fi
             ;;
         "NONE")
@@ -387,10 +395,7 @@ send_password_warning() {
 }
 
 monitor_console_log() {
-    echo "Starting rank_patcher monitoring"
-    echo "World: $WORLD_ID"
-    echo "Console log: $CONSOLE_LOG"
-    echo "Players log: $PLAYERS_LOG"
+    echo "Starting rank patcher monitoring"
     
     initialize_players_log
     sync_server_lists
@@ -503,8 +508,8 @@ check_timeouts() {
         local time_elapsed=$((current_time - start_time))
         
         if [ $time_elapsed -ge $PASSWORD_TIMEOUT ]; then
-            echo "PASSWORD TIMEOUT REACHED for $player - KICKING NOW"
-            kick_player "$player" "No password set within 60 seconds"
+            echo "Kicking $player for password timeout"
+            kick_player "$player"
             unset connected_players["$player"]
             unset player_ip_map["$player"]
             unset password_pending["$player"]
@@ -543,9 +548,9 @@ check_timeouts() {
         
         if [ $time_elapsed -ge $IP_VERIFY_TIMEOUT ]; then
             local player_ip="${player_ip_map[$player]}"
-            echo "IP VERIFICATION TIMEOUT for $player - KICKING AND BANNING"
-            kick_player "$player" "IP verification failed within 30 seconds"
-            send_server_command "/ban $player_ip"
+            echo "Kicking and banning $player for IP verification timeout"
+            kick_player "$player"
+            ban_ip "$player_ip"
             unset connected_players["$player"]
             unset player_ip_map["$player"]
             unset ip_verify_pending["$player"]
@@ -564,12 +569,10 @@ periodic_list_sync() {
 }
 
 main() {
-    echo "THE BLOCKHEADS RANK PATCHER"
-    echo "Starting player management system..."
+    echo "Starting rank patcher"
     
     if [ ! -f "$CONSOLE_LOG" ]; then
         echo "Console log not found: $CONSOLE_LOG"
-        echo "Waiting for log file to be created..."
         local wait_time=0
         while [ ! -f "$CONSOLE_LOG" ] && [ $wait_time -lt 30 ]; do
             sleep 1
