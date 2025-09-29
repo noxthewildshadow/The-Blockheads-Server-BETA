@@ -2,25 +2,40 @@
 
 # rank_patcher.sh - Player management system for The Blockheads server
 
-# Configuration
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+PURPLE='\033[0;35m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
+print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+print_header() {
+    echo -e "${PURPLE}================================================================"
+    echo -e "$1"
+    echo -e "===============================================================${NC}"
+}
+
 BASE_DIR="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
 CONSOLE_LOG="$1"
 WORLD_ID="$2"
 PORT="$3"
 
-# Extract world ID from console log path if not provided
 if [ -z "$WORLD_ID" ] && [ -n "$CONSOLE_LOG" ]; then
     WORLD_ID=$(echo "$CONSOLE_LOG" | grep -oE 'saves/[^/]+' | cut -d'/' -f2)
 fi
 
-# Validate parameters
 if [ -z "$CONSOLE_LOG" ] || [ -z "$WORLD_ID" ]; then
-    echo "Usage: $0 <console_log_path> [world_id] [port]"
-    echo "Example: $0 /path/to/console.log world123 12153"
+    print_error "Usage: $0 <console_log_path> [world_id] [port]"
+    print_status "Example: $0 /path/to/console.log world123 12153"
     exit 1
 fi
 
-# File paths
 PLAYERS_LOG="$BASE_DIR/$WORLD_ID/players.log"
 ADMIN_LIST="$BASE_DIR/$WORLD_ID/adminlist.txt"
 MOD_LIST="$BASE_DIR/$WORLD_ID/modlist.txt"
@@ -28,14 +43,11 @@ WHITELIST="$BASE_DIR/$WORLD_ID/whitelist.txt"
 BLACKLIST="$BASE_DIR/$WORLD_ID/blacklist.txt"
 CLOUD_ADMIN_LIST="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
 
-# Screen session for server commands
 SCREEN_SERVER="blockheads_server_${PORT:-12153}"
 
-# Timeout configuration
-PASSWORD_TIMEOUT=35
-IP_VERIFY_TIMEOUT=35
+PASSWORD_TIMEOUT=60
+IP_VERIFY_TIMEOUT=30
 
-# Track connected players and their states
 declare -A connected_players
 declare -A player_ip_map
 declare -A password_pending
@@ -43,54 +55,57 @@ declare -A ip_verify_pending
 declare -A password_timers
 declare -A ip_verify_timers
 
-# Function to send commands to server
 send_server_command() {
     local command="$1"
     
-    # Verify screen session exists
     if ! screen -list | grep -q "$SCREEN_SERVER"; then
+        print_error "Screen session not found: $SCREEN_SERVER"
         return 1
     fi
     
-    # Send command directly without prefixes
-    screen -S "$SCREEN_SERVER" -p 0 -X stuff "$command$(printf \\r)"
+    if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$command$(printf \\r)"; then
+        print_success "Command sent to server: $command"
+        return 0
+    else
+        print_error "Failed to send command to server: $command"
+        return 1
+    fi
 }
 
-# Function to kick player
 kick_player() {
     local player_name="$1"
     local reason="$2"
+    
+    print_warning "Kicking player: $player_name - Reason: $reason"
     send_server_command "/kick $player_name"
 }
 
-# Function to clear chat
 clear_chat() {
     send_server_command "/clear"
 }
 
-# Function to initialize players.log
 initialize_players_log() {
     if [ ! -f "$PLAYERS_LOG" ]; then
+        print_status "Creating new players.log file"
         mkdir -p "$(dirname "$PLAYERS_LOG")"
         touch "$PLAYERS_LOG"
         echo "# Player Name | First IP | Password | Rank | Whitelisted | Blacklisted" > "$PLAYERS_LOG"
+        print_success "players.log created at: $PLAYERS_LOG"
     fi
 }
 
-# Function to read players.log
 read_players_log() {
     declare -gA players_data
     
     if [ ! -f "$PLAYERS_LOG" ]; then
+        print_error "players.log not found: $PLAYERS_LOG"
         return 1
     fi
     
     while IFS='|' read -r name ip password rank whitelisted blacklisted; do
-        # Skip header lines and empty lines
         [[ "$name" =~ ^# ]] && continue
         [[ -z "$name" ]] && continue
         
-        # Clean up fields
         name=$(echo "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         ip=$(echo "$ip" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         password=$(echo "$password" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -98,7 +113,6 @@ read_players_log() {
         whitelisted=$(echo "$whitelisted" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         blacklisted=$(echo "$blacklisted" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         
-        # Apply defaults
         [ -z "$name" ] && name="UNKNOWN"
         [ -z "$ip" ] && ip="UNKNOWN"
         [ -z "$password" ] && password="NONE"
@@ -117,28 +131,25 @@ read_players_log() {
     done < "$PLAYERS_LOG"
 }
 
-# Function to update players.log
 update_players_log() {
     local player_name="$1" field="$2" new_value="$3"
     
     if [ -z "$player_name" ] || [ -z "$field" ]; then
+        print_error "Invalid parameters for update_players_log"
         return 1
     fi
     
-    # Read current data
     read_players_log
     
-    # Update the field
     case "$field" in
         "ip") players_data["$player_name,ip"]="$new_value" ;;
         "password") players_data["$player_name,password"]="$new_value" ;;
         "rank") players_data["$player_name,rank"]="$new_value" ;;
         "whitelisted") players_data["$player_name,whitelisted"]="$new_value" ;;
         "blacklisted") players_data["$player_name,blacklisted"]="$new_value" ;;
-        *) return 1 ;;
+        *) print_error "Unknown field: $field"; return 1 ;;
     esac
     
-    # Write back to file
     {
         echo "# Player Name | First IP | Password | Rank | Whitelisted | Blacklisted"
         
@@ -155,23 +166,24 @@ update_players_log() {
             fi
         done
     } > "$PLAYERS_LOG"
+    
+    print_success "Updated players.log: $player_name $field = $new_value"
 }
 
-# Function to add new player to players.log
 add_new_player() {
     local player_name="$1" player_ip="$2"
     
     if [ -z "$player_name" ] || [ -z "$player_ip" ]; then
+        print_error "Invalid parameters for add_new_player"
         return 1
     fi
     
-    # Check if player already exists
     read_players_log
     if [ -n "${players_data["$player_name,name"]}" ]; then
+        print_warning "Player already exists: $player_name"
         return 0
     fi
     
-    # Add new player with defaults
     players_data["$player_name,name"]="$player_name"
     players_data["$player_name,ip"]="$player_ip"
     players_data["$player_name,password"]="NONE"
@@ -179,7 +191,6 @@ add_new_player() {
     players_data["$player_name,whitelisted"]="NO"
     players_data["$player_name,blacklisted"]="NO"
     
-    # Write back to file
     {
         echo "# Player Name | First IP | Password | Rank | Whitelisted | Blacklisted"
         
@@ -196,21 +207,23 @@ add_new_player() {
             fi
         done
     } > "$PLAYERS_LOG"
+    
+    print_success "Added new player: $player_name ($player_ip)"
 }
 
-# Function to start password timeout
 start_password_timeout() {
     local player_name="$1"
     
-    # Cancel existing timer if any
+    print_warning "Starting password timeout for $player_name (60 seconds)"
+    
     if [ -n "${password_timers[$player_name]}" ]; then
         kill "${password_timers[$player_name]}" 2>/dev/null
     fi
     
-    # Start new timer
     (
         sleep $PASSWORD_TIMEOUT
         if [ -n "${password_pending[$player_name]}" ]; then
+            print_warning "Password timeout reached for $player_name - kicking player"
             kick_player "$player_name" "No password set within 60 seconds"
             unset password_pending["$player_name"]
             unset password_timers["$player_name"]
@@ -219,19 +232,19 @@ start_password_timeout() {
     password_timers["$player_name"]=$!
 }
 
-# Function to start IP verification timeout
 start_ip_verify_timeout() {
     local player_name="$1" player_ip="$2"
     
-    # Cancel existing timer if any
+    print_warning "Starting IP verification timeout for $player_name (30 seconds)"
+    
     if [ -n "${ip_verify_timers[$player_name]}" ]; then
         kill "${ip_verify_timers[$player_name]}" 2>/dev/null
     fi
     
-    # Start new timer
     (
         sleep $IP_VERIFY_TIMEOUT
         if [ -n "${ip_verify_pending[$player_name]}" ]; then
+            print_warning "IP verification timeout reached for $player_name - kicking and banning IP"
             kick_player "$player_name" "IP verification failed within 30 seconds"
             send_server_command "/ban $player_ip"
             unset ip_verify_pending["$player_name"]
@@ -241,33 +254,28 @@ start_ip_verify_timeout() {
     ip_verify_timers["$player_name"]=$!
 }
 
-# Function to send welcome message with password reminder
 send_password_reminder() {
     local player_name="$1"
     
-    # Wait 5 seconds then send reminder
     (
         sleep 5
         if [ -n "${password_pending[$player_name]}" ]; then
-            send_server_command "Welcome $player_name! Please set a password using: !password YOUR_PASSWORD CONFIRM_PASSWORD within 60 seconds."
+            send_server_command "Welcome $player_name! Please set a password using: \n!password YOUR_PASSWORD CONFIRM_PASSWORD within 60 seconds."
         fi
     ) &
 }
 
-# Function to send IP change warning
 send_ip_warning() {
     local player_name="$1"
     
-    # Wait 5 seconds then send warning
     (
         sleep 5
         if [ -n "${ip_verify_pending[$player_name]}" ]; then
-            send_server_command "SECURITY ALERT: $player_name, your IP has changed! Verify with: !ip_change YOUR_PASSWORD within 30 seconds or you will be kicked and IP banned."
+            send_server_command "SECURITY ALERT: $player_name, your IP has changed! Verify with: !ip_change YOUR_PASSWORD \nwithin 30 seconds or you will be kicked and IP banned."
         fi
     ) &
 }
 
-# Function to validate password
 validate_password() {
     local password="$1"
     local length=${#password}
@@ -278,14 +286,13 @@ validate_password() {
     fi
     
     if ! echo "$password" | grep -qE '^[A-Za-z0-9!@#$%^_+-=]+$'; then
-        echo "Password contains invalid characters. Only letters, numbers and !@#$%^_+-= are allowed"
+        echo "Password contains invalid characters. \nOnly letters, numbers and !@#$%^_+-= are allowed"
         return 1
     fi
     
     return 0
 }
 
-# Function to handle password commands
 handle_password_command() {
     local player_name="$1" password="$2" confirm_password="$3"
     
@@ -301,11 +308,9 @@ handle_password_command() {
         return 1
     fi
     
-    # Update password in players.log
     update_players_log "$player_name" "password" "$password"
     send_server_command "Password set successfully for $player_name"
     
-    # Cancel password timeout
     if [ -n "${password_timers[$player_name]}" ]; then
         kill "${password_timers[$player_name]}" 2>/dev/null
         unset password_timers["$player_name"]
@@ -315,11 +320,9 @@ handle_password_command() {
     return 0
 }
 
-# Function to handle IP change verification
 handle_ip_change() {
     local player_name="$1" provided_password="$2" current_ip="$3"
     
-    # Verify password
     read_players_log
     local stored_password="${players_data["$player_name,password"]}"
     
@@ -333,11 +336,9 @@ handle_ip_change() {
         return 1
     fi
     
-    # Update IP in players.log
     update_players_log "$player_name" "ip" "$current_ip"
     send_server_command "IP address verified and updated for $player_name"
     
-    # Cancel IP verification timeout
     if [ -n "${ip_verify_timers[$player_name]}" ]; then
         kill "${ip_verify_timers[$player_name]}" 2>/dev/null
         unset ip_verify_timers["$player_name"]
@@ -347,20 +348,17 @@ handle_ip_change() {
     return 0
 }
 
-# Function to sync server lists
 sync_server_lists() {
-    # Read current player data
+    print_status "Syncing server lists from players.log..."
+    
     read_players_log
     
-    # Clear existing lists
     for list_file in "$ADMIN_LIST" "$MOD_LIST" "$WHITELIST" "$BLACKLIST"; do
         > "$list_file"
     done
     
-    # Sync cloud admin list
     > "$CLOUD_ADMIN_LIST"
     
-    # Add players to appropriate lists based on rank and status
     for key in "${!players_data[@]}"; do
         if [[ "$key" == *,name ]]; then
             local name="${players_data[$key]}"
@@ -369,7 +367,6 @@ sync_server_lists() {
             local whitelisted="${players_data["$name,whitelisted"]}"
             local blacklisted="${players_data["$name,blacklisted"]}"
             
-            # Only apply if player is connected and IP verified
             if [ -n "${connected_players[$name]}" ] && [ "$ip" != "UNKNOWN" ]; then
                 case "$rank" in
                     "ADMIN")
@@ -393,49 +390,47 @@ sync_server_lists() {
             fi
         fi
     done
+    
+    print_success "Server lists synced"
 }
 
-# Function to monitor console.log for events
 monitor_console_log() {
-    # Initialize files
+    print_header "Starting rank_patcher monitoring"
+    print_status "World: $WORLD_ID"
+    print_status "Console log: $CONSOLE_LOG"
+    print_status "Players log: $PLAYERS_LOG"
+    
     initialize_players_log
     sync_server_lists
     
-    # Monitor the log file
     tail -n 0 -F "$CONSOLE_LOG" | while read line; do
-        # Detect player connections
         if [[ "$line" =~ Player\ Connected\ ([a-zA-Z0-9_]+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
             local player_hash="${BASH_REMATCH[3]}"
             
-            # Add to connected players
+            print_success "Player connected: $player_name ($player_ip) - Hash: $player_hash"
+            
             connected_players["$player_name"]=1
             player_ip_map["$player_name"]="$player_ip"
             
-            # Check if player exists in players.log
             read_players_log
             if [ -z "${players_data["$player_name,name"]}" ]; then
-                # New player - add to players.log
                 add_new_player "$player_name" "$player_ip"
                 
-                # Start password timeout and send reminder
                 password_pending["$player_name"]=1
                 start_password_timeout "$player_name"
                 send_password_reminder "$player_name"
             else
-                # Existing player - check IP
                 local stored_ip="${players_data["$player_name,ip"]}"
                 local stored_password="${players_data["$player_name,password"]}"
                 
                 if [ "$stored_ip" != "$player_ip" ] && [ "$stored_ip" != "UNKNOWN" ]; then
-                    # IP changed - require verification
                     ip_verify_pending["$player_name"]=1
                     start_ip_verify_timeout "$player_name" "$player_ip"
                     send_ip_warning "$player_name"
                 fi
                 
-                # Check if password is set
                 if [ "$stored_password" = "NONE" ]; then
                     password_pending["$player_name"]=1
                     start_password_timeout "$player_name"
@@ -443,20 +438,18 @@ monitor_console_log() {
                 fi
             fi
             
-            # Sync lists after connection
             sync_server_lists
             continue
         fi
         
-        # Detect player disconnections
         if [[ "$line" =~ Player\ Disconnected\ ([a-zA-Z0-9_]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             
-            # Remove from connected players and cancel timers
+            print_warning "Player disconnected: $player_name"
+            
             unset connected_players["$player_name"]
             unset player_ip_map["$player_name"]
             
-            # Cancel pending timeouts
             if [ -n "${password_timers[$player_name]}" ]; then
                 kill "${password_timers[$player_name]}" 2>/dev/null
                 unset password_timers["$player_name"]
@@ -469,25 +462,22 @@ monitor_console_log() {
             unset password_pending["$player_name"]
             unset ip_verify_pending["$player_name"]
             
-            # Sync lists after disconnection
             sync_server_lists
             continue
         fi
         
-        # Detect chat messages and commands
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local message="${BASH_REMATCH[2]}"
             
-            # Skip server messages
             [ "$player_name" = "SERVER" ] && continue
             
-            # Process commands
             case "$message" in
                 "!password "*)
                     if [[ "$message" =~ !password\ ([^ ]+)\ ([^ ]+) ]]; then
                         local password="${BASH_REMATCH[1]}"
                         local confirm_password="${BASH_REMATCH[2]}"
+                        print_status "Password command received from $player_name"
                         handle_password_command "$player_name" "$password" "$confirm_password"
                     else
                         send_server_command "Usage: !password NEW_PASSWORD CONFIRM_PASSWORD"
@@ -497,6 +487,7 @@ monitor_console_log() {
                     if [[ "$message" =~ !ip_change\ ([^ ]+) ]]; then
                         local password="${BASH_REMATCH[1]}"
                         local current_ip="${player_ip_map[$player_name]}"
+                        print_status "IP change command received from $player_name"
                         handle_ip_change "$player_name" "$password" "$current_ip"
                     else
                         send_server_command "Usage: !ip_change YOUR_PASSWORD"
@@ -507,7 +498,6 @@ monitor_console_log() {
     done
 }
 
-# Function to periodically sync lists every 5 seconds
 periodic_list_sync() {
     while true; do
         sleep 5
@@ -515,11 +505,14 @@ periodic_list_sync() {
     done
 }
 
-# Main execution
 main() {
-    # Check if console log exists
+    print_header "THE BLOCKHEADS RANK PATCHER"
+    print_status "Starting player management system..."
+    
     if [ ! -f "$CONSOLE_LOG" ]; then
-        # Wait for log file
+        print_error "Console log not found: $CONSOLE_LOG"
+        print_status "Waiting for log file to be created..."
+        
         local wait_time=0
         while [ ! -f "$CONSOLE_LOG" ] && [ $wait_time -lt 30 ]; do
             sleep 1
@@ -527,20 +520,22 @@ main() {
         done
         
         if [ ! -f "$CONSOLE_LOG" ]; then
+            print_error "Console log never appeared: $CONSOLE_LOG"
             exit 1
         fi
     fi
     
-    # Start monitoring processes in background
     monitor_console_log &
     local console_pid=$!
     
     periodic_list_sync &
     local sync_pid=$!
     
-    # Wait for background processes
+    print_success "All monitoring processes started"
+    print_status "Console PID: $console_pid"
+    print_status "Sync PID: $sync_pid"
+    
     wait $console_pid $sync_pid
 }
 
-# Start main function
 main "$@"
