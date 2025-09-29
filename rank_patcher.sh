@@ -260,7 +260,7 @@ send_password_reminder() {
     (
         sleep 5
         if [ -n "${password_pending[$player_name]}" ]; then
-            send_server_command "Welcome $player_name! Please set a password using: \n!password YOUR_PASSWORD CONFIRM_PASSWORD within 60 seconds."
+            send_server_command "Welcome $player_name! Please set a password using: !password YOUR_PASSWORD CONFIRM_PASSWORD within 60 seconds."
         fi
     ) &
 }
@@ -271,7 +271,7 @@ send_ip_warning() {
     (
         sleep 5
         if [ -n "${ip_verify_pending[$player_name]}" ]; then
-            send_server_command "SECURITY ALERT: $player_name, your IP has changed! Verify with: !ip_change YOUR_PASSWORD \nwithin 30 seconds or you will be kicked and IP banned."
+            send_server_command "SECURITY ALERT: $player_name, your IP has changed! Verify with: !ip_change YOUR_PASSWORD within 30 seconds or you will be kicked and IP banned."
         fi
     ) &
 }
@@ -286,7 +286,7 @@ validate_password() {
     fi
     
     if ! echo "$password" | grep -qE '^[A-Za-z0-9!@#$%^_+-=]+$'; then
-        echo "Password contains invalid characters. \nOnly letters, numbers and !@#$%^_+-= are allowed"
+        echo "Password contains invalid characters. Only letters, numbers and !@#$%^_+-= are allowed"
         return 1
     fi
     
