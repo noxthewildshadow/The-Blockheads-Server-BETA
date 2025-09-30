@@ -173,13 +173,13 @@ update_players_log() {
         "ip") current_players_data["$player_name,ip"]="$new_value" ;;
         "password") current_players_data["$player_name,password"]="$new_value" ;;
         "rank") 
-            current_players_data["$player_name,rank"]=$(echo "$new_value" | tr '[:lower:]' '[:upper:]")
+            current_players_data["$player_name,rank"]=$(echo "$new_value" | tr '[:lower:]' '[:upper:]')
             ;;
         "whitelisted") 
             current_players_data["$player_name,whitelisted"]=$(echo "$new_value" | tr '[:lower:]' '[:upper:]')
             ;;
         "blacklisted") 
-            current_players_data["$player_name,blacklisted"]=$(echo "$new_value" | tr '[:lower:]' '[:upper:]")
+            current_players_data["$player_name,blacklisted"]=$(echo "$new_value" | tr '[:lower:]' '[:upper:]')
             ;;
         *) print_error "Unknown field: $field"; return 1 ;;
     esac
@@ -857,7 +857,7 @@ monitor_console_log() {
                 ip_verified["$player_name_upper"]=1
                 password_pending["$player_name_upper"]=1
                 start_password_timeout "$player_name_upper"
-                send_password_reminder "$player_name_upper"
+                send_password_reminder "$player_name"
                 
                 # Aplicar rangos después de agregar nuevo jugador
                 check_and_apply_player_ranks "$player_name_upper"
