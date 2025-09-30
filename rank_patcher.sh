@@ -265,18 +265,18 @@ is_ip_verified() {
     return 1
 }
 
-# Función mejorada para aplicar rangos inmediatamente cuando sea posible
+# Función CORREGIDA para aplicar rangos
 apply_rank_commands() {
-    local player_name="$1" rank="$2"
+    local player_name="$1"
     
-    # Normalizar nombre y rango
+    # Normalizar nombre
     player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
-    rank=$(echo "$rank" | tr '[:lower:]' '[:upper:]')
+    
+    # Leer el rank directamente del array para evitar problemas de scope
+    read_players_log
+    local rank="${current_players_data["$player_name,rank"]}"
     
     print_status "Applying rank commands for $player_name: '$rank'"
-    
-    # DEBUG: Mostrar el valor real del rank
-    print_status "DEBUG: Rank value is '$rank', length: ${#rank}"
     
     # Verificar que el rank no esté vacío
     if [ -z "$rank" ] || [ "$rank" = "NONE" ]; then
@@ -322,7 +322,7 @@ apply_rank_commands() {
     return 0
 }
 
-# Función mejorada para verificar y aplicar rangos
+# Función SIMPLIFICADA para verificar y aplicar rangos
 check_and_apply_player_ranks() {
     local player_name="$1"
     
@@ -344,13 +344,9 @@ check_and_apply_player_ranks() {
     print_status "Connected: ${connected_players[$player_name]:-NO}"
     print_status "IP Verified: $(is_ip_verified "$player_name" "$current_ip" && echo "YES" || echo "NO")"
     
-    # DEBUG: Verificar que el rank se está leyendo correctamente
-    print_status "DEBUG: Raw rank value from players.log: '${current_players_data["$player_name,rank"]}'"
-    
     # Verificar si el jugador está conectado
     if [ -z "${connected_players[$player_name]}" ]; then
         print_warning "Player $player_name is not connected - cannot apply ranks"
-        # Guardar cambio pendiente para cuando se conecte
         pending_rank_changes["$player_name"]=1
         return 1
     fi
@@ -358,16 +354,14 @@ check_and_apply_player_ranks() {
     # Verificar si la IP está verificada
     if ! is_ip_verified "$player_name" "$current_ip"; then
         print_warning "IP not verified for $player_name - stored: $stored_ip, current: $current_ip"
-        # Guardar cambio pendiente para cuando se verifique la IP
         pending_rank_changes["$player_name"]=1
         return 1
     fi
     
     print_success "Player $player_name is connected and IP verified - applying ranks"
     
-    # Aplicar comandos de rango
-    print_status "DEBUG: About to call apply_rank_commands with rank: '$rank'"
-    if ! apply_rank_commands "$player_name" "$rank"; then
+    # Aplicar comandos de rango (llamada simplificada)
+    if ! apply_rank_commands "$player_name"; then
         print_error "Failed to apply rank commands for $player_name"
         return 1
     fi
@@ -376,11 +370,9 @@ check_and_apply_player_ranks() {
     if [ "$whitelisted" = "YES" ]; then
         print_status "Whitelisting $player_name"
         send_server_command "/whitelist $player_name"
-        print_success "✓ Whitelist command sent for $player_name"
     else
         print_status "Unwhitelisting $player_name"
         send_server_command "/unwhitelist $player_name"
-        print_success "✓ Unwhitelist command sent for $player_name"
     fi
     
     if [ "$blacklisted" = "YES" ]; then
@@ -388,17 +380,13 @@ check_and_apply_player_ranks() {
         send_server_command "/ban-no-device $player_name"
         if [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
             send_server_command "/ban-no-device $current_ip"
-            print_success "✓ IP ban command sent for $current_ip"
         fi
-        print_success "✓ Blacklist commands sent for $player_name"
     else
         print_status "Unbanning $player_name"
         send_server_command "/unban $player_name"
         if [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
             send_server_command "/unban $current_ip"
-            print_success "✓ IP unban command sent for $current_ip"
         fi
-        print_success "✓ Unban commands sent for $player_name"
     fi
     
     # Sincronizar listas del servidor
