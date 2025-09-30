@@ -275,6 +275,17 @@ apply_rank_commands() {
     
     print_status "Applying rank commands for $player_name: $rank"
     
+    # Verificar que el rank no esté vacío
+    if [ -z "$rank" ] || [ "$rank" = "NONE" ]; then
+        print_status "No rank specified for $player_name - removing all ranks"
+        send_server_command "/unadmin $player_name"
+        send_server_command "/unmod $player_name"
+        remove_player_from_cloud_list "$player_name"
+        cancel_super_remove_timer "$player_name"
+        print_success "✓ Rank removal commands sent for $player_name"
+        return 0
+    fi
+    
     case "$rank" in
         "ADMIN")
             send_server_command "/admin $player_name"
@@ -297,15 +308,8 @@ apply_rank_commands() {
             cancel_super_remove_timer "$player_name"
             print_success "✓ SUPER rank commands sent for $player_name"
             ;;
-        "NONE")
-            send_server_command "/unadmin $player_name"
-            send_server_command "/unmod $player_name"
-            remove_player_from_cloud_list "$player_name"
-            cancel_super_remove_timer "$player_name"
-            print_success "✓ Rank removal commands sent for $player_name"
-            ;;
         *)
-            print_warning "Unknown rank: $rank for $player_name"
+            print_warning "Unknown rank: '$rank' for $player_name"
             return 1
             ;;
     esac
@@ -329,7 +333,7 @@ check_and_apply_player_ranks() {
     local stored_ip="${current_players_data["$player_name,ip"]}"
     
     print_status "Player: $player_name"
-    print_status "Rank: $rank, Whitelisted: $whitelisted, Blacklisted: $blacklisted"
+    print_status "Rank: '$rank', Whitelisted: $whitelisted, Blacklisted: $blacklisted"
     print_status "Stored IP: $stored_ip, Current IP: $current_ip"
     print_status "Connected: ${connected_players[$player_name]:-NO}"
     print_status "IP Verified: $(is_ip_verified "$player_name" "$current_ip" && echo "YES" || echo "NO")"
