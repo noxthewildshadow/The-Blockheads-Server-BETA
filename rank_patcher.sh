@@ -62,16 +62,17 @@ declare -A super_remove_timers
 declare -A current_players_data
 declare -A previous_players_data
 
+# Nueva variable para cambios pendientes
+declare -A pending_rank_changes
+
 send_server_command() {
     local command="$1"
     
-    # Verificar que el comando no esté vacío
     if [ -z "$command" ]; then
         print_error "Cannot send empty command to server"
         return 1
     fi
     
-    # Verificar que la screen existe
     if ! screen -list | grep -q "$SCREEN_SERVER"; then
         print_error "Screen session not found: $SCREEN_SERVER"
         return 1
@@ -125,13 +126,13 @@ read_players_log() {
         [[ "$name" =~ ^# ]] && continue
         [[ -z "$name" ]] && continue
         
-        # Limpiar espacios
-        name=$(echo "$name" | xargs)
+        # Limpiar espacios y normalizar nombres
+        name=$(echo "$name" | xargs | tr '[:lower:]' '[:upper:]')
         ip=$(echo "$ip" | xargs)
         password=$(echo "$password" | xargs)
-        rank=$(echo "$rank" | xargs)
-        whitelisted=$(echo "$whitelisted" | xargs)
-        blacklisted=$(echo "$blacklisted" | xargs)
+        rank=$(echo "$rank" | xargs | tr '[:lower:]' '[:upper:]')
+        whitelisted=$(echo "$whitelisted" | xargs | tr '[:lower:]' '[:upper:]')
+        blacklisted=$(echo "$blacklisted" | xargs | tr '[:lower:]' '[:upper:]')
         
         # Valores por defecto
         [ -z "$name" ] && name="UNKNOWN"
@@ -163,14 +164,23 @@ update_players_log() {
         return 1
     fi
     
+    # Normalizar nombre
+    player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
+    
     read_players_log
     
     case "$field" in
         "ip") current_players_data["$player_name,ip"]="$new_value" ;;
         "password") current_players_data["$player_name,password"]="$new_value" ;;
-        "rank") current_players_data["$player_name,rank"]="$new_value" ;;
-        "whitelisted") current_players_data["$player_name,whitelisted"]="$new_value" ;;
-        "blacklisted") current_players_data["$player_name,blacklisted"]="$new_value" ;;
+        "rank") 
+            current_players_data["$player_name,rank"]=$(echo "$new_value" | tr '[:lower:]' '[:upper:]")
+            ;;
+        "whitelisted") 
+            current_players_data["$player_name,whitelisted"]=$(echo "$new_value" | tr '[:lower:]' '[:upper:]')
+            ;;
+        "blacklisted") 
+            current_players_data["$player_name,blacklisted"]=$(echo "$new_value" | tr '[:lower:]' '[:upper:]")
+            ;;
         *) print_error "Unknown field: $field"; return 1 ;;
     esac
     
@@ -201,6 +211,9 @@ add_new_player() {
         print_error "Invalid parameters for add_new_player"
         return 1
     fi
+    
+    # Normalizar nombre
+    player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
     
     read_players_log
     if [ -n "${current_players_data["$player_name,name"]}" ]; then
@@ -239,6 +252,9 @@ is_ip_verified() {
     local player_name="$1"
     local current_ip="$2"
     
+    # Normalizar nombre
+    player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
+    
     read_players_log
     local stored_ip="${current_players_data["$player_name,ip"]}"
     
@@ -249,9 +265,59 @@ is_ip_verified() {
     return 1
 }
 
-# Función mejorada para verificar y aplicar rangos cuando se detectan cambios
+# Función mejorada para aplicar rangos inmediatamente cuando sea posible
+apply_rank_commands() {
+    local player_name="$1" rank="$2"
+    
+    # Normalizar nombre y rango
+    player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
+    rank=$(echo "$rank" | tr '[:lower:]' '[:upper:]')
+    
+    print_status "Applying rank commands for $player_name: $rank"
+    
+    case "$rank" in
+        "ADMIN")
+            send_server_command "/admin $player_name"
+            send_server_command "/unmod $player_name"
+            remove_player_from_cloud_list "$player_name"
+            cancel_super_remove_timer "$player_name"
+            print_success "✓ ADMIN rank commands sent for $player_name"
+            ;;
+        "MOD")
+            send_server_command "/mod $player_name"
+            send_server_command "/unadmin $player_name"
+            remove_player_from_cloud_list "$player_name"
+            cancel_super_remove_timer "$player_name"
+            print_success "✓ MOD rank commands sent for $player_name"
+            ;;
+        "SUPER")
+            send_server_command "/unadmin $player_name"
+            send_server_command "/unmod $player_name"
+            add_player_to_cloud_list "$player_name"
+            cancel_super_remove_timer "$player_name"
+            print_success "✓ SUPER rank commands sent for $player_name"
+            ;;
+        "NONE")
+            send_server_command "/unadmin $player_name"
+            send_server_command "/unmod $player_name"
+            remove_player_from_cloud_list "$player_name"
+            cancel_super_remove_timer "$player_name"
+            print_success "✓ Rank removal commands sent for $player_name"
+            ;;
+        *)
+            print_warning "Unknown rank: $rank for $player_name"
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+# Función mejorada para verificar y aplicar rangos
 check_and_apply_player_ranks() {
     local player_name="$1"
+    
+    # Normalizar nombre
+    player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
     
     print_header "CHECKING AND APPLYING RANKS FOR: $player_name"
     
@@ -266,59 +332,31 @@ check_and_apply_player_ranks() {
     print_status "Rank: $rank, Whitelisted: $whitelisted, Blacklisted: $blacklisted"
     print_status "Stored IP: $stored_ip, Current IP: $current_ip"
     print_status "Connected: ${connected_players[$player_name]:-NO}"
+    print_status "IP Verified: $(is_ip_verified "$player_name" "$current_ip" && echo "YES" || echo "NO")"
     
     # Verificar si el jugador está conectado
     if [ -z "${connected_players[$player_name]}" ]; then
         print_warning "Player $player_name is not connected - cannot apply ranks"
+        # Guardar cambio pendiente para cuando se conecte
+        pending_rank_changes["$player_name"]=1
         return 1
     fi
     
     # Verificar si la IP está verificada
     if ! is_ip_verified "$player_name" "$current_ip"; then
         print_warning "IP not verified for $player_name - stored: $stored_ip, current: $current_ip"
+        # Guardar cambio pendiente para cuando se verifique la IP
+        pending_rank_changes["$player_name"]=1
         return 1
     fi
     
     print_success "Player $player_name is connected and IP verified - applying ranks"
     
     # Aplicar comandos de rango
-    case "$rank" in
-        "ADMIN")
-            print_status "Setting ADMIN rank for $player_name"
-            send_server_command "/admin $player_name"
-            send_server_command "/unmod $player_name"
-            remove_player_from_cloud_list "$player_name"
-            cancel_super_remove_timer "$player_name"
-            print_success "✓ ADMIN rank commands sent for $player_name"
-            ;;
-        "MOD")
-            print_status "Setting MOD rank for $player_name"
-            send_server_command "/mod $player_name"
-            send_server_command "/unadmin $player_name"
-            remove_player_from_cloud_list "$player_name"
-            cancel_super_remove_timer "$player_name"
-            print_success "✓ MOD rank commands sent for $player_name"
-            ;;
-        "SUPER")
-            print_status "Setting SUPER rank for $player_name"
-            add_player_to_cloud_list "$player_name"
-            send_server_command "/unadmin $player_name"
-            send_server_command "/unmod $player_name"
-            cancel_super_remove_timer "$player_name"
-            print_success "✓ SUPER rank commands sent for $player_name"
-            ;;
-        "NONE")
-            print_status "Removing all ranks from $player_name"
-            send_server_command "/unadmin $player_name"
-            send_server_command "/unmod $player_name"
-            remove_player_from_cloud_list "$player_name"
-            cancel_super_remove_timer "$player_name"
-            print_success "✓ Rank removal commands sent for $player_name"
-            ;;
-        *)
-            print_warning "Unknown rank: $rank for $player_name"
-            ;;
-    esac
+    if ! apply_rank_commands "$player_name" "$rank"; then
+        print_error "Failed to apply rank commands for $player_name"
+        return 1
+    fi
     
     # Aplicar comandos de whitelist/blacklist
     if [ "$whitelisted" = "YES" ]; then
@@ -351,8 +389,25 @@ check_and_apply_player_ranks() {
     
     # Sincronizar listas del servidor
     sync_server_lists
+    
+    # Limpiar cambio pendiente
+    unset pending_rank_changes["$player_name"]
+    
     print_success "✓ All rank commands applied for $player_name"
     return 0
+}
+
+# Nueva función para verificar cambios pendientes cuando un jugador se conecta
+check_pending_changes() {
+    local player_name="$1"
+    
+    # Normalizar nombre
+    player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
+    
+    if [ -n "${pending_rank_changes[$player_name]}" ]; then
+        print_status "Checking pending rank changes for $player_name"
+        check_and_apply_player_ranks "$player_name"
+    fi
 }
 
 start_password_timeout() {
@@ -529,6 +584,9 @@ handle_ip_change() {
 add_player_to_cloud_list() {
     local player_name="$1"
     
+    # Normalizar nombre
+    player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
+    
     if [ ! -f "$CLOUD_ADMIN_LIST" ]; then
         touch "$CLOUD_ADMIN_LIST"
     fi
@@ -544,6 +602,9 @@ add_player_to_cloud_list() {
 remove_player_from_cloud_list() {
     local player_name="$1"
     
+    # Normalizar nombre
+    player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
+    
     if [ -f "$CLOUD_ADMIN_LIST" ]; then
         # Remove player from cloud admin list (ignoring first line)
         temp_file=$(mktemp)
@@ -556,6 +617,9 @@ remove_player_from_cloud_list() {
 
 remove_player_from_all_lists() {
     local player_name="$1"
+    
+    # Normalizar nombre
+    player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
     
     # Remove from admin list
     if [ -f "$ADMIN_LIST" ]; then
@@ -774,44 +838,50 @@ monitor_console_log() {
             local player_ip="${BASH_REMATCH[2]}"
             local player_hash="${BASH_REMATCH[3]}"
             
+            # Normalizar nombre
+            player_name_upper=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
+            
             print_success "Player connected: $player_name ($player_ip) - Hash: $player_hash"
             
-            connected_players["$player_name"]=1
-            player_ip_map["$player_name"]="$player_ip"
+            connected_players["$player_name_upper"]=1
+            player_ip_map["$player_name_upper"]="$player_ip"
             
             # Cancel SUPER remove timer if player reconnects
-            cancel_super_remove_timer "$player_name"
+            cancel_super_remove_timer "$player_name_upper"
             
             read_players_log
-            if [ -z "${current_players_data["$player_name,name"]}" ]; then
+            if [ -z "${current_players_data["$player_name_upper,name"]}" ]; then
                 add_new_player "$player_name" "$player_ip"
                 
                 # Marcar IP como verificada para nuevo jugador
-                ip_verified["$player_name"]=1
-                password_pending["$player_name"]=1
-                start_password_timeout "$player_name"
-                send_password_reminder "$player_name"
+                ip_verified["$player_name_upper"]=1
+                password_pending["$player_name_upper"]=1
+                start_password_timeout "$player_name_upper"
+                send_password_reminder "$player_name_upper"
                 
                 # Aplicar rangos después de agregar nuevo jugador
-                check_and_apply_player_ranks "$player_name"
+                check_and_apply_player_ranks "$player_name_upper"
             else
-                local stored_ip="${current_players_data["$player_name,ip"]}"
-                local stored_password="${current_players_data["$player_name,password"]}"
-                local stored_rank="${current_players_data["$player_name,rank"]}"
+                local stored_ip="${current_players_data["$player_name_upper,ip"]}"
+                local stored_password="${current_players_data["$player_name_upper,password"]}"
+                local stored_rank="${current_players_data["$player_name_upper,rank"]}"
                 
                 # Verificar IP y aplicar rangos inmediatamente
-                if is_ip_verified "$player_name" "$player_ip"; then
+                if is_ip_verified "$player_name_upper" "$player_ip"; then
                     print_success "IP verified for $player_name - stored: $stored_ip, current: $player_ip"
-                    ip_verified["$player_name"]=1
+                    ip_verified["$player_name_upper"]=1
                     
                     # Aplicar rangos SIEMPRE cuando el jugador se reconecta y la IP está verificada
                     print_status "Applying ranks for reconnected player: $player_name (Rank: $stored_rank)"
-                    check_and_apply_player_ranks "$player_name"
+                    check_and_apply_player_ranks "$player_name_upper"
+                    
+                    # Verificar cambios pendientes
+                    check_pending_changes "$player_name_upper"
                 else
                     print_warning "IP change detected for $player_name: $stored_ip -> $player_ip"
-                    ip_verified["$player_name"]=0
-                    ip_verify_pending["$player_name"]=1
-                    start_ip_verify_timeout "$player_name" "$player_ip"
+                    ip_verified["$player_name_upper"]=0
+                    ip_verify_pending["$player_name_upper"]=1
+                    start_ip_verify_timeout "$player_name_upper" "$player_ip"
                     send_ip_warning "$player_name"
                     
                     # Remover rangos temporalmente hasta verificación
@@ -825,8 +895,8 @@ monitor_console_log() {
                 fi
                 
                 if [ "$stored_password" = "NONE" ]; then
-                    password_pending["$player_name"]=1
-                    start_password_timeout "$player_name"
+                    password_pending["$player_name_upper"]=1
+                    start_password_timeout "$player_name_upper"
                     send_password_reminder "$player_name"
                 fi
             fi
@@ -838,27 +908,28 @@ monitor_console_log() {
         # Detectar desconexión de jugador
         if [[ "$line" =~ Player\ Disconnected\ ([a-zA-Z0-9_]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
+            local player_name_upper=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
             
             print_warning "Player disconnected: $player_name"
             
             # Remove player from all lists immediately
-            remove_player_from_all_lists "$player_name"
+            remove_player_from_all_lists "$player_name_upper"
             
-            unset connected_players["$player_name"]
-            unset player_ip_map["$player_name"]
-            unset ip_verified["$player_name"]
+            unset connected_players["$player_name_upper"]
+            unset player_ip_map["$player_name_upper"]
+            unset ip_verified["$player_name_upper"]
             
-            if [ -n "${password_timers[$player_name]}" ]; then
-                kill "${password_timers[$player_name]}" 2>/dev/null
-                unset password_timers["$player_name"]
+            if [ -n "${password_timers[$player_name_upper]}" ]; then
+                kill "${password_timers[$player_name_upper]}" 2>/dev/null
+                unset password_timers["$player_name_upper"]
             fi
-            if [ -n "${ip_verify_timers[$player_name]}" ]; then
-                kill "${ip_verify_timers[$player_name]}" 2>/dev/null
-                unset ip_verify_timers["$player_name"]
+            if [ -n "${ip_verify_timers[$player_name_upper]}" ]; then
+                kill "${ip_verify_timers[$player_name_upper]}" 2>/dev/null
+                unset ip_verify_timers["$player_name_upper"]
             fi
             
-            unset password_pending["$player_name"]
-            unset ip_verify_pending["$player_name"]
+            unset password_pending["$player_name_upper"]
+            unset ip_verify_pending["$player_name_upper"]
             
             sync_server_lists
             continue
@@ -868,6 +939,7 @@ monitor_console_log() {
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local message="${BASH_REMATCH[2]}"
+            local player_name_upper=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
             
             [ "$player_name" = "SERVER" ] && continue
             
@@ -885,7 +957,7 @@ monitor_console_log() {
                 "!ip_change "*)
                     if [[ "$message" =~ !ip_change\ ([^ ]+) ]]; then
                         local password="${BASH_REMATCH[1]}"
-                        local current_ip="${player_ip_map[$player_name]}"
+                        local current_ip="${player_ip_map[$player_name_upper]}"
                         print_status "IP change command received from $player_name"
                         handle_ip_change "$player_name" "$password" "$current_ip"
                     else
