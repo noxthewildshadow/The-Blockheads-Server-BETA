@@ -273,7 +273,10 @@ apply_rank_commands() {
     player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
     rank=$(echo "$rank" | tr '[:lower:]' '[:upper:]')
     
-    print_status "Applying rank commands for $player_name: $rank"
+    print_status "Applying rank commands for $player_name: '$rank'"
+    
+    # DEBUG: Mostrar el valor real del rank
+    print_status "DEBUG: Rank value is '$rank', length: ${#rank}"
     
     # Verificar que el rank no esté vacío
     if [ -z "$rank" ] || [ "$rank" = "NONE" ]; then
@@ -288,6 +291,7 @@ apply_rank_commands() {
     
     case "$rank" in
         "ADMIN")
+            print_status "Setting ADMIN permissions for $player_name"
             send_server_command "/admin $player_name"
             send_server_command "/unmod $player_name"
             remove_player_from_cloud_list "$player_name"
@@ -295,6 +299,7 @@ apply_rank_commands() {
             print_success "✓ ADMIN rank commands sent for $player_name"
             ;;
         "MOD")
+            print_status "Setting MOD permissions for $player_name"
             send_server_command "/mod $player_name"
             send_server_command "/unadmin $player_name"
             remove_player_from_cloud_list "$player_name"
@@ -302,6 +307,7 @@ apply_rank_commands() {
             print_success "✓ MOD rank commands sent for $player_name"
             ;;
         "SUPER")
+            print_status "Setting SUPER permissions for $player_name"
             send_server_command "/unadmin $player_name"
             send_server_command "/unmod $player_name"
             add_player_to_cloud_list "$player_name"
@@ -338,6 +344,9 @@ check_and_apply_player_ranks() {
     print_status "Connected: ${connected_players[$player_name]:-NO}"
     print_status "IP Verified: $(is_ip_verified "$player_name" "$current_ip" && echo "YES" || echo "NO")"
     
+    # DEBUG: Verificar que el rank se está leyendo correctamente
+    print_status "DEBUG: Raw rank value from players.log: '${current_players_data["$player_name,rank"]}'"
+    
     # Verificar si el jugador está conectado
     if [ -z "${connected_players[$player_name]}" ]; then
         print_warning "Player $player_name is not connected - cannot apply ranks"
@@ -357,6 +366,7 @@ check_and_apply_player_ranks() {
     print_success "Player $player_name is connected and IP verified - applying ranks"
     
     # Aplicar comandos de rango
+    print_status "DEBUG: About to call apply_rank_commands with rank: '$rank'"
     if ! apply_rank_commands "$player_name" "$rank"; then
         print_error "Failed to apply rank commands for $player_name"
         return 1
