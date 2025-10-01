@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # rank_patcher.sh - Complete player management system for The Blockheads server
-# Compatible with GNUstep environment and Linux Ubuntu 22.04 server
+# Monitors console.log and manages players.log as central authority for ranks, passwords, and IP verification
 
 # Enhanced Colors for output
 RED='\033[0;31m'
