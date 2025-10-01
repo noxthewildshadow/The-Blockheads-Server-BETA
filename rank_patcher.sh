@@ -65,6 +65,7 @@ declare -A previous_players_data
 # Nueva variable para cambios pendientes
 declare -A pending_rank_changes
 
+# FUNCIÓN CORREGIDA PARA ENVIAR COMANDOS AL SERVIDOR
 send_server_command() {
     local command="$1"
     
@@ -73,18 +74,33 @@ send_server_command() {
         return 1
     fi
     
+    # Verificar que la screen existe
     if ! screen -list | grep -q "$SCREEN_SERVER"; then
         print_error "Screen session not found: $SCREEN_SERVER"
+        print_error "Available screens:"
+        screen -list
         return 1
     fi
     
+    # Enviar el comando a la screen
+    print_status "Sending to server '$SCREEN_SERVER': $command"
+    
+    # Método 1: Usar screen -X stuff
     if screen -S "$SCREEN_SERVER" -p 0 -X stuff "$command$(printf \\r)"; then
-        print_success "Command sent to server: $command"
+        print_success "Command successfully sent to server: $command"
         echo "$(date '+%Y-%m-%d %H:%M:%S') - COMMAND SENT: $command" >> "/tmp/rank_patcher_commands.log"
         return 0
     else
-        print_error "Failed to send command: $command"
-        return 1
+        print_error "Failed to send command using screen -X stuff: $command"
+        # Método alternativo: usar echo y pipe
+        if echo "$command" | screen -S "$SCREEN_SERVER" -p 0 -X stuff "$(cat)"; then
+            print_success "Command sent using alternative method: $command"
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - COMMAND SENT (ALT): $command" >> "/tmp/rank_patcher_commands.log"
+            return 0
+        else
+            print_error "All methods failed for command: $command"
+            return 1
+        fi
     fi
 }
 
@@ -265,7 +281,7 @@ is_ip_verified() {
     return 1
 }
 
-# Función CORREGIDA para aplicar rangos
+# FUNCIÓN SIMPLIFICADA PARA APLICAR RANGOS
 apply_rank_commands() {
     local player_name="$1"
     
@@ -285,7 +301,6 @@ apply_rank_commands() {
         send_server_command "/unmod $player_name"
         remove_player_from_cloud_list "$player_name"
         cancel_super_remove_timer "$player_name"
-        print_success "✓ Rank removal commands sent for $player_name"
         return 0
     fi
     
@@ -296,7 +311,6 @@ apply_rank_commands() {
             send_server_command "/unmod $player_name"
             remove_player_from_cloud_list "$player_name"
             cancel_super_remove_timer "$player_name"
-            print_success "✓ ADMIN rank commands sent for $player_name"
             ;;
         "MOD")
             print_status "Setting MOD permissions for $player_name"
@@ -304,7 +318,6 @@ apply_rank_commands() {
             send_server_command "/unadmin $player_name"
             remove_player_from_cloud_list "$player_name"
             cancel_super_remove_timer "$player_name"
-            print_success "✓ MOD rank commands sent for $player_name"
             ;;
         "SUPER")
             print_status "Setting SUPER permissions for $player_name"
@@ -312,7 +325,6 @@ apply_rank_commands() {
             send_server_command "/unmod $player_name"
             add_player_to_cloud_list "$player_name"
             cancel_super_remove_timer "$player_name"
-            print_success "✓ SUPER rank commands sent for $player_name"
             ;;
         *)
             print_warning "Unknown rank: '$rank' for $player_name"
@@ -322,7 +334,7 @@ apply_rank_commands() {
     return 0
 }
 
-# Función SIMPLIFICADA para verificar y aplicar rangos
+# FUNCIÓN PRINCIPAL PARA APLICAR RANGOS
 check_and_apply_player_ranks() {
     local player_name="$1"
     
@@ -360,7 +372,7 @@ check_and_apply_player_ranks() {
     
     print_success "Player $player_name is connected and IP verified - applying ranks"
     
-    # Aplicar comandos de rango (llamada simplificada)
+    # Aplicar comandos de rango
     if ! apply_rank_commands "$player_name"; then
         print_error "Failed to apply rank commands for $player_name"
         return 1
@@ -412,6 +424,43 @@ check_pending_changes() {
     fi
 }
 
+# TEST MEJORADO DE COMUNICACIÓN CON EL SERVIDOR
+test_server_communication() {
+    print_header "TESTING SERVER COMMUNICATION"
+    
+    # Test 1: Verificar screen session
+    print_status "Test 1: Checking screen session..."
+    if screen -list | grep -q "$SCREEN_SERVER"; then
+        print_success "✓ Screen session found: $SCREEN_SERVER"
+    else
+        print_error "✗ Screen session NOT found: $SCREEN_SERVER"
+        print_error "Available screens:"
+        screen -list
+        return 1
+    fi
+    
+    # Test 2: Enviar comando de prueba simple
+    print_status "Test 2: Sending test command to server..."
+    if send_server_command "echo 'RankPatcher test command received'"; then
+        print_success "✓ Test command sent successfully"
+    else
+        print_error "✗ Test command failed"
+        return 1
+    fi
+    
+    # Test 3: Verificar que podemos enviar comandos reales
+    print_status "Test 3: Testing real command..."
+    if send_server_command "/help"; then
+        print_success "✓ Real command test passed"
+    else
+        print_warning "⚠ Real command test failed, but continuing..."
+    fi
+    
+    print_success "✅ Server communication tests completed!"
+    return 0
+}
+
+# Las demás funciones se mantienen igual...
 start_password_timeout() {
     local player_name="$1"
     
@@ -791,31 +840,6 @@ monitor_players_log_changes() {
         # Polling cada 0.1 segundos
         sleep 0.1
     done
-}
-
-test_server_communication() {
-    print_header "TESTING SERVER COMMUNICATION"
-    
-    # Test 1: Verificar screen session
-    print_status "Test 1: Checking screen session..."
-    if screen -list | grep -q "$SCREEN_SERVER"; then
-        print_success "✓ Screen session found: $SCREEN_SERVER"
-    else
-        print_error "✗ Screen session NOT found: $SCREEN_SERVER"
-        return 1
-    fi
-    
-    # Test 2: Enviar comando de prueba
-    print_status "Test 2: Sending test command..."
-    if send_server_command "echo 'RankPatcher test command received'"; then
-        print_success "✓ Test command sent successfully"
-    else
-        print_error "✗ Test command failed"
-        return 1
-    fi
-    
-    print_success "✅ All server communication tests passed!"
-    return 0
 }
 
 monitor_console_log() {
