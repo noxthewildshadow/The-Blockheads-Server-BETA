@@ -114,20 +114,141 @@ get_timestamp() {
     date '+%Y-%m-%d %H:%M:%S'
 }
 
+# Emergency repair function for players.log
+emergency_repair_players_log() {
+    if [ ! -f "$PLAYERS_LOG" ]; then
+        return 0
+    fi
+    
+    print_header "EMERGENCY PLAYERS.LOG REPAIR"
+    
+    # Backup original
+    local backup_file="${PLAYERS_LOG}.backup.$(date +%Y%m%d_%H%M%S)"
+    cp "$PLAYERS_LOG" "$backup_file"
+    print_success "Backup created: $backup_file"
+    
+    # Parse and fix the specific format shown in the problem
+    local temp_file="${PLAYERS_LOG}.fixed"
+    rm -f "$temp_file" 2>/dev/null
+    
+    # Process each line and convert to correct format
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Remove leading numbers and spaces
+        line=$(echo "$line" | sed 's/^[0-9]*//' | sed 's/^[[:space:]]*//')
+        
+        # Replace multiple spaces with single pipe and convert to uppercase
+        line=$(echo "$line" | sed 's/[[:space:]]*|[[:space:]]*/|/g' | tr '[:lower:]' '[:upper:]')
+        
+        # Count pipes to validate format
+        local pipe_count=$(echo "$line" | tr -cd '|' | wc -c)
+        
+        if [ $pipe_count -eq 5 ]; then
+            echo "$line" >> "$temp_file"
+        else
+            print_warning "Skipping unrepairable line: $line"
+        fi
+    done < "$PLAYERS_LOG"
+    
+    # Replace original if we have valid content
+    if [ -f "$temp_file" ] && [ -s "$temp_file" ]; then
+        mv "$temp_file" "$PLAYERS_LOG"
+        print_success "Emergency repair completed successfully"
+    else
+        print_error "Emergency repair failed - restoring backup"
+        mv "$backup_file" "$PLAYERS_LOG"
+    fi
+}
+
+# Function to clean and format existing players.log
+clean_players_log() {
+    if [ ! -f "$PLAYERS_LOG" ]; then
+        return 0
+    fi
+    
+    print_step "Cleaning and formatting players.log..."
+    
+    local temp_file="${PLAYERS_LOG}.clean"
+    declare -A processed_players
+    
+    # Read and process each line
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Clean the line and split by pipe
+        line=$(echo "$line" | tr -d ' ' | tr '[:lower:]' '[:upper:]')
+        
+        # Count pipes to validate format
+        local pipe_count=$(echo "$line" | tr -cd '|' | wc -c)
+        
+        if [ $pipe_count -eq 5 ]; then
+            # Correct format, process normally
+            local player_name=$(echo "$line" | cut -d'|' -f1)
+            local ip=$(echo "$line" | cut -d'|' -f2)
+            local password=$(echo "$line" | cut -d'|' -f3)
+            local rank=$(echo "$line" | cut -d'|' -f4)
+            local whitelisted=$(echo "$line" | cut -d'|' -f5)
+            local blacklisted=$(echo "$line" | cut -d'|' -f6)
+            
+            # Validate and correct fields
+            [ -z "$ip" ] && ip="UNKNOWN"
+            [ -z "$password" ] && password="NONE"
+            [ -z "$rank" ] && rank="NONE"
+            [ -z "$whitelisted" ] && whitelisted="NO"
+            [ -z "$blacklisted" ] && blacklisted="NO"
+            
+            # Only keep the first record of each player
+            if [ -z "${processed_players[$player_name]}" ]; then
+                echo "${player_name}|${ip}|${password}|${rank}|${whitelisted}|${blacklisted}" >> "$temp_file"
+                processed_players["$player_name"]=1
+            fi
+        else
+            print_warning "Skipping invalid line in players.log: $line"
+        fi
+    done < "$PLAYERS_LOG"
+    
+    # Replace original file if lines were processed
+    if [ -f "$temp_file" ]; then
+        mv "$temp_file" "$PLAYERS_LOG"
+        print_success "players.log cleaned and formatted successfully"
+    fi
+}
+
 # Function to initialize players.log
 initialize_players_log() {
     if [ ! -f "$PLAYERS_LOG" ]; then
         print_step "Creating players.log file..."
-        # Ensure directory exists
         mkdir -p "$(dirname "$PLAYERS_LOG")"
         touch "$PLAYERS_LOG"
         print_success "Created players.log: $PLAYERS_LOG"
+    else
+        print_step "Players.log exists - cleaning and formatting..."
+        clean_players_log
+    fi
+    
+    # Verify file format
+    if [ -s "$PLAYERS_LOG" ]; then
+        print_step "Verifying players.log format..."
+        local invalid_lines=0
+        while IFS= read -r line || [ -n "$line" ]; do
+            local pipe_count=$(echo "$line" | tr -cd '|' | wc -c)
+            if [ $pipe_count -ne 5 ]; then
+                ((invalid_lines++))
+                print_warning "Invalid format in line: $line"
+            fi
+        done < "$PLAYERS_LOG"
+        
+        if [ $invalid_lines -gt 0 ]; then
+            print_error "Found $invalid_lines lines with invalid format in players.log"
+            print_step "Attempting to repair..."
+            clean_players_log
+        else
+            print_success "players.log format is correct"
+        fi
     fi
 }
 
 # Function to find player in players.log
 find_player() {
     local player_name="$1"
+    player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
     grep -i "^$player_name|" "$PLAYERS_LOG" 2>/dev/null | head -1
 }
 
@@ -136,10 +257,14 @@ get_player_field() {
     local player_name="$1"
     local field_num="$2"
     local record=$(find_player "$player_name")
-    [ -n "$record" ] && echo "$record" | cut -d'|' -f"$field_num" | tr -d ' '
+    if [ -n "$record" ]; then
+        echo "$record" | cut -d'|' -f"$field_num" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+    else
+        echo ""
+    fi
 }
 
-# Function to update player record
+# Function to update player record - CORRECTED FORMAT
 update_player() {
     local player_name="$1"
     local ip="$2"
@@ -149,22 +274,21 @@ update_player() {
     local blacklisted="$6"
     
     local existing_record=$(find_player "$player_name")
-    local old_rank=$(get_player_field "$player_name" 4)
-    local old_blacklisted=$(get_player_field "$player_name" 6)
     
     # Create temp file
     local temp_file="${PLAYERS_LOG}.tmp"
     [ -f "$PLAYERS_LOG" ] && cp "$PLAYERS_LOG" "$temp_file" 2>/dev/null || touch "$temp_file"
     
     if [ -n "$existing_record" ]; then
-        # Update existing record
+        # Update existing record - KEEP CURRENT VALUES IF NEW ONES NOT PROVIDED
+        local current_name=$(get_player_field "$player_name" 1)
         local current_ip=$(get_player_field "$player_name" 2)
         local current_password=$(get_player_field "$player_name" 3)
         local current_rank=$(get_player_field "$player_name" 4)
         local current_whitelisted=$(get_player_field "$player_name" 5)
         local current_blacklisted=$(get_player_field "$player_name" 6)
         
-        # Only update fields that are provided
+        # Only update provided fields (not empty)
         [ -z "$ip" ] && ip="$current_ip"
         [ -z "$password" ] && password="$current_password"
         [ -z "$rank" ] && rank="$current_rank"
@@ -174,7 +298,7 @@ update_player() {
         # Remove old record
         grep -v -i "^$player_name|" "$temp_file" > "${temp_file}.2" 2>/dev/null && mv "${temp_file}.2" "$temp_file"
     else
-        # Set defaults for new players
+        # Set defaults for new players - EXACT FORMAT
         [ -z "$ip" ] && ip="UNKNOWN"
         [ -z "$password" ] && password="NONE"
         [ -z "$rank" ] && rank="NONE"
@@ -182,23 +306,32 @@ update_player() {
         [ -z "$blacklisted" ] && blacklisted="NO"
     fi
     
-    # Convert to uppercase as required - EXACT FORMAT
-    player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
-    ip=$(echo "$ip" | tr '[:lower:]' '[:upper:]')
-    password=$(echo "$password" | tr '[:lower:]' '[:upper:]')
-    rank=$(echo "$rank" | tr '[:lower:]' '[:upper:]')
-    whitelisted=$(echo "$whitelisted" | tr '[:lower:]' '[:upper:]')
-    blacklisted=$(echo "$blacklisted" | tr '[:lower:]' '[:upper:]')
+    # CONVERT TO UPPERCASE AND CLEAN - EXACT FORMAT REQUIRED
+    player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
+    ip=$(echo "$ip" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
+    password=$(echo "$password" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
+    rank=$(echo "$rank" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
+    whitelisted=$(echo "$whitelisted" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
+    blacklisted=$(echo "$blacklisted" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
     
-    # Remove existing record and add updated one
-    grep -v -i "^$player_name|" "$temp_file" > "${temp_file}.2" 2>/dev/null && mv "${temp_file}.2" "$temp_file"
+    # Format validations
+    [ "$ip" = "UNKNOWN" ] || [ -z "$ip" ] && ip="UNKNOWN"
+    [ "$password" = "NONE" ] || [ -z "$password" ] && password="NONE"
+    [ "$rank" = "NONE" ] || [ -z "$rank" ] && rank="NONE"
+    [ "$whitelisted" = "NO" ] || [ -z "$whitelisted" ] && whitelisted="NO"
+    [ "$blacklisted" = "NO" ] || [ -z "$blacklisted" ] && blacklisted="NO"
+    
+    # Write new record in exact format
     echo "${player_name}|${ip}|${password}|${rank}|${whitelisted}|${blacklisted}" >> "$temp_file"
     
     # Replace original file
     mv "$temp_file" "$PLAYERS_LOG" 2>/dev/null
-    print_success "Updated player record: $player_name"
+    print_success "Player record updated: $player_name"
     
-    # Track changes for handling
+    # Track changes for later handling
+    local old_rank=$(get_player_field "$player_name" 4)
+    local old_blacklisted=$(get_player_field "$player_name" 6)
+    
     if [ -n "$old_rank" ] && [ "$old_rank" != "$rank" ]; then
         PLAYER_RANK_CHANGES["$player_name"]="$old_rank|$rank"
     fi
@@ -658,6 +791,9 @@ monitor_console_log() {
     print_status "Screen session: $SCREEN_SERVER"
     print_status "GNUstep path: $HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/"
     
+    # Call emergency repair at startup
+    emergency_repair_players_log
+    
     # Wait for log file to be created if it doesn't exist
     if [ ! -f "$LOG_FILE" ]; then
         print_warning "Log file not found, waiting for it to be created..."
@@ -698,13 +834,11 @@ monitor_console_log() {
             # Check if player exists in players.log
             local player_record=$(find_player "$player_name")
             if [ -z "$player_record" ]; then
-                # New player - add to players.log with UNKNOWN IP initially
-                update_player "$player_name" "UNKNOWN" "NONE" "NONE" "NO" "NO"
-                # Now update with actual IP
-                update_player "$player_name" "$player_ip" "" "" "" ""
+                # New player - add to players.log with actual IP
+                update_player "$player_name" "$player_ip" "NONE" "NONE" "NO" "NO"
                 print_success "Added new player: $player_name"
             else
-                # Update IP if different from stored IP
+                # Player exists - update IP if different
                 local stored_ip=$(get_player_field "$player_name" 2)
                 if [ "$stored_ip" != "$player_ip" ] && [ "$stored_ip" != "UNKNOWN" ]; then
                     PLAYER_IPS["$player_name"]="$player_ip"
