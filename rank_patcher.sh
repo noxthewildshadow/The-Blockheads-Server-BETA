@@ -65,15 +65,12 @@ WHITELIST="$WORLD_DIR/whitelist.txt"
 BLACKLIST="$WORLD_DIR/blacklist.txt"
 CLOUD_ADMIN_LIST="$BASE_DIR/cloudWideOwnedAdminlist.txt"
 
-# Temporary files
-TEMP_PLAYERS="/tmp/players_temp_$$.log"
-TEMP_CONSOLE="/tmp/console_temp_$$.log"
-
 # Track connected players
 declare -A CONNECTED_PLAYERS
 declare -A PLAYER_IPS
 declare -A PASSWORD_TIMERS
 declare -A IP_VERIFICATION_TIMERS
+declare -A PLAYER_RANKS
 
 # Function to send command to server screen
 send_server_command() {
@@ -124,8 +121,8 @@ find_player() {
         return 1
     fi
     
-    # Case insensitive search
-    grep -i "^$player_name|" "$players_file" | head -1
+    # Case insensitive search and convert to uppercase for consistency
+    grep -i "^$player_name|" "$players_file" | head -1 | tr '[:lower:]' '[:upper:]'
 }
 
 # Function to update player record
@@ -139,22 +136,29 @@ update_player() {
         return 1
     fi
     
+    # Convert player name to uppercase for consistency
+    player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
+    value=$(echo "$value" | tr '[:lower:]' '[:upper:]')
+    
     # Create temp file
     local temp_file="/tmp/players_update_$$.log"
     
     # Update the specific field for the player
     awk -F'|' -v player="$player_name" -v field="$field" -v value="$value" '
     BEGIN { OFS="|"; IGNORECASE=1 }
-    $1 == player {
-        if (field == "name") $1 = value
-        if (field == "ip") $2 = value
-        if (field == "password") $3 = value
-        if (field == "rank") $4 = value
-        if (field == "whitelisted") $5 = value
-        if (field == "blacklisted") $6 = value
-    }
-    { print }
-    ' "$PLAYERS_LOG" > "$temp_file"
+    {
+        # Trim spaces from all fields
+        for(i=1; i<=NF; i++) gsub(/^[ \t]+|[ \t]+$/, "", $i)
+        
+        if ($1 == player) {
+            if (field == "ip") $2 = value
+            else if (field == "password") $3 = value
+            else if (field == "rank") $4 = value
+            else if (field == "whitelisted") $5 = value
+            else if (field == "blacklisted") $6 = value
+        }
+        print
+    }' "$PLAYERS_LOG" > "$temp_file"
     
     # Replace original file
     mv "$temp_file" "$PLAYERS_LOG"
@@ -168,6 +172,7 @@ add_new_player() {
     
     # Convert to uppercase for consistency
     player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
+    ip_address=$(echo "$ip_address" | tr '[:lower:]' '[:upper:]')
     
     if find_player "$player_name"; then
         print_warning "Player $player_name already exists in players.log"
@@ -179,56 +184,66 @@ add_new_player() {
     print_success "Added new player: $entry"
 }
 
+# Function to get player field value
+get_player_field() {
+    local player_name="$1"
+    local field="$2"
+    
+    local player_record=$(find_player "$player_name")
+    if [ -z "$player_record" ]; then
+        return 1
+    fi
+    
+    case "$field" in
+        "name") echo "$player_record" | cut -d'|' -f1 | xargs ;;
+        "ip") echo "$player_record" | cut -d'|' -f2 | xargs ;;
+        "password") echo "$player_record" | cut -d'|' -f3 | xargs ;;
+        "rank") echo "$player_record" | cut -d'|' -f4 | xargs ;;
+        "whitelisted") echo "$player_record" | cut -d'|' -f5 | xargs ;;
+        "blacklisted") echo "$player_record" | cut -d'|' -f6 | xargs ;;
+        *) return 1 ;;
+    esac
+}
+
 # Function to sync lists from players.log
 sync_lists_from_players() {
     print_step "Synchronizing lists from players.log..."
     
-    # Clear existing lists (but preserve first line)
-    if [ -f "$ADMIN_LIST" ]; then
-        local admin_first_line=$(head -1 "$ADMIN_LIST")
-        echo "$admin_first_line" > "$ADMIN_LIST"
-    fi
-    
-    if [ -f "$MOD_LIST" ]; then
-        local mod_first_line=$(head -1 "$MOD_LIST")
-        echo "$mod_first_line" > "$MOD_LIST"
-    fi
-    
-    if [ -f "$WHITELIST" ]; then
-        local whitelist_first_line=$(head -1 "$WHITELIST")
-        echo "$whitelist_first_line" > "$WHITELIST"
-    fi
-    
-    if [ -f "$BLACKLIST" ]; then
-        local blacklist_first_line=$(head -1 "$BLACKLIST")
-        echo "$blacklist_first_line" > "$BLACKLIST"
-    fi
+    # Clear existing lists but preserve first line
+    for list_file in "$ADMIN_LIST" "$MOD_LIST" "$WHITELIST" "$BLACKLIST"; do
+        if [ -f "$list_file" ]; then
+            local first_line=$(head -1 "$list_file")
+            echo "$first_line" > "$list_file"
+        fi
+    done
     
     # Read players.log and update lists for connected and verified players
     while IFS='|' read -r name ip password rank whitelisted blacklisted; do
-        # Remove leading/trailing spaces
-        name=$(echo "$name" | xargs)
-        ip=$(echo "$ip" | xargs)
-        password=$(echo "$password" | xargs)
-        rank=$(echo "$rank" | xargs)
-        whitelisted=$(echo "$whitelisted" | xargs)
-        blacklisted=$(echo "$blacklisted" | xargs)
+        # Remove leading/trailing spaces and convert to uppercase
+        name=$(echo "$name" | xargs | tr '[:lower:]' '[:upper:]')
+        ip=$(echo "$ip" | xargs | tr '[:lower:]' '[:upper:]')
+        password=$(echo "$password" | xargs | tr '[:lower:]' '[:upper:]')
+        rank=$(echo "$rank" | xargs | tr '[:lower:]' '[:upper:]')
+        whitelisted=$(echo "$whitelisted" | xargs | tr '[:lower:]' '[:upper:]')
+        blacklisted=$(echo "$blacklisted" | xargs | tr '[:lower:]' '[:upper:]')
+        
+        # Skip if blacklisted
+        if [ "$blacklisted" == "YES" ]; then
+            echo "$name" >> "$BLACKLIST"
+            continue
+        fi
         
         # Check if player is connected and IP verified
         if [[ "${CONNECTED_PLAYERS[$name]}" == "true" && "$ip" != "UNKNOWN" && "$ip" == "${PLAYER_IPS[$name]}" ]]; then
             # Add to appropriate lists based on rank and status
-            if [ "$rank" == "ADMIN" ] && [ "$blacklisted" != "YES" ]; then
+            if [ "$rank" == "ADMIN" ]; then
                 echo "$name" >> "$ADMIN_LIST"
-            elif [ "$rank" == "MOD" ] && [ "$blacklisted" != "YES" ]; then
+            elif [ "$rank" == "MOD" ]; then
                 echo "$name" >> "$MOD_LIST"
             fi
             
             if [ "$whitelisted" == "YES" ]; then
                 echo "$name" >> "$WHITELIST"
-            fi
-            
-            if [ "$blacklisted" == "YES" ]; then
-                echo "$name" >> "$BLACKLIST"
             fi
         fi
     done < "$PLAYERS_LOG"
@@ -236,13 +251,20 @@ sync_lists_from_players() {
     print_success "Lists synchronized from players.log"
 }
 
-# Function to handle rank changes
+# Function to handle rank changes with all specified rules
 handle_rank_change() {
     local player_name="$1"
     local old_rank="$2"
     local new_rank="$3"
     
     print_step "Processing rank change for $player_name: $old_rank -> $new_rank"
+    
+    # Convert to uppercase for consistency
+    old_rank=$(echo "$old_rank" | tr '[:lower:]' '[:upper:]')
+    new_rank=$(echo "$new_rank" | tr '[:lower:]' '[:upper:]')
+    
+    # Store current rank for tracking
+    PLAYER_RANKS["$player_name"]="$new_rank"
     
     case "$new_rank" in
         "ADMIN")
@@ -267,9 +289,16 @@ handle_rank_change() {
             fi
             
             # Add player to cloud admin list (skip first line)
-            if ! tail -n +2 "$CLOUD_ADMIN_LIST" | grep -q "^$player_name$"; then
-                echo "$player_name" >> "$CLOUD_ADMIN_LIST"
-                print_success "Added $player_name to cloudWideOwnedAdminlist.txt"
+            if [ -f "$CLOUD_ADMIN_LIST" ]; then
+                local temp_file="/tmp/cloud_admin_$$.txt"
+                head -1 "$CLOUD_ADMIN_LIST" > "$temp_file"
+                if ! tail -n +2 "$CLOUD_ADMIN_LIST" | grep -q -i "^$player_name$"; then
+                    echo "$player_name" >> "$temp_file"
+                    mv "$temp_file" "$CLOUD_ADMIN_LIST"
+                    print_success "Added $player_name to cloudWideOwnedAdminlist.txt"
+                else
+                    rm -f "$temp_file"
+                fi
             fi
             ;;
         "NONE")
@@ -286,7 +315,7 @@ handle_rank_change() {
                 if [ -f "$CLOUD_ADMIN_LIST" ]; then
                     local temp_file="/tmp/cloud_admin_$$.txt"
                     head -1 "$CLOUD_ADMIN_LIST" > "$temp_file"
-                    grep -v "^$player_name$" <(tail -n +2 "$CLOUD_ADMIN_LIST") >> "$temp_file"
+                    grep -v -i "^$player_name$" <(tail -n +2 "$CLOUD_ADMIN_LIST") >> "$temp_file"
                     mv "$temp_file" "$CLOUD_ADMIN_LIST"
                     print_success "Removed $player_name from cloudWideOwnedAdminlist.txt"
                     
@@ -304,16 +333,24 @@ handle_rank_change() {
     sync_lists_from_players
 }
 
-# Function to handle blacklist changes
+# Function to handle blacklist changes with all specified rules
 handle_blacklist_change() {
     local player_name="$1"
     local blacklisted="$2"
-    local player_ip="$3"
+    
+    print_step "Processing blacklist change for $player_name: $blacklisted"
+    
+    # Convert to uppercase
+    blacklisted=$(echo "$blacklisted" | tr '[:lower:]' '[:upper:]')
+    player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
+    
+    local player_ip="${PLAYER_IPS[$player_name]}"
+    local current_rank=$(get_player_field "$player_name" "rank")
     
     if [ "$blacklisted" == "YES" ]; then
-        print_step "Blacklisting player: $player_name"
+        print_step "Blacklisting player: $player_name (IP: $player_ip, Rank: $current_rank)"
         
-        # Remove ranks first
+        # Remove ranks first in specified order
         cooldown
         send_server_command "/unmod $player_name"
         cooldown
@@ -322,26 +359,28 @@ handle_blacklist_change() {
         # Ban player and IP
         cooldown
         send_server_command "/ban $player_name"
-        cooldown
-        send_server_command "/ban $player_ip"
+        if [ -n "$player_ip" ] && [ "$player_ip" != "UNKNOWN" ]; then
+            cooldown
+            send_server_command "/ban $player_ip"
+        fi
         
-        # Remove from cloud admin list if SUPER
-        local player_record=$(find_player "$player_name")
-        local current_rank=$(echo "$player_record" | cut -d'|' -f4 | xargs)
-        
+        # Special handling for SUPER rank
         if [ "$current_rank" == "SUPER" ]; then
             cooldown
             send_server_command "/stop"
             
+            # Remove from cloud admin list
             if [ -f "$CLOUD_ADMIN_LIST" ]; then
                 local temp_file="/tmp/cloud_admin_$$.txt"
                 head -1 "$CLOUD_ADMIN_LIST" > "$temp_file"
-                grep -v "^$player_name$" <(tail -n +2 "$CLOUD_ADMIN_LIST") >> "$temp_file"
+                grep -v -i "^$player_name$" <(tail -n +2 "$CLOUD_ADMIN_LIST") >> "$temp_file"
                 mv "$temp_file" "$CLOUD_ADMIN_LIST"
+                print_success "Removed $player_name from cloudWideOwnedAdminlist.txt"
                 
-                # Delete file if empty
+                # Delete file if no more SUPER admins
                 if [ $(wc -l < "$CLOUD_ADMIN_LIST") -le 1 ]; then
                     rm -f "$CLOUD_ADMIN_LIST"
+                    print_success "Removed empty cloudWideOwnedAdminlist.txt"
                 fi
             fi
         fi
@@ -349,6 +388,7 @@ handle_blacklist_change() {
         print_success "Blacklisted $player_name and banned IP $player_ip"
     fi
     
+    # Sync lists after blacklist change
     sync_lists_from_players
 }
 
@@ -357,6 +397,16 @@ monitor_players_log() {
     print_header "STARTING PLAYERS.LOG MONITOR"
     
     local last_checksum=""
+    declare -A last_player_states
+    
+    # Initialize last states
+    if [ -f "$PLAYERS_LOG" ]; then
+        while IFS='|' read -r name ip password rank whitelisted blacklisted; do
+            name=$(echo "$name" | xargs | tr '[:lower:]' '[:upper:]')
+            last_player_states["${name}_rank"]="$rank"
+            last_player_states["${name}_blacklisted"]="$blacklisted"
+        done < "$PLAYERS_LOG"
+    fi
     
     while true; do
         if [ -f "$PLAYERS_LOG" ]; then
@@ -365,25 +415,39 @@ monitor_players_log() {
             if [ "$current_checksum" != "$last_checksum" ]; then
                 print_progress "Detected change in players.log"
                 
-                # Process changes
-                process_players_log_changes
+                # Process each player for changes
+                while IFS='|' read -r name ip password rank whitelisted blacklisted; do
+                    name=$(echo "$name" | xargs | tr '[:lower:]' '[:upper:]')
+                    rank=$(echo "$rank" | xargs | tr '[:lower:]' '[:upper:]')
+                    blacklisted=$(echo "$blacklisted" | xargs | tr '[:lower:]' '[:upper:]')
+                    
+                    # Check rank changes
+                    local last_rank="${last_player_states[${name}_rank]}"
+                    if [ "$last_rank" != "$rank" ]; then
+                        handle_rank_change "$name" "$last_rank" "$rank"
+                        last_player_states["${name}_rank"]="$rank"
+                    fi
+                    
+                    # Check blacklist changes
+                    local last_blacklisted="${last_player_states[${name}_blacklisted]}"
+                    if [ "$last_blacklisted" != "$blacklisted" ]; then
+                        handle_blacklist_change "$name" "$blacklisted"
+                        last_player_states["${name}_blacklisted"]="$blacklisted"
+                    fi
+                    
+                done < "$PLAYERS_LOG"
                 
                 last_checksum="$current_checksum"
             fi
+        else
+            print_warning "players.log not found, waiting for creation..."
         fi
         
         sleep 1
     done
 }
 
-# Function to process changes in players.log
-process_players_log_changes() {
-    # This would compare with previous state and detect specific changes
-    # For now, we'll just sync the lists
-    sync_lists_from_players
-}
-
-# Function to handle !psw command
+# Function to handle !psw command with all security measures
 handle_password_set() {
     local player_name="$1"
     local password="$2"
@@ -391,15 +455,15 @@ handle_password_set() {
     
     print_step "Processing password set for $player_name"
     
-    # Clear chat immediately
+    # Clear chat immediately for security
     clear_chat
     
-    # Wait cooldown
+    # Wait cooldown before sending messages
     cooldown
     
     # Validate passwords match
     if [ "$password" != "$confirm_password" ]; then
-        send_server_command "Password confirmation does not match. Please try again."
+        send_server_command "Password confirmation does not match. Please try !psw PASSWORD CONFIRM_PASSWORD again."
         return 1
     fi
     
@@ -411,16 +475,17 @@ handle_password_set() {
     fi
     
     # Update player record
-    update_player "$player_name" "password" "$password"
-    
-    # Send success message
-    send_server_command "Password set successfully for $player_name"
-    print_success "Password set for $player_name"
-    
-    return 0
+    if update_player "$player_name" "password" "$password"; then
+        send_server_command "Password set successfully for $player_name"
+        print_success "Password set for $player_name"
+        return 0
+    else
+        send_server_command "Error setting password for $player_name"
+        return 1
+    fi
 }
 
-# Function to handle !change_psw command
+# Function to handle !change_psw command with all security measures
 handle_password_change() {
     local player_name="$1"
     local old_password="$2"
@@ -428,16 +493,14 @@ handle_password_change() {
     
     print_step "Processing password change for $player_name"
     
-    # Clear chat immediately
+    # Clear chat immediately for security
     clear_chat
     
-    # Wait cooldown
+    # Wait cooldown before sending messages
     cooldown
     
     # Verify old password
-    local player_record=$(find_player "$player_name")
-    local current_password=$(echo "$player_record" | cut -d'|' -f3 | xargs)
-    
+    local current_password=$(get_player_field "$player_name" "password")
     if [ "$current_password" != "$old_password" ]; then
         send_server_command "Current password is incorrect."
         return 1
@@ -451,56 +514,71 @@ handle_password_change() {
     fi
     
     # Update password
-    update_player "$player_name" "password" "$new_password"
-    
-    send_server_command "Password changed successfully for $player_name"
-    print_success "Password changed for $player_name"
-    
-    return 0
+    if update_player "$player_name" "password" "$new_password"; then
+        send_server_command "Password changed successfully for $player_name"
+        print_success "Password changed for $player_name"
+        return 0
+    else
+        send_server_command "Error changing password for $player_name"
+        return 1
+    fi
 }
 
-# Function to handle !ip_change command
+# Function to handle !ip_change command with all security measures
 handle_ip_change() {
     local player_name="$1"
     local current_password="$2"
-    local new_ip="$3"
     
     print_step "Processing IP change for $player_name"
     
-    # Clear chat immediately
+    # Clear chat immediately for security
     clear_chat
     
-    # Wait cooldown
+    # Wait cooldown before sending messages
     cooldown
     
     # Verify password
-    local player_record=$(find_player "$player_name")
-    local stored_password=$(echo "$player_record" | cut -d'|' -f3 | xargs)
-    
+    local stored_password=$(get_player_field "$player_name" "password")
     if [ "$stored_password" != "$current_password" ]; then
         send_server_command "Password is incorrect. IP change failed."
         return 1
     fi
     
+    # Get current IP from connected players
+    local new_ip="${PLAYER_IPS[$player_name]}"
+    if [ -z "$new_ip" ] || [ "$new_ip" == "UNKNOWN" ]; then
+        send_server_command "Could not determine your current IP address."
+        return 1
+    fi
+    
     # Update IP
-    update_player "$player_name" "ip" "$new_ip"
-    
-    send_server_command "IP address updated successfully for $player_name"
-    print_success "IP updated for $player_name to $new_ip"
-    
-    return 0
+    if update_player "$player_name" "ip" "$new_ip"; then
+        send_server_command "IP address updated successfully for $player_name. New IP: $new_ip"
+        print_success "IP updated for $player_name to $new_ip"
+        
+        # Clear IP verification timer
+        unset IP_VERIFICATION_TIMERS["$player_name"]
+        
+        # Sync lists now that IP is verified
+        sync_lists_from_players
+        
+        return 0
+    else
+        send_server_command "Error updating IP address for $player_name"
+        return 1
+    fi
 }
 
-# Function to monitor console.log for commands
+# Function to monitor console.log for commands and connections
 monitor_console_log() {
     print_header "STARTING CONSOLE.LOG MONITOR"
     
     # Create console.log if it doesn't exist
     touch "$CONSOLE_LOG"
     
-    # Monitor the console log for player commands
+    # Monitor the console log for player commands and connections
     tail -n 0 -F "$CONSOLE_LOG" | while read line; do
-        # Detect player connections
+        # Detect player connections with IP
         if [[ "$line" =~ Player\ Connected\ ([a-zA-Z0-9_]+)\ \|\ ([0-9.]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
@@ -525,12 +603,15 @@ monitor_console_log() {
     done
 }
 
-# Function to handle player connection
+# Function to handle player connection with all verification logic
 handle_player_connect() {
     local player_name="$1"
     local player_ip="$2"
     
     print_success "Player connected: $player_name ($player_ip)"
+    
+    # Convert to uppercase for consistency
+    player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
     
     # Track connected player
     CONNECTED_PLAYERS["$player_name"]="true"
@@ -538,38 +619,48 @@ handle_player_connect() {
     
     # Check if player exists in players.log
     if ! find_player "$player_name"; then
-        # Add new player with UNKNOWN IP initially
-        add_new_player "$player_name" "UNKNOWN"
+        # Add new player with current IP
+        add_new_player "$player_name" "$player_ip"
+    else
+        # Update IP if it was UNKNOWN
+        local stored_ip=$(get_player_field "$player_name" "ip")
+        if [ "$stored_ip" == "UNKNOWN" ]; then
+            update_player "$player_name" "ip" "$player_ip"
+            stored_ip="$player_ip"
+        fi
     fi
     
     # Get player record
-    local player_record=$(find_player "$player_name")
-    local stored_ip=$(echo "$player_record" | cut -d'|' -f2 | xargs)
-    local password=$(echo "$player_record" | cut -d'|' -f3 | xargs)
-    local rank=$(echo "$player_record" | cut -d'|' -f4 | xargs)
+    local stored_ip=$(get_player_field "$player_name" "ip")
+    local password=$(get_player_field "$player_name" "password")
+    local rank=$(get_player_field "$player_name" "rank")
+    local blacklisted=$(get_player_field "$player_name" "blacklisted")
     
-    # Handle IP verification
-    if [ "$stored_ip" == "UNKNOWN" ]; then
-        # First time connection, set IP
-        update_player "$player_name" "ip" "$player_ip"
-        stored_ip="$player_ip"
+    # Handle blacklisted players immediately
+    if [ "$blacklisted" == "YES" ]; then
+        print_warning "Blacklisted player $player_name attempted to connect"
+        cooldown
+        send_server_command "/kick $player_name"
+        cooldown
+        send_server_command "/ban $player_ip"
+        return
     fi
     
-    # Check if IP matches
-    if [ "$stored_ip" != "$player_ip" ]; then
+    # Check if IP matches stored IP
+    if [ "$stored_ip" != "$player_ip" ] && [ "$stored_ip" != "UNKNOWN" ]; then
         handle_ip_mismatch "$player_name" "$stored_ip" "$player_ip"
     else
-        # IP verified, sync lists
+        # IP verified or first connection, sync lists
         sync_lists_from_players
     fi
     
-    # Handle password requirement
+    # Handle password requirement for NONE rank players
     if [ "$password" == "NONE" ] && [ "$rank" == "NONE" ]; then
         handle_password_requirement "$player_name"
     fi
 }
 
-# Function to handle IP mismatch
+# Function to handle IP mismatch with timer logic
 handle_ip_mismatch() {
     local player_name="$1"
     local stored_ip="$2"
@@ -577,8 +668,10 @@ handle_ip_mismatch() {
     
     print_warning "IP mismatch for $player_name: stored=$stored_ip, current=$current_ip"
     
-    # Notify player
-    send_server_command "$player_name, your IP has changed. You have 25 seconds to verify with !ip_change CURRENT_PASSWORD"
+    # Notify player immediately
+    send_server_command "$player_name, your IP has changed from $stored_ip to $current_ip"
+    cooldown
+    send_server_command "$player_name, you have 25 seconds to verify with: !ip_change YOUR_CURRENT_PASSWORD"
     
     # Set verification timer
     IP_VERIFICATION_TIMERS["$player_name"]=$(date +%s)
@@ -587,21 +680,25 @@ handle_ip_mismatch() {
     (
         sleep 25
         if [[ "${IP_VERIFICATION_TIMERS[$player_name]}" != "" ]]; then
-            print_warning "IP verification timeout for $player_name"
+            print_warning "IP verification timeout for $player_name - kicking and temp banning"
             send_server_command "/kick $player_name"
+            cooldown
             send_server_command "/ban $current_ip"
             
-            # Unban after 30 seconds
+            # Unban after 30 seconds automatically
             (
                 sleep 30
                 send_server_command "/unban $current_ip"
-                print_success "Auto-unbanned IP $current_ip"
+                print_success "Auto-unbanned IP $current_ip after 30 seconds"
             ) &
+            
+            # Clear the timer
+            unset IP_VERIFICATION_TIMERS["$player_name"]
         fi
     ) &
 }
 
-# Function to handle password requirement
+# Function to handle password requirement with timer logic
 handle_password_requirement() {
     local player_name="$1"
     
@@ -611,7 +708,9 @@ handle_password_requirement() {
     (
         sleep 5
         if [[ "${CONNECTED_PLAYERS[$player_name]}" == "true" ]]; then
-            send_server_command "$player_name, please set your password using !psw NEW_PASSWORD CONFIRM_PASSWORD within 60 seconds"
+            send_server_command "$player_name, please set your password using: !psw NEW_PASSWORD CONFIRM_PASSWORD"
+            cooldown
+            send_server_command "$player_name, you have 60 seconds to set a password or will be kicked"
         fi
     ) &
     
@@ -622,13 +721,16 @@ handle_password_requirement() {
     (
         sleep 60
         if [[ "${PASSWORD_TIMERS[$player_name]}" != "" ]]; then
-            local player_record=$(find_player "$player_name")
-            local password=$(echo "$player_record" | cut -d'|' -f3 | xargs)
+            local current_password=$(get_player_field "$player_name" "password")
             
-            if [ "$password" == "NONE" ]; then
-                print_warning "Password not set for $player_name within timeout, kicking"
+            if [ "$current_password" == "NONE" ]; then
+                print_warning "Password not set for $player_name within 60 seconds, kicking"
                 send_server_command "/kick $player_name"
+                send_server_command "Player $player_name was kicked for not setting a password"
             fi
+            
+            # Clear the timer
+            unset PASSWORD_TIMERS["$player_name"]
         fi
     ) &
 }
@@ -637,9 +739,12 @@ handle_password_requirement() {
 handle_player_disconnect() {
     local player_name="$1"
     
+    # Convert to uppercase for consistency
+    player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
+    
     print_warning "Player disconnected: $player_name"
     
-    # Remove from connected players
+    # Remove from connected players and clear timers
     unset CONNECTED_PLAYERS["$player_name"]
     unset PLAYER_IPS["$player_name"]
     unset PASSWORD_TIMERS["$player_name"]
@@ -656,7 +761,10 @@ process_player_message() {
     
     print_progress "Chat: $player_name: $message"
     
-    # Handle !psw command
+    # Convert player name to uppercase for consistency
+    player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
+    
+    # Handle !psw command with confirmation
     if [[ "$message" =~ ^!psw\ ([a-zA-Z0-9_@#%&*+-=]+)\ ([a-zA-Z0-9_@#%&*+-=]+)$ ]]; then
         local password="${BASH_REMATCH[1]}"
         local confirm_password="${BASH_REMATCH[2]}"
@@ -667,11 +775,11 @@ process_player_message() {
         unset PASSWORD_TIMERS["$player_name"]
     fi
     
-    # Handle !psw without confirmation (still clear chat)
+    # Handle !psw without confirmation (still clear chat for security)
     if [[ "$message" =~ ^!psw\ ([a-zA-Z0-9_@#%&*+-=]+)$ ]]; then
         clear_chat
         cooldown
-        send_server_command "Usage: !psw PASSWORD CONFIRM_PASSWORD"
+        send_server_command "Usage: !psw PASSWORD CONFIRM_PASSWORD - both passwords must match"
     fi
     
     # Handle !change_psw command
@@ -685,16 +793,15 @@ process_player_message() {
     # Handle !ip_change command
     if [[ "$message" =~ ^!ip_change\ ([a-zA-Z0-9_@#%&*+-=]+)$ ]]; then
         local current_password="${BASH_REMATCH[1]}"
-        local current_ip="${PLAYER_IPS[$player_name]}"
         
-        handle_ip_change "$player_name" "$current_password" "$current_ip"
+        handle_ip_change "$player_name" "$current_password"
         
         # Clear IP verification timer
         unset IP_VERIFICATION_TIMERS["$player_name"]
     fi
 }
 
-# Function to initialize players.log
+# Function to initialize players.log and required files
 initialize_players_log() {
     print_header "INITIALIZING PLAYERS.LOG SYSTEM"
     
@@ -714,14 +821,24 @@ initialize_players_log() {
         print_success "players.log already exists: $PLAYERS_LOG"
     fi
     
-    # Initialize other required files
+    # Initialize other required files with first line
     for list_file in "$ADMIN_LIST" "$MOD_LIST" "$WHITELIST" "$BLACKLIST"; do
         if [ ! -f "$list_file" ]; then
             print_step "Creating $(basename "$list_file")..."
-            echo "# $(basename "$list_file" | sed 's/\.txt//' | tr '[:lower:]' '[:upper:]') List" > "$list_file"
+            local base_name=$(basename "$list_file" .txt)
+            echo "# ${base_name^^} List - Usernames in this file are automatically managed" > "$list_file"
             print_success "Created $list_file"
+        else
+            # Ensure first line exists
+            if [ ! -s "$list_file" ]; then
+                local base_name=$(basename "$list_file" .txt)
+                echo "# ${base_name^^} List - Usernames in this file are automatically managed" > "$list_file"
+            fi
         fi
     done
+    
+    # Ensure cloud admin list directory exists
+    mkdir -p "$(dirname "$CLOUD_ADMIN_LIST")"
     
     print_success "Player management system initialized"
 }
@@ -775,7 +892,6 @@ main() {
 cleanup() {
     print_header "CLEANING UP RANK PATCHER"
     kill $(jobs -p) 2>/dev/null
-    rm -f "$TEMP_PLAYERS" "$TEMP_CONSOLE"
     print_success "Cleanup completed"
     exit 0
 }
