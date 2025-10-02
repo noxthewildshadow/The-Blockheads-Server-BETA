@@ -63,42 +63,18 @@ is_port_in_use() {
     lsof -Pi ":$1" -sTCP:LISTEN -t >/dev/null 2>&1
 }
 
-# Function to get world ID from world name
-get_world_id() {
-    local world_name="$1"
-    local saves_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
-    
-    if [ ! -d "$saves_dir" ]; then
-        return 1
-    fi
-    
-    # Look for directory that contains the world name in its info
-    for dir in "$saves_dir"/*; do
-        if [ -d "$dir" ] && [ -f "$dir/world.info" ]; then
-            local stored_name=$(grep -i "name" "$dir/world.info" 2>/dev/null | cut -d'=' -f2 | tr -d ' ' | tr -d '"' | tr '[:upper:]' '[:lower:]')
-            local search_name=$(echo "$world_name" | tr '[:upper:]' '[:lower:]')
-            if [ "$stored_name" == "$search_name" ]; then
-                basename "$dir"
-                return 0
-            fi
-        fi
-    done
-    
-    return 1
-}
-
 # Function to check if world exists
 check_world_exists() {
     local world_id="$1"
     local saves_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
     
-    [ -d "$saves_dir/$world_id" ] || {
+    if [ ! -d "$saves_dir/$world_id" ]; then
         print_error "World '$world_id' does not exist in: $saves_dir/"
         echo ""
         print_warning "To create a world: ${GREEN}./blockheads_server171 -n${NC}"
         print_warning "After creating the world, press ${YELLOW}CTRL+C${NC} to exit"
         return 1
-    }
+    fi
     
     return 0
 }
@@ -109,15 +85,23 @@ free_port() {
     print_warning "Freeing port $port..."
     
     # Kill processes using the port
-    local pids=$(lsof -ti ":$port")
-    [ -n "$pids" ] && kill -9 $pids 2>/dev/null
+    local pids
+    pids=$(lsof -ti ":$port")
+    if [ -n "$pids" ]; then
+        kill -9 $pids 2>/dev/null
+    fi
     
     # Kill screen sessions for this port
     local screen_server="blockheads_server_$port"
     local screen_patcher="blockheads_patcher_$port"
     
-    screen_session_exists "$screen_server" && screen -S "$screen_server" -X quit 2>/dev/null
-    screen_session_exists "$screen_patcher" && screen -S "$screen_patcher" -X quit 2>/dev/null
+    if screen_session_exists "$screen_server"; then
+        screen -S "$screen_server" -X quit 2>/dev/null
+    fi
+    
+    if screen_session_exists "$screen_patcher"; then
+        screen -S "$screen_patcher" -X quit 2>/dev/null
+    fi
     
     sleep 2
     
@@ -133,43 +117,35 @@ free_port() {
 
 # Function to start server with rank patcher
 start_server() {
-    local world_name="$1"
+    local world_id="$1"
     local port="${2:-$DEFAULT_PORT}"
     
     local SCREEN_SERVER="blockheads_server_$port"
     local SCREEN_PATCHER="blockheads_patcher_$port"
     
-    [ ! -f "$SERVER_BINARY" ] && {
+    if [ ! -f "$SERVER_BINARY" ]; then
         print_error "Server binary not found: $SERVER_BINARY"
-        return 1
-    }
-    
-    # Get world ID from world name
-    print_step "Looking up world ID for: $world_name"
-    local world_id=$(get_world_id "$world_name")
-    
-    if [ -z "$world_id" ]; then
-        print_error "Could not find world with name: $world_name"
-        print_status "Available worlds:"
-        list_worlds
         return 1
     fi
     
-    print_success "Found world ID: $world_id"
-    
     check_world_exists "$world_id" || return 1
     
-    is_port_in_use "$port" && {
+    if is_port_in_use "$port"; then
         print_warning "Port $port is in use."
         if ! free_port "$port"; then
             print_error "Could not free port $port"
             return 1
         fi
-    }
+    fi
     
     # Clean up previous sessions
-    screen_session_exists "$SCREEN_SERVER" && screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
-    screen_session_exists "$SCREEN_PATCHER" && screen -S "$SCREEN_PATCHER" -X quit 2>/dev/null
+    if screen_session_exists "$SCREEN_SERVER"; then
+        screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
+    fi
+    
+    if screen_session_exists "$SCREEN_PATCHER"; then
+        screen -S "$SCREEN_PATCHER" -X quit 2>/dev/null
+    fi
     
     sleep 1
     
@@ -177,17 +153,17 @@ start_server() {
     local log_file="$log_dir/console.log"
     mkdir -p "$log_dir"
     
-    print_header "STARTING SERVER - WORLD: $world_name ($world_id), PORT: $port"
+    print_header "STARTING SERVER - WORLD ID: $world_id, PORT: $port"
     
     # Save world ID for this port
     echo "$world_id" > "world_id_$port.txt"
     
     # Create startup script for server
-    cat > /tmp/start_server_$$.sh << EOF
+    cat > "/tmp/start_server_$$.sh" << EOF
 #!/bin/bash
 cd '$PWD'
 echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting The Blockheads Server..."
-echo "[\$(date '+%Y-%m-%d %H:%M:%S')] World: $world_name ($world_id)"
+echo "[\$(date '+%Y-%m-%d %H:%M:%S')] World ID: $world_id"
 echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Port: $port"
 
 while true; do
@@ -206,21 +182,21 @@ while true; do
 done
 EOF
     
-    chmod +x /tmp/start_server_$$.sh
+    chmod +x "/tmp/start_server_$$.sh"
     
     # Start server in screen session
-    screen -dmS "$SCREEN_SERVER" /tmp/start_server_$$.sh
-    (sleep 10; rm -f /tmp/start_server_$$.sh) &
+    screen -dmS "$SCREEN_SERVER" "/tmp/start_server_$$.sh"
+    (sleep 10; rm -f "/tmp/start_server_$$.sh") &
     
     print_step "Waiting for server to start..."
     
     local wait_time=0
     while [ ! -f "$log_file" ] && [ $wait_time -lt 15 ]; do
         sleep 1
-        ((wait_time++))
+        wait_time=$((wait_time + 1))
     done
     
-    [ ! -f "$log_file" ] && {
+    if [ ! -f "$log_file" ]; then
         print_error "Could not create log file. Server may not have started."
         return 1
     fi
@@ -262,7 +238,7 @@ EOF
     fi
     
     # Create startup script for rank patcher
-    cat > /tmp/start_patcher_$$.sh << EOF
+    cat > "/tmp/start_patcher_$$.sh" << EOF
 #!/bin/bash
 cd '$PWD'
 echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting Rank Patcher..."
@@ -272,22 +248,27 @@ echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Port: $port"
 ./rank_patcher.sh '$world_id' '$port'
 EOF
     
-    chmod +x /tmp/start_patcher_$$.sh
+    chmod +x "/tmp/start_patcher_$$.sh"
     
     # Start rank patcher in screen session
-    screen -dmS "$SCREEN_PATCHER" /tmp/start_patcher_$$.sh
-    (sleep 10; rm -f /tmp/start_patcher_$$.sh) &
+    screen -dmS "$SCREEN_PATCHER" "/tmp/start_patcher_$$.sh"
+    (sleep 10; rm -f "/tmp/start_patcher_$$.sh") &
     
     # Verify both processes started
     local server_started=0
     local patcher_started=0
     
-    screen_session_exists "$SCREEN_SERVER" && server_started=1
-    screen_session_exists "$SCREEN_PATCHER" && patcher_started=1
+    if screen_session_exists "$SCREEN_SERVER"; then
+        server_started=1
+    fi
+    
+    if screen_session_exists "$SCREEN_PATCHER"; then
+        patcher_started=1
+    fi
     
     if [ "$server_started" -eq 1 ] && [ "$patcher_started" -eq 1 ]; then
         print_header "SERVER AND RANK PATCHER STARTED SUCCESSFULLY!"
-        print_success "World: $world_name ($world_id)"
+        print_success "World ID: $world_id"
         print_success "Port: $port"
         echo ""
         print_status "To view server console: ${CYAN}screen -r $SCREEN_SERVER${NC}"
@@ -297,8 +278,7 @@ EOF
         print_header "SERVER MANAGEMENT SYSTEM IS NOW ACTIVE"
         
         # Save the configuration for later reference
-        echo "world_name=$world_name" > "server_config_$port.conf"
-        echo "world_id=$world_id" >> "server_config_$port.conf"
+        echo "world_id=$world_id" > "server_config_$port.conf"
         echo "port=$port" >> "server_config_$port.conf"
         echo "start_time=$(date '+%Y-%m-%d %H:%M:%S')" >> "server_config_$port.conf"
         
@@ -390,10 +370,14 @@ list_worlds() {
     local found_worlds=0
     for dir in "$saves_dir"/*; do
         if [ -d "$dir" ] && [ -f "$dir/world.info" ]; then
-            local world_id=$(basename "$dir")
-            local world_name=$(grep -i "name" "$dir/world.info" 2>/dev/null | cut -d'=' -f2 | tr -d ' ' | tr -d '"')
-            local world_size=$(grep -i "size" "$dir/world.info" 2>/dev/null | cut -d'=' -f2 | tr -d ' ' | tr -d '"')
-            local expert_mode=$(grep -i "expert" "$dir/world.info" 2>/dev/null | cut -d'=' -f2 | tr -d ' ' | tr -d '"')
+            local world_id
+            world_id=$(basename "$dir")
+            local world_name
+            world_name=$(grep -i "name" "$dir/world.info" 2>/dev/null | cut -d'=' -f2 | tr -d ' ' | tr -d '"')
+            local world_size
+            world_size=$(grep -i "size" "$dir/world.info" 2>/dev/null | cut -d'=' -f2 | tr -d ' ' | tr -d '"')
+            local expert_mode
+            expert_mode=$(grep -i "expert" "$dir/world.info" 2>/dev/null | cut -d'=' -f2 | tr -d ' ' | tr -d '"')
             
             if [ -n "$world_name" ]; then
                 print_status "World: $world_name"
@@ -416,8 +400,10 @@ list_worlds() {
 list_servers() {
     print_header "LIST OF RUNNING SERVERS AND RANK PATCHERS"
     
-    local servers=$(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | sed 's/blockheads_server_/ - Port: /')
-    local patchers=$(screen -list | grep "blockheads_patcher_" | awk -F. '{print $1}' | sed 's/blockheads_patcher_/ - Port: /')
+    local servers
+    servers=$(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | sed 's/blockheads_server_/ - Port: /')
+    local patchers
+    patchers=$(screen -list | grep "blockheads_patcher_" | awk -F. '{print $1}' | sed 's/blockheads_patcher_/ - Port: /')
     
     if [ -z "$servers" ] && [ -z "$patchers" ]; then
         print_warning "No servers or rank patchers are currently running."
@@ -448,7 +434,8 @@ show_status() {
     if [ -z "$port" ]; then
         print_header "THE BLOCKHEADS SERVER STATUS - ALL SERVERS"
         
-        local servers=$(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | sed 's/blockheads_server_//')
+        local servers
+        servers=$(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | sed 's/blockheads_server_//')
         
         if [ -z "$servers" ]; then
             print_error "No servers are currently running."
@@ -469,17 +456,15 @@ show_status() {
                 fi
                 
                 if [ -f "world_id_$server_port.txt" ]; then
-                    local WORLD_ID=$(cat "world_id_$server_port.txt" 2>/dev/null)
+                    local WORLD_ID
+                    WORLD_ID=$(cat "world_id_$server_port.txt" 2>/dev/null)
                     print_status "World ID: ${CYAN}$WORLD_ID${NC}"
                 fi
                 
                 if [ -f "server_config_$server_port.conf" ]; then
-                    local WORLD_NAME=$(grep "world_name" "server_config_$server_port.conf" 2>/dev/null | cut -d'=' -f2)
-                    local START_TIME=$(grep "start_time" "server_config_$server_port.conf" 2>/dev/null | cut -d'=' -f2)
+                    local START_TIME
+                    START_TIME=$(grep "start_time" "server_config_$server_port.conf" 2>/dev/null | cut -d'=' -f2)
                     
-                    if [ -n "$WORLD_NAME" ]; then
-                        print_status "World Name: ${GREEN}$WORLD_NAME${NC}"
-                    fi
                     if [ -n "$START_TIME" ]; then
                         print_status "Start Time: ${YELLOW}$START_TIME${NC}"
                     fi
@@ -512,19 +497,17 @@ show_status() {
         fi
         
         if [ -f "world_id_$port.txt" ]; then
-            local WORLD_ID=$(cat "world_id_$port.txt" 2>/dev/null)
+            local WORLD_ID
+            WORLD_ID=$(cat "world_id_$port.txt" 2>/dev/null)
             print_status "World ID: ${CYAN}$WORLD_ID${NC}"
         else
             print_warning "World ID: Not configured"
         fi
         
         if [ -f "server_config_$port.conf" ]; then
-            local WORLD_NAME=$(grep "world_name" "server_config_$port.conf" 2>/dev/null | cut -d'=' -f2)
-            local START_TIME=$(grep "start_time" "server_config_$port.conf" 2>/dev/null | cut -d'=' -f2)
+            local START_TIME
+            START_TIME=$(grep "start_time" "server_config_$port.conf" 2>/dev/null | cut -d'=' -f2)
             
-            if [ -n "$WORLD_NAME" ]; then
-                print_status "World Name: ${GREEN}$WORLD_NAME${NC}"
-            fi
             if [ -n "$START_TIME" ]; then
                 print_status "Start Time: ${YELLOW}$START_TIME${NC}"
             fi
@@ -548,7 +531,7 @@ show_usage() {
     print_status "Usage: $0 [command]"
     echo ""
     print_status "Available commands:"
-    echo -e " ${GREEN}start${NC} [WORLD_NAME] [PORT]    - Start server with rank patcher"
+    echo -e " ${GREEN}start${NC} <WORLD_ID> [PORT]    - Start server with rank patcher"
     echo -e " ${RED}stop${NC} [PORT]                   - Stop server and rank patcher (specific port or all)"
     echo -e " ${CYAN}status${NC} [PORT]                - Show server and rank patcher status"
     echo -e " ${YELLOW}list${NC}                       - List all running servers and rank patchers"
@@ -556,8 +539,8 @@ show_usage() {
     echo -e " ${YELLOW}help${NC}                       - Show this help"
     echo ""
     print_status "Examples:"
-    echo -e " ${GREEN}$0 start \"PLOT_HEAVEN\" 12154${NC}"
-    echo -e " ${GREEN}$0 start \"My World\"${NC}       (uses default port 12153)"
+    echo -e " ${GREEN}$0 start 6f4edaf5a311a2bbc96ed0cd5b45736a 12154${NC}"
+    echo -e " ${GREEN}$0 start 6f4edaf5a311a2bbc96ed0cd5b45736a${NC}   (uses default port 12153)"
     echo -e " ${RED}$0 stop${NC}                      (stops all servers and rank patchers)"
     echo -e " ${RED}$0 stop 12154${NC}               (stops server and rank patcher on port 12154)"
     echo -e " ${CYAN}$0 status${NC}                   (shows status of all servers)"
@@ -576,7 +559,11 @@ show_usage() {
 # Main execution
 case "$1" in
     start)
-        [ -z "$2" ] && print_error "You must specify a WORLD_NAME" && show_usage && exit 1
+        if [ -z "$2" ]; then
+            print_error "You must specify a WORLD_ID"
+            show_usage
+            exit 1
+        fi
         start_server "$2" "$3"
         ;;
     stop)
