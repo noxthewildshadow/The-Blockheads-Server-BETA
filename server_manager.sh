@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # server_manager.sh - The Blockheads Server Management Script
-# 100% verified against all instructions - 30x reviewed
+# Fixed version with improved server startup detection
 
 # Color codes for output
 RED='\033[0;31m'
@@ -54,7 +54,7 @@ free_port() {
         print_status "Closed screen session: $screen_name"
     fi
     
-    sleep 2
+    sleep 3
     if ! is_port_in_use "$port"; then
         print_success "Port $port freed successfully"
         return 0
@@ -87,7 +87,7 @@ start_rank_patcher() {
     local patcher_pid=$!
     
     # Wait a bit and check if it's running
-    sleep 3
+    sleep 5
     if ps -p $patcher_pid > /dev/null 2>&1; then
         print_success "Rank patcher started (PID: $patcher_pid)"
         echo "$patcher_pid" > rank_patcher.pid
@@ -142,6 +142,59 @@ check_world_exists() {
     return 0
 }
 
+# Function to check server startup status
+check_server_startup() {
+    local world_id="$1"
+    local port="$2"
+    local screen_name="$3"
+    
+    local world_dir="$SERVER_HOME/saves/$world_id"
+    local console_log="$world_dir/console.log"
+    
+    print_status "Checking server startup status..."
+    
+    # Check 1: Screen session exists
+    if ! screen_session_exists "$screen_name"; then
+        print_error "Screen session not found: $screen_name"
+        return 1
+    fi
+    print_success "✓ Screen session active"
+    
+    # Check 2: Port is in use
+    if ! is_port_in_use "$port"; then
+        print_error "Port $port not in use"
+        return 1
+    fi
+    print_success "✓ Port $port active"
+    
+    # Check 3: Console log exists and has content
+    local log_attempts=0
+    while [ ! -f "$console_log" ] && [ $log_attempts -lt 30 ]; do
+        sleep 2
+        ((log_attempts++))
+    done
+    
+    if [ ! -f "$console_log" ]; then
+        print_error "Console log not created: $console_log"
+        return 1
+    fi
+    print_success "✓ Console log created"
+    
+    # Check 4: Server startup messages in log
+    local startup_attempts=0
+    while [ $startup_attempts -lt 30 ]; do
+        if grep -q "World load complete\|Server started\|Ready for connections\|using seed:\|save delay:" "$console_log"; then
+            print_success "✓ Server startup detected in logs"
+            return 0
+        fi
+        sleep 2
+        ((startup_attempts++))
+    done
+    
+    print_error "Server startup not detected in logs within 60 seconds"
+    return 1
+}
+
 # Function to start server
 start_server() {
     local world_id="$1"
@@ -176,13 +229,17 @@ start_server() {
     # Kill existing screen session
     if screen_session_exists "$screen_name"; then
         screen -S "$screen_name" -X quit 2>/dev/null
-        sleep 1
+        sleep 2
     fi
     
     print_header "STARTING THE BLOCKHEADS SERVER"
     print_status "World: $world_id"
     print_status "Port: $port"
     print_status "Screen: $screen_name"
+    
+    # Create world directory if it doesn't exist
+    local world_dir="$SERVER_HOME/saves/$world_id"
+    mkdir -p "$world_dir"
     
     # Create startup script
     local startup_script=$(mktemp)
@@ -194,18 +251,27 @@ echo "THE BLOCKHEADS SERVER"
 echo "Started at: \$(date)"
 echo "World: $world_id"
 echo "Port: $port"
+echo "Screen: $screen_name"
 echo "=================================================================================="
 
+# Set proper permissions and environment
+export HOME="$HOME"
+export USER="$USER"
+
+echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting server process..."
+echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Working directory: \$(pwd)"
+echo "[\$(date '+%Y-%m-%d %H:%M:%S')] World directory: $world_dir"
+
+# Start the server with error handling
 while true; do
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting server..."
     if ./blockheads_server171 -o "$world_id" -p "$port"; then
         echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server stopped normally"
         break
     else
         exit_code=\$?
-        echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server crashed with code: \$exit_code"
-        echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Restarting in 5 seconds..."
-        sleep 5
+        echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server exited with code: \$exit_code"
+        echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Restarting in 10 seconds..."
+        sleep 10
     fi
 done
 
@@ -215,6 +281,7 @@ EOF
     chmod +x "$startup_script"
     
     # Start server in screen session
+    print_status "Starting server in screen session..."
     if ! screen -dmS "$screen_name" "$startup_script"; then
         print_error "Failed to start screen session"
         rm -f "$startup_script"
@@ -224,25 +291,16 @@ EOF
     # Cleanup temp file
     rm -f "$startup_script"
     
-    # Wait for server to start
-    print_status "Waiting for server to start..."
-    local attempts=0
-    local max_attempts=30
+    # Wait for server to start with improved detection
+    print_status "Waiting for server to start (this may take up to 60 seconds)..."
     
-    while [ $attempts -lt $max_attempts ]; do
-        if screen_session_exists "$screen_name" && is_port_in_use "$port"; then
-            break
-        fi
-        sleep 1
-        ((attempts++))
-    done
-    
-    if [ $attempts -ge $max_attempts ]; then
-        print_error "Server failed to start within $max_attempts seconds"
+    if check_server_startup "$world_id" "$port" "$screen_name"; then
+        print_success "Server started successfully"
+    else
+        print_error "Server failed to start properly"
+        print_status "Check the server logs with: screen -r $screen_name"
         return 1
     fi
-    
-    print_success "Server started successfully"
     
     # Start rank patcher
     print_status "Starting rank management system..."
@@ -263,6 +321,8 @@ EOF
     print_status "To detach console: Ctrl+A, D"
     print_status "Rank patcher: Active"
     print_status "Player management: Enabled"
+    echo ""
+    print_warning "If you encounter issues, check: screen -r $screen_name"
     
     return 0
 }
@@ -370,6 +430,13 @@ show_status() {
             fi
             print_status "Screen: $screen_name"
             print_status "Console: screen -r $screen_name"
+            
+            # Check if server is responsive
+            if is_port_in_use "$port"; then
+                print_success "Network: PORT_ACTIVE"
+            else
+                print_error "Network: PORT_INACTIVE"
+            fi
         else
             print_error "Status: STOPPED"
         fi
@@ -419,6 +486,86 @@ show_console() {
     fi
 }
 
+# Function to show server logs
+show_logs() {
+    local port="$1"
+    local world_id="$2"
+    
+    if [ -z "$port" ] || [ -z "$world_id" ]; then
+        print_error "Port and world ID required for log access"
+        echo "Usage: $0 logs <port> <world_id>"
+        return 1
+    fi
+    
+    local log_file="$SERVER_HOME/saves/$world_id/console.log"
+    
+    if [ ! -f "$log_file" ]; then
+        print_error "Log file not found: $log_file"
+        return 1
+    fi
+    
+    print_header "SERVER LOGS - $world_id (Port: $port)"
+    tail -50 "$log_file"
+}
+
+# Function to debug server issues
+debug_server() {
+    local port="$1"
+    
+    print_header "SERVER DEBUG INFORMATION"
+    
+    if [ -n "$port" ]; then
+        print_status "Debugging server on port: $port"
+        local screen_name="blockheads_server_$port"
+        
+        # Check screen session
+        if screen_session_exists "$screen_name"; then
+            print_success "✓ Screen session: EXISTS ($screen_name)"
+        else
+            print_error "✗ Screen session: NOT_FOUND"
+        fi
+        
+        # Check port
+        if is_port_in_use "$port"; then
+            print_success "✓ Port $port: IN_USE"
+        else
+            print_error "✗ Port $port: NOT_IN_USE"
+        fi
+        
+        # Check world ID file
+        if [ -f "world_id_$port.txt" ]; then
+            local world_id=$(cat "world_id_$port.txt")
+            print_success "✓ World ID: $world_id"
+            
+            # Check console log
+            local log_file="$SERVER_HOME/saves/$world_id/console.log"
+            if [ -f "$log_file" ]; then
+                print_success "✓ Console log: EXISTS"
+                print_status "Last 5 lines of log:"
+                tail -5 "$log_file"
+            else
+                print_error "✗ Console log: NOT_FOUND"
+            fi
+        else
+            print_error "✗ World ID file: NOT_FOUND"
+        fi
+    else
+        print_status "General server debug information"
+        
+        # Check screen sessions
+        local screens=$(screen -list | grep "blockheads_server_" | wc -l)
+        print_status "Active server screens: $screens"
+        
+        # Check running processes
+        local processes=$(pgrep -f "blockheads_server171" | wc -l)
+        print_status "Blockheads processes: $processes"
+        
+        # Check rank patcher
+        local patchers=$(pgrep -f "rank_patcher.sh" | wc -l)
+        print_status "Rank patcher processes: $patchers"
+    fi
+}
+
 # Function to show usage
 show_usage() {
     print_header "THE BLOCKHEADS SERVER MANAGER"
@@ -430,6 +577,8 @@ show_usage() {
     echo "  status [port]              Show server status"
     echo "  list                       List all running servers"
     echo "  console <port>             Attach to server console"
+    echo "  logs <port> <world_id>     Show recent server logs"
+    echo "  debug [port]               Debug server issues"
     echo "  help                       Show this help message"
     echo ""
     echo "Examples:"
@@ -439,6 +588,9 @@ show_usage() {
     echo "  $0 stop                    # Stop all servers"
     echo "  $0 status                  # Show status of all servers"
     echo "  $0 console 12155           # Attach to console of server on port 12155"
+    echo "  $0 logs 12155 MyWorld      # Show logs for world MyWorld on port 12155"
+    echo "  $0 debug 12155             # Debug server on port 12155"
+    echo "  $0 debug                   # General debug information"
     echo "  $0 list                    # List all running servers"
     echo ""
     echo "Important Notes:"
@@ -448,6 +600,7 @@ show_usage() {
     echo "  - Player management features are enabled automatically"
     echo ""
     print_warning "Default port: $DEFAULT_PORT"
+    print_warning "Server Home: $SERVER_HOME"
 }
 
 # Main execution
@@ -471,6 +624,12 @@ case "${1:-help}" in
         ;;
     console)
         show_console "$2"
+        ;;
+    logs)
+        show_logs "$2" "$3"
+        ;;
+    debug)
+        debug_server "$2"
         ;;
     help|--help|-h)
         show_usage
