@@ -40,6 +40,7 @@ declare -A player_password_timers
 declare -A player_ip_grace_timers
 declare -A player_verification_status
 declare -A player_password_reminder_sent
+declare -A player_kick_timers
 
 # Function to find world directory and set paths
 setup_paths() {
@@ -476,24 +477,41 @@ process_players_log_changes() {
     sync_lists_from_players_log
 }
 
+# Function to cancel password kick timer
+cancel_password_kick_timer() {
+    local player_name="$1"
+    
+    # Cancel the main kick timer
+    if [ -n "${player_kick_timers[$player_name]}" ]; then
+        kill "${player_kick_timers[$player_name]}" 2>/dev/null
+        unset player_kick_timers["$player_name"]
+        print_status "Cancelled kick timer for $player_name"
+    fi
+    
+    # Also cancel the reminder timer
+    if [ -n "${player_password_timers[$player_name]}" ]; then
+        kill "${player_password_timers[$player_name]}" 2>/dev/null
+        unset player_password_timers["$player_name"]
+    fi
+}
+
 # Function to handle password creation
 handle_password_creation() {
     local player_name="$1" password="$2" confirm_password="$3"
     
-    # Clear chat immediately as required
-    execute_server_command "/clear"
+    # Clear chat IMMEDIATELY to hide password
+    send_server_command "$SCREEN_SESSION" "/clear"
+    sleep 0.1  # Minimal delay for clear to process
     
     # Validate password length (7-16 characters)
     if [ ${#password} -lt 7 ] || [ ${#password} -gt 16 ]; then
-        sleep 0.5
-        execute_server_command "ERROR: $player_name, password must be between 7 and 16 characters."
+        send_server_command "$SCREEN_SESSION" "ERROR: $player_name, password must be between 7 and 16 characters."
         return 1
     fi
     
     # Validate password confirmation
     if [ "$password" != "$confirm_password" ]; then
-        sleep 0.5
-        execute_server_command "ERROR: $player_name, passwords do not match."
+        send_server_command "$SCREEN_SESSION" "ERROR: $player_name, passwords do not match."
         return 1
     fi
     
@@ -501,24 +519,21 @@ handle_password_creation() {
     local player_info=$(get_player_info "$player_name")
     if [ -n "$player_info" ]; then
         local first_ip=$(echo "$player_info" | cut -d'|' -f1)
+        local current_password=$(echo "$player_info" | cut -d'|' -f2)
         local rank=$(echo "$player_info" | cut -d'|' -f3)
         local whitelisted=$(echo "$player_info" | cut -d'|' -f4)
         local blacklisted=$(echo "$player_info" | cut -d'|' -f5)
         
+        # Cancel ALL timers immediately when password is set
+        cancel_password_kick_timer "$player_name"
+        
+        # Update player with new password
         update_player_info "$player_name" "$first_ip" "$password" "$rank" "$whitelisted" "$blacklisted"
         
-        # Cancel password reminder timer if exists
-        if [ -n "${player_password_timers[$player_name]}" ]; then
-            kill "${player_password_timers[$player_name]}" 2>/dev/null
-            unset player_password_timers["$player_name"]
-        fi
-        
-        sleep 0.5
-        execute_server_command "SUCCESS: $player_name, your password has been set successfully."
+        send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your password has been set successfully."
         return 0
     else
-        sleep 0.5
-        execute_server_command "ERROR: $player_name, player not found in registry."
+        send_server_command "$SCREEN_SESSION" "ERROR: $player_name, player not found in registry."
         return 1
     fi
 }
@@ -527,13 +542,13 @@ handle_password_creation() {
 handle_password_change() {
     local player_name="$1" old_password="$2" new_password="$3"
     
-    # Clear chat immediately as required
-    execute_server_command "/clear"
+    # Clear chat IMMEDIATELY
+    send_server_command "$SCREEN_SESSION" "/clear"
+    sleep 0.1
     
     # Validate new password length (7-16 characters)
     if [ ${#new_password} -lt 7 ] || [ ${#new_password} -gt 16 ]; then
-        sleep 0.5
-        execute_server_command "ERROR: $player_name, new password must be between 7 and 16 characters."
+        send_server_command "$SCREEN_SESSION" "ERROR: $player_name, new password must be between 7 and 16 characters."
         return 1
     fi
     
@@ -547,20 +562,17 @@ handle_password_change() {
         
         # Verify old password
         if [ "$current_password" != "$old_password" ]; then
-            sleep 0.5
-            execute_server_command "ERROR: $player_name, old password is incorrect."
+            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, old password is incorrect."
             return 1
         fi
         
         # Update password
         update_player_info "$player_name" "$first_ip" "$new_password" "$rank" "$whitelisted" "$blacklisted"
         
-        sleep 0.5
-        execute_server_command "SUCCESS: $player_name, your password has been changed successfully."
+        send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your password has been changed successfully."
         return 0
     else
-        sleep 0.5
-        execute_server_command "ERROR: $player_name, player not found in registry."
+        send_server_command "$SCREEN_SESSION" "ERROR: $player_name, player not found in registry."
         return 1
     fi
 }
@@ -569,8 +581,9 @@ handle_password_change() {
 handle_ip_change() {
     local player_name="$1" password="$2" current_ip="$3"
     
-    # Clear chat immediately as required
-    execute_server_command "/clear"
+    # Clear chat IMMEDIATELY
+    send_server_command "$SCREEN_SESSION" "/clear"
+    sleep 0.1
     
     local player_info=$(get_player_info "$player_name")
     if [ -n "$player_info" ]; then
@@ -582,8 +595,7 @@ handle_ip_change() {
         
         # Verify password
         if [ "$current_password" != "$password" ]; then
-            sleep 0.5
-            execute_server_command "ERROR: $player_name, password is incorrect."
+            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, password is incorrect."
             return 1
         fi
         
@@ -600,12 +612,10 @@ handle_ip_change() {
         # Sync lists now that player is verified
         sync_lists_from_players_log
         
-        sleep 0.5
-        execute_server_command "SUCCESS: $player_name, your IP has been verified and updated."
+        send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your IP has been verified and updated."
         return 0
     else
-        sleep 0.5
-        execute_server_command "ERROR: $player_name, player not found in registry."
+        send_server_command "$SCREEN_SESSION" "ERROR: $player_name, player not found in registry."
         return 1
     fi
 }
@@ -614,9 +624,9 @@ handle_ip_change() {
 start_password_enforcement() {
     local player_name="$1"
     
+    # First reminder after 5 seconds
     player_password_timers["$player_name"]=$(
         (
-            # First reminder after 5 seconds
             sleep 5
             if [ -n "${connected_players[$player_name]}" ]; then
                 local player_info=$(get_player_info "$player_name")
@@ -625,21 +635,24 @@ start_password_enforcement() {
                     if [ "$password" = "NONE" ]; then
                         execute_server_command "SECURITY: $player_name, please set your password with !psw PASSWORD CONFIRM_PASSWORD within 60 seconds or you will be kicked."
                         player_password_reminder_sent["$player_name"]=1
-                        
-                        # Schedule kick after 1 minute total
-                        (
-                            sleep 55  # 55 more seconds = 60 total
-                            if [ -n "${connected_players[$player_name]}" ]; then
-                                local player_info=$(get_player_info "$player_name")
-                                if [ -n "$player_info" ]; then
-                                    local password=$(echo "$player_info" | cut -d'|' -f2)
-                                    if [ "$password" = "NONE" ]; then
-                                        execute_server_command "/kick $player_name"
-                                        print_warning "Kicked $player_name for not setting password within 60 seconds"
-                                    fi
-                                fi
-                            fi
-                        ) &
+                    fi
+                fi
+            fi
+        ) &
+        echo $!
+    )
+    
+    # Schedule kick after 60 seconds
+    player_kick_timers["$player_name"]=$(
+        (
+            sleep 60
+            if [ -n "${connected_players[$player_name]}" ]; then
+                local player_info=$(get_player_info "$player_name")
+                if [ -n "$player_info" ]; then
+                    local password=$(echo "$player_info" | cut -d'|' -f2)
+                    if [ "$password" = "NONE" ]; then
+                        execute_server_command "/kick $player_name"
+                        print_warning "Kicked $player_name for not setting password within 60 seconds"
                     fi
                 fi
             fi
@@ -767,11 +780,8 @@ monitor_console_log() {
                 unset player_verification_status["$player_name"]
                 unset player_password_reminder_sent["$player_name"]
                 
-                # Cancel timers
-                if [ -n "${player_password_timers[$player_name]}" ]; then
-                    kill "${player_password_timers[$player_name]}" 2>/dev/null
-                    unset player_password_timers["$player_name"]
-                fi
+                # Cancel ALL timers
+                cancel_password_kick_timer "$player_name"
                 
                 if [ -n "${player_ip_grace_timers[$player_name]}" ]; then
                     kill "${player_ip_grace_timers[$player_name]}" 2>/dev/null
@@ -801,9 +811,9 @@ monitor_console_log() {
                             local confirm_password="${BASH_REMATCH[2]}"
                             handle_password_creation "$player_name" "$password" "$confirm_password"
                         else
-                            execute_server_command "/clear"
-                            sleep 0.5
-                            execute_server_command "ERROR: $player_name, invalid format. Use: !psw PASSWORD CONFIRM_PASSWORD"
+                            send_server_command "$SCREEN_SESSION" "/clear"
+                            sleep 0.1
+                            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !psw PASSWORD CONFIRM_PASSWORD"
                         fi
                         ;;
                     "!change_psw "*)
@@ -812,9 +822,9 @@ monitor_console_log() {
                             local new_password="${BASH_REMATCH[2]}"
                             handle_password_change "$player_name" "$old_password" "$new_password"
                         else
-                            execute_server_command "/clear"
-                            sleep 0.5
-                            execute_server_command "ERROR: $player_name, invalid format. Use: !change_psw OLD_PASSWORD NEW_PASSWORD"
+                            send_server_command "$SCREEN_SESSION" "/clear"
+                            sleep 0.1
+                            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !change_psw OLD_PASSWORD NEW_PASSWORD"
                         fi
                         ;;
                     "!ip_change "*)
@@ -822,9 +832,9 @@ monitor_console_log() {
                             local password="${BASH_REMATCH[1]}"
                             handle_ip_change "$player_name" "$password" "$current_ip"
                         else
-                            execute_server_command "/clear"
-                            sleep 0.5
-                            execute_server_command "ERROR: $player_name, invalid format. Use: !ip_change YOUR_PASSWORD"
+                            send_server_command "$SCREEN_SESSION" "/clear"
+                            sleep 0.1
+                            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !ip_change YOUR_PASSWORD"
                         fi
                         ;;
                 esac
@@ -846,6 +856,10 @@ cleanup() {
     done
     
     for pid in "${player_ip_grace_timers[@]}"; do
+        kill "$pid" 2>/dev/null
+    done
+    
+    for pid in "${player_kick_timers[@]}"; do
         kill "$pid" 2>/dev/null
     done
     
