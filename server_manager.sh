@@ -132,8 +132,22 @@ EOF
     chmod +x /tmp/start_server_$$.sh
     
     # Start server in screen session
-    screen -dmS "$SCREEN_SERVER" /tmp/start_server_$$.sh
-    (sleep 10; rm -f /tmp/start_server_$$.sh) &
+    print_step "Starting server in screen session: $SCREEN_SERVER"
+    if command -v screen >/dev/null 2>&1; then
+        if screen -dmS "$SCREEN_SERVER" /tmp/start_server_$$.sh; then
+            print_success "Server screen session created successfully"
+            # Clean up temporary script after delay
+            (sleep 10; rm -f /tmp/start_server_$$.sh) &
+        else
+            print_error "Failed to create screen session for server"
+            rm -f /tmp/start_server_$$.sh
+            return 1
+        fi
+    else
+        print_error "Screen command not found. Please install screen."
+        rm -f /tmp/start_server_$$.sh
+        return 1
+    fi
     
     print_step "Waiting for server to start..."
     
@@ -146,7 +160,7 @@ EOF
     [ ! -f "$log_file" ] && {
         print_error "Could not create log file. Server may not have started."
         return 1
-    fi
+    }
     
     local server_ready=false
     for i in {1..30}; do
@@ -166,14 +180,14 @@ EOF
     } || print_success "Server started successfully!"
     
     print_step "Starting rank patcher..."
-    screen -dmS "$SCREEN_PATCHER" bash -c "
-        cd '$PWD'
-        echo 'Starting rank patcher for port $port...'
-        ./rank_patcher.sh '$port'
-    "
+    if screen -dmS "$SCREEN_PATCHER" bash -c "cd '$PWD' && echo 'Starting rank patcher for port $port...' && ./rank_patcher.sh '$port'"; then
+        print_success "Rank patcher screen session created: $SCREEN_PATCHER"
+    else
+        print_warning "Failed to create rank patcher screen session"
+    fi
     
     local server_started=0
-    patcher_started=0
+    local patcher_started=0
     
     screen_session_exists "$SCREEN_SERVER" && server_started=1
     screen_session_exists "$SCREEN_PATCHER" && patcher_started=1
