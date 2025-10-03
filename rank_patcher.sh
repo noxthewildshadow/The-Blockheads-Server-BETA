@@ -17,6 +17,7 @@ print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
+print_debug() { echo -e "${YELLOW}[DEBUG]${NC} $1"; }
 print_header() {
     echo -e "${MAGENTA}================================================================================${NC}"
     echo -e "${MAGENTA}$1${NC}"
@@ -126,6 +127,7 @@ execute_server_command() {
 send_server_command() {
     local screen_session="$1"
     local command="$2"
+    print_debug "Attempting to send command: $command"
     if screen -S "$screen_session" -p 0 -X stuff "$command$(printf \\r)" 2>/dev/null; then
         print_success "Sent command to server: $command"
         return 0
@@ -495,27 +497,26 @@ cancel_password_kick_timer() {
     fi
 }
 
-# Function to handle password creation
+# Function to handle password creation - CORREGIDA
 handle_password_creation() {
     local player_name="$1" password="$2" confirm_password="$3"
     
-    # Clear chat IMMEDIATELY to hide password
-    send_server_command "$SCREEN_SESSION" "/clear"
-    sleep 0.1  # Minimal delay for clear to process
+    print_debug "Processing password creation for: $player_name"
     
-    # Validate password length (7-16 characters)
+    # Clear chat IMMEDIATELY to hide password - SIN DELAY
+    send_server_command "$SCREEN_SESSION" "/clear"
+    
+    # Validaciones inmediatas
     if [ ${#password} -lt 7 ] || [ ${#password} -gt 16 ]; then
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, password must be between 7 and 16 characters."
         return 1
     fi
     
-    # Validate password confirmation
     if [ "$password" != "$confirm_password" ]; then
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, passwords do not match."
         return 1
     fi
     
-    # Update player info
     local player_info=$(get_player_info "$player_name")
     if [ -n "$player_info" ]; then
         local first_ip=$(echo "$player_info" | cut -d'|' -f1)
@@ -531,6 +532,7 @@ handle_password_creation() {
         update_player_info "$player_name" "$first_ip" "$password" "$rank" "$whitelisted" "$blacklisted"
         
         send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your password has been set successfully."
+        print_success "Password set for $player_name - all timers cancelled"
         return 0
     else
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, player not found in registry."
@@ -542,9 +544,10 @@ handle_password_creation() {
 handle_password_change() {
     local player_name="$1" old_password="$2" new_password="$3"
     
+    print_debug "Processing password change for: $player_name"
+    
     # Clear chat IMMEDIATELY
     send_server_command "$SCREEN_SESSION" "/clear"
-    sleep 0.1
     
     # Validate new password length (7-16 characters)
     if [ ${#new_password} -lt 7 ] || [ ${#new_password} -gt 16 ]; then
@@ -581,9 +584,10 @@ handle_password_change() {
 handle_ip_change() {
     local player_name="$1" password="$2" current_ip="$3"
     
+    print_debug "Processing IP change for: $player_name"
+    
     # Clear chat IMMEDIATELY
     send_server_command "$SCREEN_SESSION" "/clear"
-    sleep 0.1
     
     local player_info=$(get_player_info "$player_name")
     if [ -n "$player_info" ]; then
@@ -624,6 +628,8 @@ handle_ip_change() {
 start_password_enforcement() {
     local player_name="$1"
     
+    print_debug "Starting password enforcement for: $player_name"
+    
     # First reminder after 5 seconds
     player_password_timers["$player_name"]=$(
         (
@@ -651,8 +657,8 @@ start_password_enforcement() {
                 if [ -n "$player_info" ]; then
                     local password=$(echo "$player_info" | cut -d'|' -f2)
                     if [ "$password" = "NONE" ]; then
+                        print_warning "Kicking $player_name for not setting password within 60 seconds"
                         execute_server_command "/kick $player_name"
-                        print_warning "Kicked $player_name for not setting password within 60 seconds"
                     fi
                 fi
             fi
@@ -664,6 +670,8 @@ start_password_enforcement() {
 # Function to start IP grace period
 start_ip_grace_period() {
     local player_name="$1" current_ip="$2"
+    
+    print_debug "Starting IP grace period for: $player_name"
     
     player_ip_grace_timers["$player_name"]=$(
         (
@@ -700,7 +708,7 @@ start_ip_grace_period() {
     )
 }
 
-# Function to monitor console.log for commands and connections
+# Function to monitor console.log for commands and connections - MEJORADA
 monitor_console_log() {
     print_header "STARTING CONSOLE LOG MONITOR"
     
@@ -717,9 +725,14 @@ monitor_console_log() {
         return 1
     fi
     
-    # Start monitoring
+    print_success "Console log found, starting monitoring..."
+    
+    # Start monitoring with improved pattern matching
     tail -n 0 -F "$CONSOLE_LOG" | while read -r line; do
-        # Player connection detection
+        # Debug: print all lines to see what's being captured
+        # echo "DEBUG: $line" >> /tmp/rank_patcher_debug.log
+        
+        # Player connection detection - PATTERN FIXED
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
@@ -769,7 +782,7 @@ monitor_console_log() {
             fi
         fi
         
-        # Player disconnection detection
+        # Player disconnection detection - PATTERN FIXED
         if [[ "$line" =~ Player\ Disconnected\ (.+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             player_name=$(echo "$player_name" | xargs)
@@ -795,8 +808,8 @@ monitor_console_log() {
             fi
         fi
         
-        # Chat command detection
-        if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
+        # Chat command detection - PATTERN IMPROVED
+        if [[ "$line" =~ ([a-zA-Z0-9_]+):[[:space:]]*(.+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local message="${BASH_REMATCH[2]}"
             local current_ip="${player_ip_map[$player_name]}"
@@ -804,36 +817,39 @@ monitor_console_log() {
             player_name=$(echo "$player_name" | xargs)
             
             if is_valid_player_name "$player_name" ]; then
+                print_debug "Chat detected from $player_name: $message"
+                
                 case "$message" in
                     "!psw "*)
-                        if [[ "$message" =~ !psw\ ([^[:space:]]+)\ ([^[:space:]]+)$ ]]; then
+                        print_debug "Password command detected from $player_name"
+                        if [[ "$message" =~ !psw[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)$ ]]; then
                             local password="${BASH_REMATCH[1]}"
                             local confirm_password="${BASH_REMATCH[2]}"
+                            print_debug "Processing password: $password, confirm: $confirm_password"
                             handle_password_creation "$player_name" "$password" "$confirm_password"
                         else
                             send_server_command "$SCREEN_SESSION" "/clear"
-                            sleep 0.1
                             send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !psw PASSWORD CONFIRM_PASSWORD"
                         fi
                         ;;
                     "!change_psw "*)
-                        if [[ "$message" =~ !change_psw\ ([^[:space:]]+)\ ([^[:space:]]+)$ ]]; then
+                        print_debug "Password change command detected from $player_name"
+                        if [[ "$message" =~ !change_psw[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)$ ]]; then
                             local old_password="${BASH_REMATCH[1]}"
                             local new_password="${BASH_REMATCH[2]}"
                             handle_password_change "$player_name" "$old_password" "$new_password"
                         else
                             send_server_command "$SCREEN_SESSION" "/clear"
-                            sleep 0.1
                             send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !change_psw OLD_PASSWORD NEW_PASSWORD"
                         fi
                         ;;
                     "!ip_change "*)
-                        if [[ "$message" =~ !ip_change\ (.+)$ ]]; then
+                        print_debug "IP change command detected from $player_name"
+                        if [[ "$message" =~ !ip_change[[:space:]]+(.+)$ ]]; then
                             local password="${BASH_REMATCH[1]}"
                             handle_ip_change "$player_name" "$password" "$current_ip"
                         else
                             send_server_command "$SCREEN_SESSION" "/clear"
-                            sleep 0.1
                             send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !ip_change YOUR_PASSWORD"
                         fi
                         ;;
