@@ -17,7 +17,6 @@ print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
-print_debug() { echo -e "${YELLOW}[DEBUG]${NC} $1"; }
 print_header() {
     echo -e "${MAGENTA}================================================================================${NC}"
     echo -e "${MAGENTA}$1${NC}"
@@ -33,6 +32,7 @@ CONSOLE_LOG=""
 SCREEN_SESSION=""
 WORLD_ID=""
 PORT=""
+PATCH_DEBUG_LOG=""
 
 # Track connected players and their states
 declare -A connected_players
@@ -42,6 +42,14 @@ declare -A player_ip_grace_timers
 declare -A player_verification_status
 declare -A player_password_reminder_sent
 declare -A player_kick_timers
+
+# Function to log debug information
+log_debug() {
+    local message="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "$timestamp $message" >> "$PATCH_DEBUG_LOG"
+    echo -e "${CYAN}[DEBUG]${NC} $message"
+}
 
 # Function to find world directory and set paths
 setup_paths() {
@@ -65,16 +73,27 @@ setup_paths() {
     
     PLAYERS_LOG="$BASE_SAVES_DIR/$WORLD_ID/players.log"
     CONSOLE_LOG="$BASE_SAVES_DIR/$WORLD_ID/console.log"
+    PATCH_DEBUG_LOG="$BASE_SAVES_DIR/$WORLD_ID/patch_debug.log"
     SCREEN_SESSION="blockheads_server_$port"
     
-    # Create players.log if it doesn't exist
+    # Create logs if they don't exist
     [ ! -f "$PLAYERS_LOG" ] && touch "$PLAYERS_LOG"
+    [ ! -f "$PATCH_DEBUG_LOG" ] && touch "$PATCH_DEBUG_LOG"
     
     # Initialize list files as EMPTY (keeping only first line)
     initialize_list_files
     
+    log_debug "=== RANK PATCHER STARTED ==="
+    log_debug "World ID: $WORLD_ID"
+    log_debug "Port: $port"
+    log_debug "Players log: $PLAYERS_LOG"
+    log_debug "Console log: $CONSOLE_LOG"
+    log_debug "Debug log: $PATCH_DEBUG_LOG"
+    log_debug "Screen session: $SCREEN_SESSION"
+    
     print_status "Players log: $PLAYERS_LOG"
     print_status "Console log: $CONSOLE_LOG"
+    print_status "Debug log: $PATCH_DEBUG_LOG"
     print_status "Screen session: $SCREEN_SESSION"
 }
 
@@ -96,10 +115,10 @@ initialize_list_files() {
             local first_line=$(head -1 "$file_path")
             > "$file_path"  # Empty the file
             [ -n "$first_line" ] && echo "$first_line" >> "$file_path"
-            print_success "Initialized as empty: $(basename "$file_path")"
+            log_debug "Initialized as empty: $(basename "$file_path")"
         else
             touch "$file_path"
-            print_status "Created empty: $(basename "$file_path")"
+            log_debug "Created empty: $(basename "$file_path")"
         fi
     done
     
@@ -112,13 +131,13 @@ initialize_list_files() {
         touch "$cloud_file"
     fi
     
-    print_success "All list files initialized as empty"
+    log_debug "All list files initialized as empty"
 }
 
 # Function to execute server command with cooldown
 execute_server_command() {
     local command="$1"
-    print_status "Executing server command: $command"
+    log_debug "Executing server command: $command"
     send_server_command "$SCREEN_SESSION" "$command"
     sleep 0.5  # Cooldown as required
 }
@@ -127,12 +146,12 @@ execute_server_command() {
 send_server_command() {
     local screen_session="$1"
     local command="$2"
-    print_debug "Attempting to send command: $command"
+    log_debug "Sending command to screen session $screen_session: $command"
     if screen -S "$screen_session" -p 0 -X stuff "$command$(printf \\r)" 2>/dev/null; then
-        print_success "Sent command to server: $command"
+        log_debug "Command sent successfully: $command"
         return 0
     else
-        print_error "Could not send command to server"
+        log_debug "FAILED to send command: $command"
         return 1
     fi
 }
@@ -194,7 +213,7 @@ update_player_info() {
         sed -i "/^$player_name|/Id" "$PLAYERS_LOG"
         # Add new entry with proper format
         echo "$player_name|$first_ip|$password|$rank|$whitelisted|$blacklisted" >> "$PLAYERS_LOG"
-        print_success "Updated player: $player_name | $first_ip | $password | $rank | $whitelisted | $blacklisted"
+        log_debug "Updated player in players.log: $player_name | $first_ip | $password | $rank | $whitelisted | $blacklisted"
     fi
 }
 
@@ -283,14 +302,14 @@ sync_lists_from_players_log() {
         done < "$PLAYERS_LOG"
     fi
     
-    print_success "Synced lists from players.log (verified players only)"
+    log_debug "Synced lists from players.log (verified players only)"
 }
 
 # Function to apply rank changes using server commands
 apply_rank_changes() {
     local player_name="$1" old_rank="$2" new_rank="$3"
     
-    print_status "Applying rank change: $player_name from $old_rank to $new_rank"
+    log_debug "Applying rank change: $player_name from $old_rank to $new_rank"
     
     case "$old_rank" in
         "ADMIN")
@@ -335,7 +354,7 @@ add_to_cloud_admin() {
     
     if ! grep -q "^$player_name$" "$cloud_file" 2>/dev/null; then
         echo "$player_name" >> "$cloud_file"
-        print_success "Added $player_name to cloud admin list"
+        log_debug "Added $player_name to cloud admin list"
     fi
 }
 
@@ -355,12 +374,12 @@ remove_from_cloud_admin() {
         # If only first line remains, remove the file
         if [ $(wc -l < "$temp_file") -le 1 ] || [ $(wc -l < "$temp_file") -eq 1 -a -z "$first_line" ]; then
             rm -f "$cloud_file"
-            print_success "Removed cloud admin file (no super admins)"
+            log_debug "Removed cloud admin file (no super admins)"
         else
             mv "$temp_file" "$cloud_file"
         fi
         
-        print_success "Removed $player_name from cloud admin list"
+        log_debug "Removed $player_name from cloud admin list"
     fi
 }
 
@@ -394,14 +413,14 @@ handle_blacklist_change() {
                 execute_server_command "/ban $current_ip"
             fi
             
-            print_success "Blacklisted player: $player_name"
+            log_debug "Blacklisted player: $player_name"
         else
             # Unban player
             execute_server_command "/unban $player_name"
             if [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
                 execute_server_command "/unban $current_ip"
             fi
-            print_success "Removed $player_name from blacklist"
+            log_debug "Removed $player_name from blacklist"
         fi
         
         # Reload lists
@@ -422,7 +441,7 @@ monitor_players_log() {
             local current_checksum=$(md5sum "$PLAYERS_LOG" 2>/dev/null | cut -d' ' -f1)
             
             if [ "$current_checksum" != "$last_checksum" ]; then
-                print_status "Detected change in players.log - processing changes..."
+                log_debug "Detected change in players.log - processing changes..."
                 process_players_log_changes "$temp_file"
                 last_checksum="$current_checksum"
                 cp "$PLAYERS_LOG" "$temp_file"
@@ -463,13 +482,13 @@ process_players_log_changes() {
             
             # Check for rank changes
             if [ "$prev_rank" != "$rank" ]; then
-                print_status "Rank change detected: $name from $prev_rank to $rank"
+                log_debug "Rank change detected: $name from $prev_rank to $rank"
                 apply_rank_changes "$name" "$prev_rank" "$rank"
             fi
             
             # Check for blacklist changes
             if [ "$prev_blacklisted" != "$blacklisted" ]; then
-                print_status "Blacklist change detected: $name from $prev_blacklisted to $blacklisted"
+                log_debug "Blacklist change detected: $name from $prev_blacklisted to $blacklisted"
                 handle_blacklist_change "$name" "$blacklisted"
             fi
         fi
@@ -485,13 +504,14 @@ cancel_password_kick_timer() {
     
     # Cancel the main kick timer
     if [ -n "${player_kick_timers[$player_name]}" ]; then
+        log_debug "Cancelling kick timer for $player_name (PID: ${player_kick_timers[$player_name]})"
         kill "${player_kick_timers[$player_name]}" 2>/dev/null
         unset player_kick_timers["$player_name"]
-        print_status "Cancelled kick timer for $player_name"
     fi
     
     # Also cancel the reminder timer
     if [ -n "${player_password_timers[$player_name]}" ]; then
+        log_debug "Cancelling password reminder timer for $player_name (PID: ${player_password_timers[$player_name]})"
         kill "${player_password_timers[$player_name]}" 2>/dev/null
         unset player_password_timers["$player_name"]
     fi
@@ -501,22 +521,30 @@ cancel_password_kick_timer() {
 handle_password_creation() {
     local player_name="$1" password="$2" confirm_password="$3"
     
-    print_debug "Processing password creation for: $player_name"
+    log_debug "Password creation requested for $player_name"
     
     # Clear chat IMMEDIATELY to hide password - SIN DELAY
+    log_debug "Sending immediate /clear command for $player_name"
     send_server_command "$SCREEN_SESSION" "/clear"
     
-    # Validaciones inmediatas
+    # Validación inmediata
+    log_debug "Validating password for $player_name"
+    
+    # Validate password length (7-16 characters)
     if [ ${#password} -lt 7 ] || [ ${#password} -gt 16 ]; then
+        log_debug "Password validation failed: length invalid (${#password} chars)"
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, password must be between 7 and 16 characters."
         return 1
     fi
     
+    # Validate password confirmation
     if [ "$password" != "$confirm_password" ]; then
+        log_debug "Password validation failed: passwords don't match"
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, passwords do not match."
         return 1
     fi
     
+    # Update player info
     local player_info=$(get_player_info "$player_name")
     if [ -n "$player_info" ]; then
         local first_ip=$(echo "$player_info" | cut -d'|' -f1)
@@ -525,16 +553,20 @@ handle_password_creation() {
         local whitelisted=$(echo "$player_info" | cut -d'|' -f4)
         local blacklisted=$(echo "$player_info" | cut -d'|' -f5)
         
+        log_debug "Player info found for $player_name, cancelling timers"
+        
         # Cancel ALL timers immediately when password is set
         cancel_password_kick_timer "$player_name"
         
         # Update player with new password
+        log_debug "Updating players.log with new password for $player_name"
         update_player_info "$player_name" "$first_ip" "$password" "$rank" "$whitelisted" "$blacklisted"
         
+        log_debug "Password set successfully for $player_name"
         send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your password has been set successfully."
-        print_success "Password set for $player_name - all timers cancelled"
         return 0
     else
+        log_debug "Player info NOT found for $player_name"
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, player not found in registry."
         return 1
     fi
@@ -544,7 +576,7 @@ handle_password_creation() {
 handle_password_change() {
     local player_name="$1" old_password="$2" new_password="$3"
     
-    print_debug "Processing password change for: $player_name"
+    log_debug "Password change requested for $player_name"
     
     # Clear chat IMMEDIATELY
     send_server_command "$SCREEN_SESSION" "/clear"
@@ -584,7 +616,7 @@ handle_password_change() {
 handle_ip_change() {
     local player_name="$1" password="$2" current_ip="$3"
     
-    print_debug "Processing IP change for: $player_name"
+    log_debug "IP change verification requested for $player_name"
     
     # Clear chat IMMEDIATELY
     send_server_command "$SCREEN_SESSION" "/clear"
@@ -628,7 +660,7 @@ handle_ip_change() {
 start_password_enforcement() {
     local player_name="$1"
     
-    print_debug "Starting password enforcement for: $player_name"
+    log_debug "Starting password enforcement for $player_name"
     
     # First reminder after 5 seconds
     player_password_timers["$player_name"]=$(
@@ -639,6 +671,7 @@ start_password_enforcement() {
                 if [ -n "$player_info" ]; then
                     local password=$(echo "$player_info" | cut -d'|' -f2)
                     if [ "$password" = "NONE" ]; then
+                        log_debug "Sending password reminder to $player_name"
                         execute_server_command "SECURITY: $player_name, please set your password with !psw PASSWORD CONFIRM_PASSWORD within 60 seconds or you will be kicked."
                         player_password_reminder_sent["$player_name"]=1
                     fi
@@ -657,7 +690,7 @@ start_password_enforcement() {
                 if [ -n "$player_info" ]; then
                     local password=$(echo "$player_info" | cut -d'|' -f2)
                     if [ "$password" = "NONE" ]; then
-                        print_warning "Kicking $player_name for not setting password within 60 seconds"
+                        log_debug "Kicking $player_name for not setting password within 60 seconds"
                         execute_server_command "/kick $player_name"
                     fi
                 fi
@@ -665,13 +698,15 @@ start_password_enforcement() {
         ) &
         echo $!
     )
+    
+    log_debug "Password enforcement timers started for $player_name (Reminder PID: ${player_password_timers[$player_name]}, Kick PID: ${player_kick_timers[$player_name]})"
 }
 
 # Function to start IP grace period
 start_ip_grace_period() {
     local player_name="$1" current_ip="$2"
     
-    print_debug "Starting IP grace period for: $player_name"
+    log_debug "Starting IP grace period for $player_name with IP $current_ip"
     
     player_ip_grace_timers["$player_name"]=$(
         (
@@ -682,21 +717,22 @@ start_ip_grace_period() {
                 if [ -n "$player_info" ]; then
                     local first_ip=$(echo "$player_info" | cut -d'|' -f1)
                     if [ "$first_ip" != "UNKNOWN" ] && [ "$first_ip" != "$current_ip" ]; then
+                        log_debug "IP change detected for $player_name: $first_ip -> $current_ip"
                         execute_server_command "SECURITY ALERT: $player_name, your IP has changed! Verify with !ip_change YOUR_PASSWORD within 25 seconds or you will be kicked and IP banned."
                         
                         # Schedule kick and ban after 30 seconds total
                         (
                             sleep 25
                             if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" != "verified" ]; then
+                                log_debug "IP verification failed for $player_name, kicking and banning"
                                 execute_server_command "/kick $player_name"
                                 execute_server_command "/ban $current_ip"
-                                print_warning "Kicked and banned IP $current_ip for failed IP verification"
                                 
                                 # Unban after 30 seconds
                                 (
                                     sleep 30
                                     execute_server_command "/unban $current_ip"
-                                    print_success "Auto-unbanned IP: $current_ip"
+                                    log_debug "Auto-unbanned IP: $current_ip"
                                 ) &
                             fi
                         ) &
@@ -708,31 +744,29 @@ start_ip_grace_period() {
     )
 }
 
-# Function to monitor console.log for commands and connections - MEJORADA
+# Function to monitor console.log for commands and connections
 monitor_console_log() {
     print_header "STARTING CONSOLE LOG MONITOR"
+    log_debug "Starting console log monitor"
     
     # Wait for console.log to exist
     local wait_time=0
     while [ ! -f "$CONSOLE_LOG" ] && [ $wait_time -lt 30 ]; do
         sleep 1
         ((wait_time++))
-        [ $((wait_time % 5)) -eq 0 ] && print_status "Waiting for console.log to be created..."
+        [ $((wait_time % 5)) -eq 0 ] && log_debug "Waiting for console.log to be created..."
     done
     
     if [ ! -f "$CONSOLE_LOG" ]; then
-        print_error "Console log never appeared: $CONSOLE_LOG"
+        log_debug "ERROR: Console log never appeared: $CONSOLE_LOG"
         return 1
     fi
     
-    print_success "Console log found, starting monitoring..."
+    log_debug "Console log found, starting monitoring"
     
-    # Start monitoring with improved pattern matching
+    # Start monitoring
     tail -n 0 -F "$CONSOLE_LOG" | while read -r line; do
-        # Debug: print all lines to see what's being captured
-        # echo "DEBUG: $line" >> /tmp/rank_patcher_debug.log
-        
-        # Player connection detection - PATTERN FIXED
+        # Player connection detection
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
@@ -744,12 +778,13 @@ monitor_console_log() {
                 connected_players["$player_name"]=1
                 player_ip_map["$player_name"]="$player_ip"
                 
-                print_success "Player connected: $player_name ($player_ip)"
+                log_debug "Player connected: $player_name ($player_ip)"
                 
                 # Check if player exists in players.log
                 local player_info=$(get_player_info "$player_name")
                 if [ -z "$player_info" ]; then
                     # New player - add to players.log with UNKNOWN first IP and NONE password
+                    log_debug "New player detected: $player_name, adding to players.log"
                     update_player_info "$player_name" "UNKNOWN" "NONE" "NONE" "NO" "NO"
                     player_verification_status["$player_name"]="pending"
                     start_password_enforcement "$player_name"
@@ -760,19 +795,23 @@ monitor_console_log() {
                     
                     if [ "$first_ip" = "UNKNOWN" ]; then
                         # First connection - update IP and mark as verified
+                        log_debug "First connection for $player_name, updating IP to $player_ip"
                         update_player_info "$player_name" "$player_ip" "$password" "NONE" "NO" "NO"
                         player_verification_status["$player_name"]="verified"
                     elif [ "$first_ip" != "$player_ip" ]; then
                         # IP changed - require verification
+                        log_debug "IP changed for $player_name: $first_ip -> $player_ip, requiring verification"
                         player_verification_status["$player_name"]="pending"
                         start_ip_grace_period "$player_name" "$player_ip"
                     else
                         # IP matches - mark as verified
+                        log_debug "IP matches for $player_name, marking as verified"
                         player_verification_status["$player_name"]="verified"
                     fi
                     
                     # Password enforcement for existing players without password
                     if [ "$password" = "NONE" ]; then
+                        log_debug "Existing player $player_name has no password, starting enforcement"
                         start_password_enforcement "$player_name"
                     fi
                 fi
@@ -782,7 +821,7 @@ monitor_console_log() {
             fi
         fi
         
-        # Player disconnection detection - PATTERN FIXED
+        # Player disconnection detection
         if [[ "$line" =~ Player\ Disconnected\ (.+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             player_name=$(echo "$player_name" | xargs)
@@ -801,15 +840,15 @@ monitor_console_log() {
                     unset player_ip_grace_timers["$player_name"]
                 fi
                 
-                print_warning "Player disconnected: $player_name"
+                log_debug "Player disconnected: $player_name"
                 
                 # Update lists (remove from role lists since player disconnected)
                 sync_lists_from_players_log
             fi
         fi
         
-        # Chat command detection - PATTERN IMPROVED
-        if [[ "$line" =~ ([a-zA-Z0-9_]+):[[:space:]]*(.+) ]]; then
+        # Chat command detection
+        if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local message="${BASH_REMATCH[2]}"
             local current_ip="${player_ip_map[$player_name]}"
@@ -817,37 +856,39 @@ monitor_console_log() {
             player_name=$(echo "$player_name" | xargs)
             
             if is_valid_player_name "$player_name" ]; then
-                print_debug "Chat detected from $player_name: $message"
+                log_debug "Chat command detected from $player_name: $message"
                 
                 case "$message" in
                     "!psw "*)
-                        print_debug "Password command detected from $player_name"
-                        if [[ "$message" =~ !psw[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)$ ]]; then
+                        log_debug "Password set command detected from $player_name"
+                        if [[ "$message" =~ !psw\ ([^[:space:]]+)\ ([^[:space:]]+)$ ]]; then
                             local password="${BASH_REMATCH[1]}"
                             local confirm_password="${BASH_REMATCH[2]}"
-                            print_debug "Processing password: $password, confirm: $confirm_password"
-                            handle_password_creation "$player_name" "$password" "$confirm_password"
+                            log_debug "Processing password set for $player_name: $password"
+                            # Ejecutar inmediatamente en el fondo para no bloquear
+                            handle_password_creation "$player_name" "$password" "$confirm_password" &
                         else
+                            log_debug "Invalid password command format from $player_name"
                             send_server_command "$SCREEN_SESSION" "/clear"
                             send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !psw PASSWORD CONFIRM_PASSWORD"
                         fi
                         ;;
                     "!change_psw "*)
-                        print_debug "Password change command detected from $player_name"
-                        if [[ "$message" =~ !change_psw[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)$ ]]; then
+                        log_debug "Password change command detected from $player_name"
+                        if [[ "$message" =~ !change_psw\ ([^[:space:]]+)\ ([^[:space:]]+)$ ]]; then
                             local old_password="${BASH_REMATCH[1]}"
                             local new_password="${BASH_REMATCH[2]}"
-                            handle_password_change "$player_name" "$old_password" "$new_password"
+                            handle_password_change "$player_name" "$old_password" "$new_password" &
                         else
                             send_server_command "$SCREEN_SESSION" "/clear"
                             send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !change_psw OLD_PASSWORD NEW_PASSWORD"
                         fi
                         ;;
                     "!ip_change "*)
-                        print_debug "IP change command detected from $player_name"
-                        if [[ "$message" =~ !ip_change[[:space:]]+(.+)$ ]]; then
+                        log_debug "IP change command detected from $player_name"
+                        if [[ "$message" =~ !ip_change\ (.+)$ ]]; then
                             local password="${BASH_REMATCH[1]}"
-                            handle_ip_change "$player_name" "$password" "$current_ip"
+                            handle_ip_change "$player_name" "$password" "$current_ip" &
                         else
                             send_server_command "$SCREEN_SESSION" "/clear"
                             send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !ip_change YOUR_PASSWORD"
@@ -862,6 +903,7 @@ monitor_console_log() {
 # Function to cleanup
 cleanup() {
     print_header "CLEANING UP RANK PATCHER"
+    log_debug "=== CLEANUP STARTED ==="
     
     # Kill all background processes
     jobs -p | xargs kill -9 2>/dev/null
@@ -879,6 +921,7 @@ cleanup() {
         kill "$pid" 2>/dev/null
     done
     
+    log_debug "=== CLEANUP COMPLETED ==="
     print_success "Cleanup completed"
     exit 0
 }
@@ -921,6 +964,7 @@ main() {
     print_header "RANK PATCHER IS NOW RUNNING"
     print_status "Monitoring: $CONSOLE_LOG"
     print_status "Managing: $PLAYERS_LOG"
+    print_status "Debug log: $PATCH_DEBUG_LOG"
     print_status "Server session: $SCREEN_SESSION"
     
     # Wait for background processes
