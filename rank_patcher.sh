@@ -37,17 +37,15 @@ PATCH_DEBUG_LOG=""
 # Track connected players and their states
 declare -A connected_players
 declare -A player_ip_map
-declare -A player_password_timers
-declare -A player_ip_grace_timers
 declare -A player_verification_status
 declare -A player_password_reminder_sent
-declare -A player_kick_timers
+declare -A active_timers
 
 # Function to log debug information
 log_debug() {
     local message="$1"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "$timestamp rank_patcher[$$]: $message" >> "$PATCH_DEBUG_LOG"
+    echo "$timestamp $message" >> "$PATCH_DEBUG_LOG"
     echo -e "${CYAN}[DEBUG]${NC} $message"
 }
 
@@ -498,48 +496,181 @@ process_players_log_changes() {
     sync_lists_from_players_log
 }
 
-# Function to cancel password kick timer
-cancel_password_kick_timer() {
+# =============================================================================
+# INDEPENDENT TIMER MANAGEMENT SYSTEM
+# =============================================================================
+
+# Function to cancel all timers for a player
+cancel_player_timers() {
     local player_name="$1"
     
-    # Cancel the main kick timer
-    if [ -n "${player_kick_timers[$player_name]}" ]; then
-        log_debug "Cancelling kick timer for $player_name (PID: ${player_kick_timers[$player_name]})"
-        kill "${player_kick_timers[$player_name]}" 2>/dev/null
-        unset player_kick_timers["$player_name"]
+    log_debug "Cancelling all timers for player: $player_name"
+    
+    # Cancel password reminder timer
+    if [ -n "${active_timers["password_reminder_$player_name"]}" ]; then
+        local pid="${active_timers["password_reminder_$player_name"]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Cancelled password reminder timer for $player_name (PID: $pid)"
+        fi
+        unset active_timers["password_reminder_$player_name"]
     fi
     
-    # Also cancel the reminder timer
-    if [ -n "${player_password_timers[$player_name]}" ]; then
-        log_debug "Cancelling password reminder timer for $player_name (PID: ${player_password_timers[$player_name]})"
-        kill "${player_password_timers[$player_name]}" 2>/dev/null
-        unset player_password_timers["$player_name"]
+    # Cancel password kick timer
+    if [ -n "${active_timers["password_kick_$player_name"]}" ]; then
+        local pid="${active_timers["password_kick_$player_name"]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Cancelled password kick timer for $player_name (PID: $pid)"
+        fi
+        unset active_timers["password_kick_$player_name"]
+    fi
+    
+    # Cancel IP grace timer
+    if [ -n "${active_timers["ip_grace_$player_name"]}" ]; then
+        local pid="${active_timers["ip_grace_$player_name"]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Cancelled IP grace timer for $player_name (PID: $pid)"
+        fi
+        unset active_timers["ip_grace_$player_name"]
     fi
 }
 
-# Function to handle password creation
+# INDEPENDENT PASSWORD REMINDER TIMER
+start_password_reminder_timer() {
+    local player_name="$1"
+    
+    (
+        log_debug "Password reminder timer started for $player_name"
+        sleep 5
+        
+        # Check if player still exists and needs password
+        if [ -n "${connected_players[$player_name]}" ]; then
+            local player_info=$(get_player_info "$player_name")
+            if [ -n "$player_info" ]; then
+                local password=$(echo "$player_info" | cut -d'|' -f2)
+                if [ "$password" = "NONE" ]; then
+                    log_debug "Sending password reminder to $player_name"
+                    execute_server_command "SECURITY: $player_name, please set your password with !psw PASSWORD CONFIRM_PASSWORD within 60 seconds or you will be kicked."
+                    player_password_reminder_sent["$player_name"]=1
+                fi
+            fi
+        fi
+        log_debug "Password reminder timer completed for $player_name"
+    ) &
+    
+    active_timers["password_reminder_$player_name"]=$!
+    log_debug "Started independent password reminder timer for $player_name (PID: ${active_timers["password_reminder_$player_name"]})"
+}
+
+# INDEPENDENT PASSWORD KICK TIMER
+start_password_kick_timer() {
+    local player_name="$1"
+    
+    (
+        log_debug "Password kick timer started for $player_name"
+        sleep 60
+        
+        # Check if player still exists and needs password
+        if [ -n "${connected_players[$player_name]}" ]; then
+            local player_info=$(get_player_info "$player_name")
+            if [ -n "$player_info" ]; then
+                local password=$(echo "$player_info" | cut -d'|' -f2)
+                if [ "$password" = "NONE" ]; then
+                    log_debug "Kicking $player_name for not setting password within 60 seconds"
+                    execute_server_command "/kick $player_name"
+                else
+                    log_debug "Player $player_name set password, no kick needed"
+                fi
+            fi
+        fi
+        log_debug "Password kick timer completed for $player_name"
+    ) &
+    
+    active_timers["password_kick_$player_name"]=$!
+    log_debug "Started independent password kick timer for $player_name (PID: ${active_timers["password_kick_$player_name"]})"
+}
+
+# INDEPENDENT IP GRACE PERIOD TIMER
+start_ip_grace_timer() {
+    local player_name="$1" current_ip="$2"
+    
+    (
+        log_debug "IP grace timer started for $player_name with IP $current_ip"
+        
+        # Wait 5 seconds then send warning
+        sleep 5
+        if [ -n "${connected_players[$player_name]}" ]; then
+            local player_info=$(get_player_info "$player_name")
+            if [ -n "$player_info" ]; then
+                local first_ip=$(echo "$player_info" | cut -d'|' -f1)
+                if [ "$first_ip" != "UNKNOWN" ] && [ "$first_ip" != "$current_ip" ]; then
+                    log_debug "IP change detected for $player_name: $first_ip -> $current_ip"
+                    execute_server_command "SECURITY ALERT: $player_name, your IP has changed! Verify with !ip_change YOUR_PASSWORD within 25 seconds or you will be kicked and IP banned."
+                    
+                    # Wait 25 more seconds for verification
+                    sleep 25
+                    if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" != "verified" ]; then
+                        log_debug "IP verification failed for $player_name, kicking and banning"
+                        execute_server_command "/kick $player_name"
+                        execute_server_command "/ban $current_ip"
+                        
+                        # Auto-unban after 30 seconds
+                        (
+                            sleep 30
+                            execute_server_command "/unban $current_ip"
+                            log_debug "Auto-unbanned IP: $current_ip"
+                        ) &
+                    fi
+                fi
+            fi
+        fi
+        log_debug "IP grace timer completed for $player_name"
+    ) &
+    
+    active_timers["ip_grace_$player_name"]=$!
+    log_debug "Started independent IP grace timer for $player_name (PID: ${active_timers["ip_grace_$player_name"]})"
+}
+
+# Function to start password enforcement with INDEPENDENT timers
+start_password_enforcement() {
+    local player_name="$1"
+    
+    log_debug "Starting INDEPENDENT password enforcement for $player_name"
+    
+    # Start each timer as independent processes
+    start_password_reminder_timer "$player_name"
+    start_password_kick_timer "$player_name"
+}
+
+# =============================================================================
+# COMMAND HANDLERS (IMMEDIATE EXECUTION)
+# =============================================================================
+
+# Function to handle password creation - IMMEDIATE EXECUTION
 handle_password_creation() {
     local player_name="$1" password="$2" confirm_password="$3"
     
-    log_debug "Password creation requested for $player_name"
+    log_debug "IMMEDIATE: Password creation requested for $player_name"
     
     # Clear chat IMMEDIATELY to hide password
-    log_debug "Sending immediate /clear command for $player_name"
+    log_debug "IMMEDIATE: Sending /clear command for $player_name"
     send_server_command "$SCREEN_SESSION" "/clear"
     
-    # Wait for cooldown before sending messages
-    sleep 0.5
+    # Validación inmediata
+    log_debug "IMMEDIATE: Validating password for $player_name"
     
     # Validate password length (7-16 characters)
     if [ ${#password} -lt 7 ] || [ ${#password} -gt 16 ]; then
-        log_debug "Password validation failed: length invalid (${#password} chars)"
+        log_debug "IMMEDIATE: Password validation failed: length invalid (${#password} chars)"
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, password must be between 7 and 16 characters."
         return 1
     fi
     
     # Validate password confirmation
     if [ "$password" != "$confirm_password" ]; then
-        log_debug "Password validation failed: passwords don't match"
+        log_debug "IMMEDIATE: Password validation failed: passwords don't match"
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, passwords do not match."
         return 1
     fi
@@ -553,20 +684,20 @@ handle_password_creation() {
         local whitelisted=$(echo "$player_info" | cut -d'|' -f4)
         local blacklisted=$(echo "$player_info" | cut -d'|' -f5)
         
-        log_debug "Player info found for $player_name, cancelling timers"
+        log_debug "IMMEDIATE: Player info found for $player_name, cancelling ALL timers"
         
         # Cancel ALL timers immediately when password is set
-        cancel_password_kick_timer "$player_name"
+        cancel_player_timers "$player_name"
         
         # Update player with new password
-        log_debug "Updating players.log with new password for $player_name"
+        log_debug "IMMEDIATE: Updating players.log with new password for $player_name"
         update_player_info "$player_name" "$first_ip" "$password" "$rank" "$whitelisted" "$blacklisted"
         
-        log_debug "Password set successfully for $player_name"
+        log_debug "IMMEDIATE: Password set successfully for $player_name"
         send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your password has been set successfully."
         return 0
     else
-        log_debug "Player info NOT found for $player_name"
+        log_debug "IMMEDIATE: Player info NOT found for $player_name"
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, player not found in registry."
         return 1
     fi
@@ -580,7 +711,6 @@ handle_password_change() {
     
     # Clear chat IMMEDIATELY
     send_server_command "$SCREEN_SESSION" "/clear"
-    sleep 0.5
     
     # Validate new password length (7-16 characters)
     if [ ${#new_password} -lt 7 ] || [ ${#new_password} -gt 16 ]; then
@@ -621,7 +751,6 @@ handle_ip_change() {
     
     # Clear chat IMMEDIATELY
     send_server_command "$SCREEN_SESSION" "/clear"
-    sleep 0.5
     
     local player_info=$(get_player_info "$player_name")
     if [ -n "$player_info" ]; then
@@ -642,10 +771,7 @@ handle_ip_change() {
         player_verification_status["$player_name"]="verified"
         
         # Cancel grace period timer
-        if [ -n "${player_ip_grace_timers[$player_name]}" ]; then
-            kill "${player_ip_grace_timers[$player_name]}" 2>/dev/null
-            unset player_ip_grace_timers["$player_name"]
-        fi
+        cancel_player_timers "$player_name"
         
         # Sync lists now that player is verified
         sync_lists_from_players_log
@@ -658,236 +784,11 @@ handle_ip_change() {
     fi
 }
 
-# Function to start password reminder and enforcement
-start_password_enforcement() {
-    local player_name="$1"
-    
-    log_debug "Starting password enforcement for $player_name"
-    
-    # First reminder after 5 seconds
-    player_password_timers["$player_name"]=$(
-        (
-            sleep 5
-            if [ -n "${connected_players[$player_name]}" ]; then
-                local player_info=$(get_player_info "$player_name")
-                if [ -n "$player_info" ]; then
-                    local password=$(echo "$player_info" | cut -d'|' -f2)
-                    if [ "$password" = "NONE" ]; then
-                        log_debug "Sending password reminder to $player_name"
-                        execute_server_command "SECURITY: $player_name, please set your password with !psw PASSWORD CONFIRM_PASSWORD within 60 seconds or you will be kicked."
-                        player_password_reminder_sent["$player_name"]=1
-                    fi
-                fi
-            fi
-        ) &
-        echo $!
-    )
-    
-    # Schedule kick after 60 seconds
-    player_kick_timers["$player_name"]=$(
-        (
-            sleep 60
-            if [ -n "${connected_players[$player_name]}" ]; then
-                local player_info=$(get_player_info "$player_name")
-                if [ -n "$player_info" ]; then
-                    local password=$(echo "$player_info" | cut -d'|' -f2)
-                    if [ "$password" = "NONE" ]; then
-                        log_debug "Kicking $player_name for not setting password within 60 seconds"
-                        execute_server_command "/kick $player_name"
-                    fi
-                fi
-            fi
-        ) &
-        echo $!
-    )
-    
-    log_debug "Password enforcement timers started for $player_name (Reminder PID: ${player_password_timers[$player_name]}, Kick PID: ${player_kick_timers[$player_name]})"
-}
+# =============================================================================
+# CONSOLE MONITOR (NON-BLOCKING)
+# =============================================================================
 
-# Function to start IP grace period
-start_ip_grace_period() {
-    local player_name="$1" current_ip="$2"
-    
-    log_debug "Starting IP grace period for $player_name with IP $current_ip"
-    
-    player_ip_grace_timers["$player_name"]=$(
-        (
-            # Wait 5 seconds after connection
-            sleep 5
-            if [ -n "${connected_players[$player_name]}" ]; then
-                local player_info=$(get_player_info "$player_name")
-                if [ -n "$player_info" ]; then
-                    local first_ip=$(echo "$player_info" | cut -d'|' -f1)
-                    if [ "$first_ip" != "UNKNOWN" ] && [ "$first_ip" != "$current_ip" ]; then
-                        log_debug "IP change detected for $player_name: $first_ip -> $current_ip"
-                        execute_server_command "SECURITY ALERT: $player_name, your IP has changed! Verify with !ip_change YOUR_PASSWORD within 25 seconds or you will be kicked and IP banned."
-                        
-                        # Schedule kick and ban after 30 seconds total
-                        (
-                            sleep 25
-                            if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" != "verified" ]; then
-                                log_debug "IP verification failed for $player_name, kicking and banning"
-                                execute_server_command "/kick $player_name"
-                                execute_server_command "/ban $current_ip"
-                                
-                                # Unban after 30 seconds
-                                (
-                                    sleep 30
-                                    execute_server_command "/unban $current_ip"
-                                    log_debug "Auto-unbanned IP: $current_ip"
-                                ) &
-                            fi
-                        ) &
-                    fi
-                fi
-            fi
-        ) &
-        echo $!
-    )
-}
-
-# Function to process player connection
-process_player_connection() {
-    local player_name="$1" player_ip="$2"
-    
-    log_debug "Processing connection: $player_name ($player_ip)"
-    
-    # Clean player name
-    player_name=$(echo "$player_name" | xargs)
-    
-    if ! is_valid_player_name "$player_name"; then
-        log_debug "Invalid player name: $player_name"
-        return
-    fi
-    
-    connected_players["$player_name"]=1
-    player_ip_map["$player_name"]="$player_ip"
-    
-    log_debug "Player connected: $player_name ($player_ip)"
-    
-    # Check if player exists in players.log
-    local player_info=$(get_player_info "$player_name")
-    if [ -z "$player_info" ]; then
-        # New player - add to players.log with REAL IP and NONE password
-        log_debug "New player detected: $player_name, adding to players.log with IP $player_ip"
-        update_player_info "$player_name" "$player_ip" "NONE" "NONE" "NO" "NO"
-        player_verification_status["$player_name"]="verified"
-        start_password_enforcement "$player_name"
-    else
-        # Existing player - check IP and start verification process
-        local first_ip=$(echo "$player_info" | cut -d'|' -f1)
-        local password=$(echo "$player_info" | cut -d'|' -f2)
-        
-        # If the stored IP is UNKNOWN, update it to the current IP
-        if [ "$first_ip" = "UNKNOWN" ]; then
-            log_debug "Updating unknown IP for $player_name to $player_ip"
-            update_player_info "$player_name" "$player_ip" "$password" "NONE" "NO" "NO"
-            player_verification_status["$player_name"]="verified"
-        elif [ "$first_ip" != "$player_ip" ]; then
-            # IP changed - require verification
-            log_debug "IP changed for $player_name: $first_ip -> $player_ip, requiring verification"
-            player_verification_status["$player_name"]="pending"
-            start_ip_grace_period "$player_name" "$player_ip"
-        else
-            # IP matches - mark as verified
-            log_debug "IP matches for $player_name, marking as verified"
-            player_verification_status["$player_name"]="verified"
-        fi
-        
-        # Password enforcement for existing players without password
-        if [ "$password" = "NONE" ]; then
-            log_debug "Existing player $player_name has no password, starting enforcement"
-            start_password_enforcement "$player_name"
-        fi
-    fi
-    
-    # Sync lists for connected player (will only add if verified)
-    sync_lists_from_players_log
-}
-
-# Function to process player disconnection
-process_player_disconnection() {
-    local player_name="$1"
-    
-    player_name=$(echo "$player_name" | xargs)
-    
-    if ! is_valid_player_name "$player_name"; then
-        log_debug "Invalid player name for disconnection: $player_name"
-        return
-    fi
-    
-    log_debug "Processing disconnection: $player_name"
-    
-    unset connected_players["$player_name"]
-    unset player_ip_map["$player_name"]
-    unset player_verification_status["$player_name"]
-    unset player_password_reminder_sent["$player_name"]
-    
-    # Cancel ALL timers
-    cancel_password_kick_timer "$player_name"
-    
-    if [ -n "${player_ip_grace_timers[$player_name]}" ]; then
-        kill "${player_ip_grace_timers[$player_name]}" 2>/dev/null
-        unset player_ip_grace_timers["$player_name"]
-    fi
-    
-    log_debug "Player disconnected: $player_name"
-    
-    # Update lists (remove from role lists since player disconnected)
-    sync_lists_from_players_log
-}
-
-# Function to process chat command
-process_chat_command() {
-    local player_name="$1" message="$2"
-    
-    log_debug "Processing chat command from $player_name: $message"
-    
-    local current_ip="${player_ip_map[$player_name]}"
-    
-    case "$message" in
-        "!psw "*)
-            log_debug "Password set command detected from $player_name"
-            if [[ "$message" =~ !psw\ ([^[:space:]]+)\ ([^[:space:]]+)$ ]]; then
-                local password="${BASH_REMATCH[1]}"
-                local confirm_password="${BASH_REMATCH[2]}"
-                log_debug "Processing password set for $player_name: $password"
-                # Execute immediately
-                handle_password_creation "$player_name" "$password" "$confirm_password"
-            else
-                log_debug "Invalid password command format from $player_name"
-                send_server_command "$SCREEN_SESSION" "/clear"
-                sleep 0.5
-                send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !psw PASSWORD CONFIRM_PASSWORD"
-            fi
-            ;;
-        "!change_psw "*)
-            log_debug "Password change command detected from $player_name"
-            if [[ "$message" =~ !change_psw\ ([^[:space:]]+)\ ([^[:space:]]+)$ ]]; then
-                local old_password="${BASH_REMATCH[1]}"
-                local new_password="${BASH_REMATCH[2]}"
-                handle_password_change "$player_name" "$old_password" "$new_password"
-            else
-                send_server_command "$SCREEN_SESSION" "/clear"
-                sleep 0.5
-                send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !change_psw OLD_PASSWORD NEW_PASSWORD"
-            fi
-            ;;
-        "!ip_change "*)
-            log_debug "IP change command detected from $player_name"
-            if [[ "$message" =~ !ip_change\ (.+)$ ]]; then
-                local password="${BASH_REMATCH[1]}"
-                handle_ip_change "$player_name" "$password" "$current_ip"
-            else
-                send_server_command "$SCREEN_SESSION" "/clear"
-                sleep 0.5
-                send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !ip_change YOUR_PASSWORD"
-            fi
-            ;;
-    esac
-}
-
-# Function to monitor console.log using efficient polling
+# Function to monitor console.log for commands and connections
 monitor_console_log() {
     print_header "STARTING CONSOLE LOG MONITOR"
     log_debug "Starting console log monitor"
@@ -905,90 +806,137 @@ monitor_console_log() {
         return 1
     fi
     
-    log_debug "Console log found, starting robust monitoring"
+    log_debug "Console log found, starting monitoring"
     
-    # Get initial file size
-    local last_size=$(wc -c < "$CONSOLE_LOG" 2>/dev/null || echo 0)
-    local consecutive_failures=0
-    
-    while true; do
-        # Check if file still exists
-        if [ ! -f "$CONSOLE_LOG" ]; then
-            log_debug "Console log disappeared, waiting for it to reappear..."
-            sleep 5
-            continue
-        fi
-        
-        # Get current file size
-        local current_size=$(wc -c < "$CONSOLE_LOG" 2>/dev/null || echo 0)
-        
-        # If file size decreased (log rotation), reset last_size
-        if [ "$current_size" -lt "$last_size" ]; then
-            log_debug "Log rotation detected, resetting file pointer"
-            last_size=0
-        fi
-        
-        # Read new lines
-        if [ "$current_size" -gt "$last_size" ]; then
-            local new_content=$(tail -c "+$((last_size + 1))" "$CONSOLE_LOG" 2>/dev/null)
-            if [ $? -eq 0 ] && [ -n "$new_content" ]; then
-                consecutive_failures=0
+    # Start monitoring
+    tail -n 0 -F "$CONSOLE_LOG" | while read -r line; do
+        # Player connection detection
+        if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
+            local player_name="${BASH_REMATCH[1]}"
+            local player_ip="${BASH_REMATCH[2]}"
+            
+            # Clean player name
+            player_name=$(echo "$player_name" | xargs)
+            
+            if is_valid_player_name "$player_name"; then
+                connected_players["$player_name"]=1
+                player_ip_map["$player_name"]="$player_ip"
                 
-                # Process each new line
-                while IFS= read -r line; do
-                    [ -n "$line" ] && process_console_line "$line"
-                done <<< "$new_content"
+                log_debug "Player connected: $player_name ($player_ip)"
                 
-                last_size=$current_size
-            else
-                ((consecutive_failures++))
-                if [ $consecutive_failures -ge 3 ]; then
-                    log_debug "Multiple consecutive read failures, resetting file pointer"
-                    last_size=0
-                    consecutive_failures=0
+                # Check if player exists in players.log
+                local player_info=$(get_player_info "$player_name")
+                if [ -z "$player_info" ]; then
+                    # New player - add to players.log with UNKNOWN first IP and NONE password
+                    log_debug "New player detected: $player_name, adding to players.log"
+                    update_player_info "$player_name" "UNKNOWN" "NONE" "NONE" "NO" "NO"
+                    player_verification_status["$player_name"]="pending"
+                    start_password_enforcement "$player_name"
+                else
+                    # Existing player - check IP and start verification process
+                    local first_ip=$(echo "$player_info" | cut -d'|' -f1)
+                    local password=$(echo "$player_info" | cut -d'|' -f2)
+                    
+                    if [ "$first_ip" = "UNKNOWN" ]; then
+                        # First connection - update IP and mark as verified
+                        log_debug "First connection for $player_name, updating IP to $player_ip"
+                        update_player_info "$player_name" "$player_ip" "$password" "NONE" "NO" "NO"
+                        player_verification_status["$player_name"]="verified"
+                    elif [ "$first_ip" != "$player_ip" ]; then
+                        # IP changed - require verification
+                        log_debug "IP changed for $player_name: $first_ip -> $player_ip, requiring verification"
+                        player_verification_status["$player_name"]="pending"
+                        start_ip_grace_timer "$player_name" "$player_ip"
+                    else
+                        # IP matches - mark as verified
+                        log_debug "IP matches for $player_name, marking as verified"
+                        player_verification_status["$player_name"]="verified"
+                    fi
+                    
+                    # Password enforcement for existing players without password
+                    if [ "$password" = "NONE" ]; then
+                        log_debug "Existing player $player_name has no password, starting enforcement"
+                        start_password_enforcement "$player_name"
+                    fi
                 fi
+                
+                # Sync lists for connected player (will only add if verified)
+                sync_lists_from_players_log
             fi
         fi
         
-        # Small sleep to prevent busy looping but maintain responsiveness
-        sleep 0.1
-    done
-}
-
-# Function to process individual console lines
-process_console_line() {
-    local line="$1"
-    
-    # Log every line for complete debugging
-    log_debug "Console: $line"
-    
-    # Player connection detection - IMPROVED PATTERN
-    if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
-        local player_name="${BASH_REMATCH[1]}"
-        local player_ip="${BASH_REMATCH[2]}"
-        process_player_connection "$player_name" "$player_ip"
-        return
-    fi
-    
-    # Player disconnection detection - IMPROVED PATTERN  
-    if [[ "$line" =~ Player\ Disconnected\ (.+) ]]; then
-        local player_name="${BASH_REMATCH[1]}"
-        process_player_disconnection "$player_name"
-        return
-    fi
-    
-    # Chat command detection - IMPROVED PATTERN
-    if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
-        local player_name="${BASH_REMATCH[1]}"
-        local message="${BASH_REMATCH[2]}"
-        
-        player_name=$(echo "$player_name" | xargs)
-        
-        if is_valid_player_name "$player_name" ] && [ -n "${connected_players[$player_name]}" ]; then
-            process_chat_command "$player_name" "$message"
+        # Player disconnection detection
+        if [[ "$line" =~ Player\ Disconnected\ (.+) ]]; then
+            local player_name="${BASH_REMATCH[1]}"
+            player_name=$(echo "$player_name" | xargs)
+            
+            if is_valid_player_name "$player_name" ]; then
+                unset connected_players["$player_name"]
+                unset player_ip_map["$player_name"]
+                unset player_verification_status["$player_name"]
+                unset player_password_reminder_sent["$player_name"]
+                
+                # Cancel ALL timers
+                cancel_player_timers "$player_name"
+                
+                log_debug "Player disconnected: $player_name"
+                
+                # Update lists (remove from role lists since player disconnected)
+                sync_lists_from_players_log
+            fi
         fi
-        return
-    fi
+        
+        # Chat command detection - IMMEDIATE PROCESSING
+        if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
+            local player_name="${BASH_REMATCH[1]}"
+            local message="${BASH_REMATCH[2]}"
+            local current_ip="${player_ip_map[$player_name]}"
+            
+            player_name=$(echo "$player_name" | xargs)
+            
+            if is_valid_player_name "$player_name" ]; then
+                log_debug "IMMEDIATE: Chat command detected from $player_name: $message"
+                
+                case "$message" in
+                    "!psw "*)
+                        log_debug "IMMEDIATE: Password set command detected from $player_name"
+                        if [[ "$message" =~ !psw\ ([^[:space:]]+)\ ([^[:space:]]+)$ ]]; then
+                            local password="${BASH_REMATCH[1]}"
+                            local confirm_password="${BASH_REMATCH[2]}"
+                            log_debug "IMMEDIATE: Processing password set for $player_name: $password"
+                            # Ejecutar inmediatamente en el mismo proceso
+                            handle_password_creation "$player_name" "$password" "$confirm_password"
+                        else
+                            log_debug "IMMEDIATE: Invalid password command format from $player_name"
+                            send_server_command "$SCREEN_SESSION" "/clear"
+                            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !psw PASSWORD CONFIRM_PASSWORD"
+                        fi
+                        ;;
+                    "!change_psw "*)
+                        log_debug "IMMEDIATE: Password change command detected from $player_name"
+                        if [[ "$message" =~ !change_psw\ ([^[:space:]]+)\ ([^[:space:]]+)$ ]]; then
+                            local old_password="${BASH_REMATCH[1]}"
+                            local new_password="${BASH_REMATCH[2]}"
+                            handle_password_change "$player_name" "$old_password" "$new_password"
+                        else
+                            send_server_command "$SCREEN_SESSION" "/clear"
+                            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !change_psw OLD_PASSWORD NEW_PASSWORD"
+                        fi
+                        ;;
+                    "!ip_change "*)
+                        log_debug "IMMEDIATE: IP change command detected from $player_name"
+                        if [[ "$message" =~ !ip_change\ (.+)$ ]]; then
+                            local password="${BASH_REMATCH[1]}"
+                            handle_ip_change "$player_name" "$password" "$current_ip"
+                        else
+                            send_server_command "$SCREEN_SESSION" "/clear"
+                            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !ip_change YOUR_PASSWORD"
+                        fi
+                        ;;
+                esac
+            fi
+        fi
+    done
 }
 
 # Function to cleanup
@@ -1000,16 +948,12 @@ cleanup() {
     jobs -p | xargs kill -9 2>/dev/null
     
     # Kill all timer processes
-    for pid in "${player_password_timers[@]}"; do
-        kill "$pid" 2>/dev/null
-    done
-    
-    for pid in "${player_ip_grace_timers[@]}"; do
-        kill "$pid" 2>/dev/null
-    done
-    
-    for pid in "${player_kick_timers[@]}"; do
-        kill "$pid" 2>/dev/null
+    for timer_key in "${!active_timers[@]}"; do
+        local pid="${active_timers[$timer_key]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Killed timer: $timer_key (PID: $pid)"
+        fi
     done
     
     log_debug "=== CLEANUP COMPLETED ==="
