@@ -810,12 +810,10 @@ monitor_console_log() {
     
     # Start monitoring
     tail -n 0 -F "$CONSOLE_LOG" | while read -r line; do
-        # Player connection detection - CORREGIDO PARA EXTRAER IP CORRECTAMENTE
-        if [[ "$line" =~ ([0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3})\ .*Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F\.:]+)\ \|\ ([0-9a-f]+) ]]; then
-            local timestamp="${BASH_REMATCH[1]}"
-            local player_name="${BASH_REMATCH[2]}"
-            local player_ip="${BASH_REMATCH[3]}"
-            local player_id="${BASH_REMATCH[4]}"
+        # Player connection detection - CORREGIDO para extraer IP correctamente
+        if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
+            local player_name="${BASH_REMATCH[1]}"
+            local player_ip="${BASH_REMATCH[2]}"
             
             # Clean player name
             player_name=$(echo "$player_name" | xargs)
@@ -824,26 +822,26 @@ monitor_console_log() {
                 connected_players["$player_name"]=1
                 player_ip_map["$player_name"]="$player_ip"
                 
-                log_debug "Player connected: $player_name ($player_ip) - ID: $player_id"
+                log_debug "Player connected: $player_name ($player_ip)"
                 
                 # Check if player exists in players.log
                 local player_info=$(get_player_info "$player_name")
                 if [ -z "$player_info" ]; then
-                    # New player - add to players.log with REAL IP and NONE password
+                    # New player - add to players.log with REAL IP (not UNKNOWN)
                     log_debug "New player detected: $player_name, adding to players.log with IP: $player_ip"
                     update_player_info "$player_name" "$player_ip" "NONE" "NONE" "NO" "NO"
-                    player_verification_status["$player_name"]="verified"
+                    player_verification_status["$player_name"]="verified"  # New player with real IP is verified
                     start_password_enforcement "$player_name"
                 else
                     # Existing player - check IP and start verification process
                     local first_ip=$(echo "$player_info" | cut -d'|' -f1)
                     local password=$(echo "$player_info" | cut -d'|' -f2)
                     
-                    log_debug "Existing player $player_name - First IP: $first_ip, Current IP: $player_ip"
+                    log_debug "Existing player $player_name - First IP in DB: $first_ip, Current IP: $player_ip"
                     
                     if [ "$first_ip" = "UNKNOWN" ]; then
-                        # First connection with real IP - update IP and mark as verified
-                        log_debug "Updating UNKNOWN IP for $player_name to real IP: $player_ip"
+                        # First REAL connection - update IP and mark as verified
+                        log_debug "First real connection for $player_name, updating IP from UNKNOWN to $player_ip"
                         update_player_info "$player_name" "$player_ip" "$password" "NONE" "NO" "NO"
                         player_verification_status["$player_name"]="verified"
                     elif [ "$first_ip" != "$player_ip" ]; then
@@ -870,9 +868,8 @@ monitor_console_log() {
         fi
         
         # Player disconnection detection
-        if [[ "$line" =~ ([0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3})\ .*Player\ Disconnected\ (.+) ]]; then
-            local timestamp="${BASH_REMATCH[1]}"
-            local player_name="${BASH_REMATCH[2]}"
+        if [[ "$line" =~ Player\ Disconnected\ (.+) ]]; then
+            local player_name="${BASH_REMATCH[1]}"
             player_name=$(echo "$player_name" | xargs)
             
             if is_valid_player_name "$player_name" ]; then
@@ -892,10 +889,9 @@ monitor_console_log() {
         fi
         
         # Chat command detection - IMMEDIATE PROCESSING
-        if [[ "$line" =~ ([0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3})\ .*([a-zA-Z0-9_]+):\ (.+)$ ]]; then
-            local timestamp="${BASH_REMATCH[1]}"
-            local player_name="${BASH_REMATCH[2]}"
-            local message="${BASH_REMATCH[3]}"
+        if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
+            local player_name="${BASH_REMATCH[1]}"
+            local message="${BASH_REMATCH[2]}"
             local current_ip="${player_ip_map[$player_name]}"
             
             player_name=$(echo "$player_name" | xargs)
