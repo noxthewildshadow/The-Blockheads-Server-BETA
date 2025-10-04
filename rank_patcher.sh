@@ -43,7 +43,8 @@ declare -A active_timers
 declare -A current_player_ranks
 declare -A current_blacklisted_players
 declare -A current_whitelisted_players
-declare -A super_admin_disconnect_timers  # NUEVO: Para timer de 15 segundos de SUPER
+declare -A super_admin_disconnect_timers
+declare -A pending_ranks  # NUEVO: Almacena rangos pendientes hasta verificación IP
 
 # Function to log debug information
 log_debug() {
@@ -151,14 +152,14 @@ get_player_info() {
     echo ""
 }
 
-# Function to update player info in players.log
+# Function to update player info in players.log - CORREGIDO: contraseñas case-sensitive
 update_player_info() {
     local player_name="$1" first_ip="$2" password="$3" rank="$4" whitelisted="${5:-NO}" blacklisted="${6:-NO}"
     
-    # Convert to uppercase as required
+    # Convert to uppercase as required, EXCEPTO CONTRASEÑA
     player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
     first_ip=$(echo "$first_ip" | tr '[:lower:]' '[:upper:]')
-    password=$(echo "$password" | tr '[:lower:]' '[:upper:]')
+    # PASSWORD SE MANTIENE CASE-SENSITIVE - NO CONVERTIR
     rank=$(echo "$rank" | tr '[:lower:]' '[:upper:]')
     whitelisted=$(echo "$whitelisted" | tr '[:lower:]' '[:upper:]')
     blacklisted=$(echo "$blacklisted" | tr '[:lower:]' '[:upper:]')
@@ -194,14 +195,25 @@ sync_lists_from_players_log() {
             blacklisted=$(echo "$blacklisted" | xargs)
             
             # Skip if player is not connected OR not IP verified
-            if [ -z "${connected_players[$name]}" ] || [ "${player_verification_status[$name]}" != "verified" ]; then
+            if [ -z "${connected_players[$name]}" ]; then
+                continue
+            fi
+            
+            # NUEVA LÓGICA CRÍTICA: Solo aplicar rango si está verificado
+            if [ "${player_verification_status[$name]}" != "verified" ]; then
+                log_debug "SKIPPING rank application for $name - IP not verified (Status: ${player_verification_status[$name]})"
+                # Guardar rango pendiente para aplicar después de verificación
+                if [ "$rank" != "NONE" ]; then
+                    pending_ranks["$name"]="$rank"
+                    log_debug "Saved pending rank for $name: $rank"
+                fi
                 continue
             fi
             
             # Get current IP for connected player
             local current_ip="${player_ip_map[$name]}"
             
-            # Handle rank changes using SERVER COMMANDS
+            # Handle rank changes using SERVER COMMANDS - SOLO SI ESTÁ VERIFICADO
             local current_rank="${current_player_ranks[$name]}"
             if [ "$current_rank" != "$rank" ]; then
                 log_debug "Rank change detected for $name: $current_rank -> $rank"
@@ -229,6 +241,36 @@ sync_lists_from_players_log() {
     fi
     
     log_debug "Completed syncing lists using server commands"
+}
+
+# NUEVA FUNCIÓN: Aplicar rangos pendientes después de verificación IP
+apply_pending_ranks() {
+    local player_name="$1"
+    
+    if [ -n "${pending_ranks[$player_name]}" ]; then
+        local pending_rank="${pending_ranks[$player_name]}"
+        log_debug "Applying pending rank for $name: $pending_rank"
+        
+        case "$pending_rank" in
+            "ADMIN")
+                execute_server_command "/admin $player_name"
+                ;;
+            "MOD")
+                execute_server_command "/mod $player_name"
+                ;;
+            "SUPER")
+                add_to_cloud_admin "$player_name"
+                execute_server_command "/admin $player_name"
+                ;;
+        esac
+        
+        current_player_ranks["$player_name"]="$pending_rank"
+        unset pending_ranks["$player_name"]
+        log_debug "Successfully applied pending rank $pending_rank to $player_name"
+        
+        # Reload lists after changes
+        execute_server_command "/load-lists"
+    fi
 }
 
 # Function to handle whitelist changes using SERVER COMMANDS
@@ -261,31 +303,33 @@ apply_rank_changes() {
             execute_server_command "/unmod $player_name"
             ;;
         "SUPER")
-            # NUEVO: Iniciar timer de 15 segundos en lugar de eliminar inmediatamente
+            # Iniciar timer de 15 segundos en lugar de eliminar inmediatamente
             start_super_disconnect_timer "$player_name"
             execute_server_command "/unadmin $player_name"
             ;;
     esac
     
-    # Add new rank
-    case "$new_rank" in
-        "ADMIN")
-            execute_server_command "/admin $player_name"
-            ;;
-        "MOD")
-            execute_server_command "/mod $player_name"
-            ;;
-        "SUPER")
-            add_to_cloud_admin "$player_name"
-            execute_server_command "/admin $player_name"
-            ;;
-    esac
+    # Add new rank - SOLO si no es "NONE"
+    if [ "$new_rank" != "NONE" ]; then
+        case "$new_rank" in
+            "ADMIN")
+                execute_server_command "/admin $player_name"
+                ;;
+            "MOD")
+                execute_server_command "/mod $player_name"
+                ;;
+            "SUPER")
+                add_to_cloud_admin "$player_name"
+                execute_server_command "/admin $player_name"
+                ;;
+        esac
+    fi
     
     # Reload lists after changes
     execute_server_command "/load-lists"
 }
 
-# NUEVA FUNCIÓN: Timer de 15 segundos para SUPER al desconectarse
+# Timer de 15 segundos para SUPER al desconectarse
 start_super_disconnect_timer() {
     local player_name="$1"
     
@@ -302,7 +346,7 @@ start_super_disconnect_timer() {
     log_debug "Started 15-second disconnect timer for SUPER $player_name (PID: ${super_admin_disconnect_timers[$player_name]})"
 }
 
-# NUEVA FUNCIÓN: Cancelar timer de desconexión de SUPER si se reconecta
+# Cancelar timer de desconexión de SUPER si se reconecta
 cancel_super_disconnect_timer() {
     local player_name="$1"
     
@@ -537,7 +581,7 @@ cancel_player_timers() {
         unset active_timers["ip_grace_$player_name"]
     fi
     
-    # NUEVO: Cancelar timer de desconexión de SUPER si se reconecta
+    # Cancelar timer de desconexión de SUPER si se reconecta
     cancel_super_disconnect_timer "$player_name"
 }
 
@@ -649,10 +693,10 @@ start_password_enforcement() {
 }
 
 # =============================================================================
-# COMMAND HANDLERS (IMMEDIATE EXECUTION)
+# COMMAND HANDLERS (IMMEDIATE EXECUTION) - CORREGIDOS PARA CASE-SENSITIVE
 # =============================================================================
 
-# Function to handle password creation - IMMEDIATE EXECUTION
+# Function to handle password creation - IMMEDIATE EXECUTION - CORREGIDO
 handle_password_creation() {
     local player_name="$1" password="$2" confirm_password="$3"
     
@@ -662,17 +706,17 @@ handle_password_creation() {
     log_debug "IMMEDIATE: Sending /clear command for $player_name"
     send_server_command "$SCREEN_SESSION" "/clear"
     
-    # Validación inmediata
+    # Validación inmediata - CORREGIDO: contraseñas case-sensitive
     log_debug "IMMEDIATE: Validating password for $player_name"
     
-    # Validate password length (7-16 characters)
+    # Validate password length (7-16 characters) - CASE SENSITIVE
     if [ ${#password} -lt 7 ] || [ ${#password} -gt 16 ]; then
         log_debug "IMMEDIATE: Password validation failed: length invalid (${#password} chars)"
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, password must be between 7 and 16 characters."
         return 1
     fi
     
-    # Validate password confirmation
+    # Validate password confirmation - CASE SENSITIVE
     if [ "$password" != "$confirm_password" ]; then
         log_debug "IMMEDIATE: Password validation failed: passwords don't match"
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, passwords do not match."
@@ -693,7 +737,7 @@ handle_password_creation() {
         # Cancel ALL timers immediately when password is set
         cancel_player_timers "$player_name"
         
-        # Update player with new password
+        # Update player with new password - CASE SENSITIVE
         log_debug "IMMEDIATE: Updating players.log with new password for $player_name"
         update_player_info "$player_name" "$first_ip" "$password" "$rank" "$whitelisted" "$blacklisted"
         
@@ -707,7 +751,7 @@ handle_password_creation() {
     fi
 }
 
-# Function to handle password change
+# Function to handle password change - CORREGIDO CASE-SENSITIVE
 handle_password_change() {
     local player_name="$1" old_password="$2" new_password="$3"
     
@@ -716,7 +760,7 @@ handle_password_change() {
     # Clear chat IMMEDIATELY
     send_server_command "$SCREEN_SESSION" "/clear"
     
-    # Validate new password length (7-16 characters)
+    # Validate new password length (7-16 characters) - CASE SENSITIVE
     if [ ${#new_password} -lt 7 ] || [ ${#new_password} -gt 16 ]; then
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, new password must be between 7 and 16 characters."
         return 1
@@ -730,13 +774,13 @@ handle_password_change() {
         local whitelisted=$(echo "$player_info" | cut -d'|' -f4)
         local blacklisted=$(echo "$player_info" | cut -d'|' -f5)
         
-        # Verify old password
+        # Verify old password - CASE SENSITIVE
         if [ "$current_password" != "$old_password" ]; then
             send_server_command "$SCREEN_SESSION" "ERROR: $player_name, old password is incorrect."
             return 1
         fi
         
-        # Update password
+        # Update password - CASE SENSITIVE
         update_player_info "$player_name" "$first_ip" "$new_password" "$rank" "$whitelisted" "$blacklisted"
         
         send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your password has been changed successfully."
@@ -747,7 +791,7 @@ handle_password_change() {
     fi
 }
 
-# Function to handle IP change verification
+# Function to handle IP change verification - CORREGIDO CASE-SENSITIVE
 handle_ip_change() {
     local player_name="$1" password="$2" current_ip="$3"
     
@@ -764,22 +808,26 @@ handle_ip_change() {
         local whitelisted=$(echo "$player_info" | cut -d'|' -f4)
         local blacklisted=$(echo "$player_info" | cut -d'|' -f5)
         
-        # Verify password
+        # Verify password - CASE SENSITIVE
         if [ "$current_password" != "$password" ]; then
             send_server_command "$SCREEN_SESSION" "ERROR: $player_name, password is incorrect."
             return 1
         fi
         
         # Update IP and mark as verified
-        update_player_info "$player_name" "$first_ip" "$current_password" "$rank" "$whitelisted" "$blacklisted"
+        update_player_info "$player_name" "$current_ip" "$current_password" "$rank" "$whitelisted" "$blacklisted"
         player_verification_status["$player_name"]="verified"
         
         # Cancel grace period timer
         cancel_player_timers "$player_name"
         
-        # NUEVO: Cancelar cooldown de /kick y /ban IP explícitamente
+        # Cancelar cooldown de /kick y /ban IP explícitamente
         log_debug "IP verification successful for $player_name - cancelling kick/ban IP cooldown"
         execute_server_command "SECURITY: $player_name IP verification successful. Kick/ban IP cooldown cancelled."
+        
+        # NUEVO: Aplicar rangos pendientes después de verificación
+        log_debug "Applying pending ranks for $player_name after IP verification"
+        apply_pending_ranks "$player_name"
         
         # Sync lists now that player is verified using SERVER COMMANDS
         sync_lists_from_players_log
@@ -793,7 +841,7 @@ handle_ip_change() {
 }
 
 # =============================================================================
-# CONSOLE MONITOR (NON-BLOCKING) - CORREGIDO PARA EXTRAER IP
+# CONSOLE MONITOR (NON-BLOCKING) - CORREGIDO PARA NO APLICAR RANGO HASTA VERIFICACIÓN
 # =============================================================================
 
 # Function to monitor console.log for commands and connections
@@ -818,7 +866,7 @@ monitor_console_log() {
     
     # Start monitoring
     tail -n 0 -F "$CONSOLE_LOG" | while read -r line; do
-        # Player connection detection - CORREGIDO para extraer IP correctamente
+        # Player connection detection
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
@@ -832,7 +880,7 @@ monitor_console_log() {
                 
                 log_debug "Player connected: $player_name ($player_ip)"
                 
-                # NUEVO: Cancelar timer de desconexión de SUPER si se reconecta
+                # Cancelar timer de desconexión de SUPER si se reconecta
                 cancel_super_disconnect_timer "$player_name"
                 
                 # Check if player exists in players.log
@@ -858,9 +906,18 @@ monitor_console_log() {
                         update_player_info "$player_name" "$player_ip" "$password" "$rank" "$whitelisted" "NO"
                         player_verification_status["$player_name"]="verified"
                     elif [ "$first_ip" != "$player_ip" ]; then
-                        # IP changed - require verification
-                        log_debug "IP changed for $player_name: $first_ip -> $player_ip, requiring verification"
+                        # IP changed - require verification - NO APLICAR RANGO HASTA VERIFICACIÓN
+                        log_debug "IP changed for $player_name: $first_ip -> $player_ip, requiring verification - RANK WILL NOT BE APPLIED"
                         player_verification_status["$player_name"]="pending"
+                        
+                        # NUEVO: Quitar rango actual si tiene uno
+                        if [ "$rank" != "NONE" ]; then
+                            log_debug "Removing current rank $rank from $player_name until IP verification"
+                            apply_rank_changes "$player_name" "$rank" "NONE"
+                            # Guardar rango pendiente para aplicar después de verificación
+                            pending_ranks["$player_name"]="$rank"
+                        fi
+                        
                         start_ip_grace_timer "$player_name" "$player_ip"
                     else
                         # IP matches - mark as verified
@@ -874,7 +931,7 @@ monitor_console_log() {
                         start_password_enforcement "$player_name"
                     fi
                     
-                    # NUEVO: Aplicar rango SUPER inmediatamente si está verificado y tiene contraseña
+                    # Aplicar rango SUPER inmediatamente solo si está verificado y tiene contraseña
                     if [ "${player_verification_status[$player_name]}" = "verified" ] && [ "$password" != "NONE" ] && [ "$rank" = "SUPER" ]; then
                         log_debug "Verified SUPER admin $player_name connected, adding to cloud admin"
                         add_to_cloud_admin "$player_name"
@@ -908,6 +965,7 @@ monitor_console_log() {
                 unset player_ip_map["$player_name"]
                 unset player_verification_status["$player_name"]
                 unset player_password_reminder_sent["$player_name"]
+                unset pending_ranks["$player_name"]  # Limpiar rangos pendientes
                 
                 # Cancel ALL timers except SUPER disconnect timer
                 cancel_player_timers "$player_name"
@@ -987,7 +1045,7 @@ cleanup() {
         fi
     done
     
-    # NUEVO: Matar todos los timers de desconexión de SUPER
+    # Matar todos los timers de desconexión de SUPER
     for timer_key in "${!super_admin_disconnect_timers[@]}"; do
         local pid="${super_admin_disconnect_timers[$timer_key]}"
         if kill -0 "$pid" 2>/dev/null; then
