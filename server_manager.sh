@@ -160,7 +160,7 @@ EOF
     [ ! -f "$log_file" ] && {
         print_error "Could not create log file. Server may not have started."
         return 1
-    }
+    fi
     
     local server_ready=false
     for i in {1..30}; do
