@@ -95,32 +95,49 @@ setup_paths() {
     print_status "Screen session: $SCREEN_SESSION"
 }
 
-# Function to initialize list files as empty (keeping only first line)
+# Function to initialize list files as empty (keeping only first line with default comments)
 initialize_list_files() {
     local world_dir="$BASE_SAVES_DIR/$WORLD_ID"
     local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
     
-    # List of files to initialize
+    # Default comment lines for each file
+    local ADMIN_COMMENT="Usernames in this file will be able to issue all server commands via chat, and pick up and remove all objects. One username per line, non case sensitive. This first line is ignored."
+    local MOD_COMMENT="Usernames in this file will be able to issue most server commands via chat. One username per line, non case sensitive. This first line is ignored."
+    local WHITE_COMMENT="Only usernames or IP addresses in this file will be able to connect. One username or IP address per line, non case sensitive. This first line is ignored."
+    local BLACK_COMMENT="Usernames or IP addresses in this file will not be able to connect. One username or IP address per line, non case sensitive. This first line is ignored."
+    
+    # List of files to initialize with their default comments
     local list_files=(
-        "$world_dir/adminlist.txt"
-        "$world_dir/modlist.txt" 
-        "$world_dir/whitelist.txt"
-        "$world_dir/blacklist.txt"
+        "$world_dir/adminlist.txt:$ADMIN_COMMENT"
+        "$world_dir/modlist.txt:$MOD_COMMENT" 
+        "$world_dir/whitelist.txt:$WHITE_COMMENT"
+        "$world_dir/blacklist.txt:$BLACK_COMMENT"
     )
     
-    for file_path in "${list_files[@]}"; do
+    for file_entry in "${list_files[@]}"; do
+        local file_path="${file_entry%:*}"
+        local default_comment="${file_entry#*:}"
+        
         if [ -f "$file_path" ]; then
+            # File exists - preserve the first line (comment)
             local first_line=$(head -1 "$file_path")
-            > "$file_path"  # Empty the file
-            [ -n "$first_line" ] && echo "$first_line" >> "$file_path"
-            log_debug "Initialized as empty: $(basename "$file_path")"
+            # If first line is empty, use default comment
+            if [ -z "$first_line" ]; then
+                first_line="$default_comment"
+            fi
+            
+            # Empty the file but keep the first line
+            > "$file_path"
+            echo "$first_line" >> "$file_path"
+            log_debug "Initialized with preserved comment: $(basename "$file_path")"
         else
-            touch "$file_path"
-            log_debug "Created empty: $(basename "$file_path")"
+            # File doesn't exist - create with default comment
+            echo "$default_comment" > "$file_path"
+            log_debug "Created with default comment: $(basename "$file_path")"
         fi
     done
     
-    # Cloud admin file should be empty initially
+    # Cloud admin file should be empty initially (no comment needed)
     if [ -f "$cloud_file" ]; then
         local first_line=$(head -1 "$cloud_file")
         > "$cloud_file"
@@ -129,7 +146,7 @@ initialize_list_files() {
         touch "$cloud_file"
     fi
     
-    log_debug "All list files initialized as empty"
+    log_debug "All list files initialized with preserved comments"
 }
 
 # Function to execute server command with cooldown
@@ -215,7 +232,7 @@ update_player_info() {
     fi
 }
 
-# Function to sync lists from players.log (ONLY for verified players)
+# Function to sync lists from players.log (ONLY for verified players) - PRESERVING COMMENTS
 sync_lists_from_players_log() {
     local world_dir="$BASE_SAVES_DIR/$WORLD_ID"
     
@@ -226,22 +243,29 @@ sync_lists_from_players_log() {
     local BLACK_LIST="$world_dir/blacklist.txt"
     local CLOUD_ADMIN_FILE="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
     
-    # Clear existing lists (keeping first line as required)
-    local admin_first_line=$(head -1 "$ADMIN_LIST")
-    local mod_first_line=$(head -1 "$MOD_LIST")
-    local white_first_line=$(head -1 "$WHITE_LIST")
-    local black_first_line=$(head -1 "$BLACK_LIST")
+    # Default comment lines for each file (in case they get deleted)
+    local ADMIN_COMMENT="Usernames in this file will be able to issue all server commands via chat, and pick up and remove all objects. One username per line, non case sensitive. This first line is ignored."
+    local MOD_COMMENT="Usernames in this file will be able to issue most server commands via chat. One username per line, non case sensitive. This first line is ignored."
+    local WHITE_COMMENT="Only usernames or IP addresses in this file will be able to connect. One username or IP address per line, non case sensitive. This first line is ignored."
+    local BLACK_COMMENT="Usernames or IP addresses in this file will not be able to connect. One username or IP address per line, non case sensitive. This first line is ignored."
     
-    > "$ADMIN_LIST"
-    > "$MOD_LIST"
-    > "$WHITE_LIST"
-    > "$BLACK_LIST"
+    # Clear existing lists but preserve first line (comment)
+    local admin_first_line=$(head -1 "$ADMIN_LIST" 2>/dev/null)
+    local mod_first_line=$(head -1 "$MOD_LIST" 2>/dev/null)
+    local white_first_line=$(head -1 "$WHITE_LIST" 2>/dev/null)
+    local black_first_line=$(head -1 "$BLACK_LIST" 2>/dev/null)
     
-    # Restore first lines
-    [ -n "$admin_first_line" ] && echo "$admin_first_line" >> "$ADMIN_LIST"
-    [ -n "$mod_first_line" ] && echo "$mod_first_line" >> "$MOD_LIST"
-    [ -n "$white_first_line" ] && echo "$white_first_line" >> "$WHITE_LIST"
-    [ -n "$black_first_line" ] && echo "$black_first_line" >> "$BLACK_LIST"
+    # If first line is empty, use default comment
+    [ -z "$admin_first_line" ] && admin_first_line="$ADMIN_COMMENT"
+    [ -z "$mod_first_line" ] && mod_first_line="$MOD_COMMENT"
+    [ -z "$white_first_line" ] && white_first_line="$WHITE_COMMENT"
+    [ -z "$black_first_line" ] && black_first_line="$BLACK_COMMENT"
+    
+    # Recreate files with preserved comments
+    echo "$admin_first_line" > "$ADMIN_LIST"
+    echo "$mod_first_line" > "$MOD_LIST"
+    echo "$white_first_line" > "$WHITE_LIST"
+    echo "$black_first_line" > "$BLACK_LIST"
     
     # Clear cloud admin file (will be repopulated from SUPER admins)
     if [ -f "$CLOUD_ADMIN_FILE" ]; then
@@ -268,7 +292,7 @@ sync_lists_from_players_log() {
             # Get current IP for connected player
             local current_ip="${player_ip_map[$name]}"
             
-            # Add to appropriate lists based on rank and status
+            # Add to appropriate lists based on rank and status (APPEND after first line)
             case "$rank" in
                 "ADMIN")
                     echo "$name" >> "$ADMIN_LIST"
@@ -285,7 +309,7 @@ sync_lists_from_players_log() {
                     ;;
             esac
             
-            # Handle whitelist/blacklist
+            # Handle whitelist/blacklist (APPEND after first line)
             if [ "$whitelisted" = "YES" ] && [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
                 echo "$current_ip" >> "$WHITE_LIST"
             fi
@@ -300,7 +324,7 @@ sync_lists_from_players_log() {
         done < "$PLAYERS_LOG"
     fi
     
-    log_debug "Synced lists from players.log (verified players only)"
+    log_debug "Synced lists from players.log (verified players only) - comments preserved"
 }
 
 # Function to apply rank changes using server commands
