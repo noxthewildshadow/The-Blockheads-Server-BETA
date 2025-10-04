@@ -43,6 +43,7 @@ declare -A active_timers
 declare -A current_player_ranks
 declare -A current_blacklisted_players
 declare -A current_whitelisted_players
+declare -A super_admin_disconnect_timers  # NUEVO: Para timer de 15 segundos de SUPER
 
 # Function to log debug information
 log_debug() {
@@ -178,121 +179,6 @@ update_player_info() {
     fi
 }
 
-# =============================================================================
-# SUPER ADMIN MANAGEMENT WITH 15-SECOND TIMER
-# =============================================================================
-
-# Function to handle SUPER admins with 15-second timer
-handle_super_admin() {
-    local player_name="$1" action="$2"
-    
-    local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
-    
-    case "$action" in
-        "JOIN")
-            log_debug "SUPER ADMIN $player_name joined - managing cloud admin file"
-            
-            # Create file if it doesn't exist
-            [ ! -f "$cloud_file" ] && touch "$cloud_file"
-            
-            # Keep first line and add player (ignoring first line as requested)
-            local first_line=$(head -1 "$cloud_file" 2>/dev/null)
-            > "$cloud_file"
-            [ -n "$first_line" ] && echo "$first_line" >> "$cloud_file"
-            
-            # Add player if not exists
-            if ! grep -q "^$player_name$" "$cloud_file" 2>/dev/null; then
-                echo "$player_name" >> "$cloud_file"
-                log_debug "Added $player_name to cloud admin list (SUPER)"
-            fi
-            ;;
-            
-        "LEAVE")
-            log_debug "SUPER ADMIN $player_name left - starting 15-second timer for cleanup"
-            
-            # Start 15-second timer
-            (
-                sleep 15
-                
-                # Verify if player is still disconnected
-                if [ -z "${connected_players[$player_name]}" ]; then
-                    log_debug "15-second timer expired - cleaning up SUPER admin $player_name"
-                    
-                    if [ -f "$cloud_file" ]; then
-                        # Keep first line and remove player
-                        local first_line=$(head -1 "$cloud_file")
-                        local temp_file=$(mktemp)
-                        
-                        [ -n "$first_line" ] && echo "$first_line" > "$temp_file"
-                        grep -v "^$player_name$" "$cloud_file" | tail -n +2 >> "$temp_file"
-                        
-                        # If only first line remains or empty, delete file
-                        if [ $(wc -l < "$temp_file") -le 1 ] || 
-                           [ $(wc -l < "$temp_file") -eq 1 -a -z "$first_line" ]; then
-                            rm -f "$cloud_file"
-                            log_debug "Removed cloud admin file (no more SUPER admins)"
-                        else
-                            mv "$temp_file" "$cloud_file"
-                            log_debug "Removed $player_name from cloud admin list"
-                        fi
-                    fi
-                else
-                    log_debug "Player $player_name reconnected within 15 seconds - skipping cleanup"
-                fi
-            ) &
-            
-            # Save timer PID
-            active_timers["super_cleanup_$player_name"]=$!
-            ;;
-    esac
-}
-
-# Function to add player to cloud admin list
-add_to_cloud_admin() {
-    local player_name="$1"
-    local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
-    
-    [ ! -f "$cloud_file" ] && touch "$cloud_file"
-    
-    local first_line=$(head -1 "$cloud_file")
-    > "$cloud_file"
-    [ -n "$first_line" ] && echo "$first_line" >> "$cloud_file"
-    
-    if ! grep -q "^$player_name$" "$cloud_file" 2>/dev/null; then
-        echo "$player_name" >> "$cloud_file"
-        log_debug "Added $player_name to cloud admin list"
-    fi
-}
-
-# Function to remove player from cloud admin list
-remove_from_cloud_admin() {
-    local player_name="$1"
-    local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
-    
-    if [ -f "$cloud_file" ]; then
-        local first_line=$(head -1 "$cloud_file")
-        local temp_file=$(mktemp)
-        
-        # Keep first line and remove the player
-        [ -n "$first_line" ] && echo "$first_line" > "$temp_file"
-        grep -v "^$player_name$" "$cloud_file" | tail -n +2 >> "$temp_file"
-        
-        # If only first line remains, remove the file
-        if [ $(wc -l < "$temp_file") -le 1 ] || [ $(wc -l < "$temp_file") -eq 1 -a -z "$first_line" ]; then
-            rm -f "$cloud_file"
-            log_debug "Removed cloud admin file (no super admins)"
-        else
-            mv "$temp_file" "$cloud_file"
-        fi
-        
-        log_debug "Removed $player_name from cloud admin list"
-    fi
-}
-
-# =============================================================================
-# RANK AND LIST MANAGEMENT
-# =============================================================================
-
 # Function to sync lists from players.log using SERVER COMMANDS only
 sync_lists_from_players_log() {
     log_debug "Syncing lists from players.log using server commands..."
@@ -308,13 +194,7 @@ sync_lists_from_players_log() {
             blacklisted=$(echo "$blacklisted" | xargs)
             
             # Skip if player is not connected OR not IP verified
-            if [ -z "${connected_players[$name]}" ]; then
-                continue
-            fi
-            
-            # Only apply ranks if IP is verified
-            if [ "${player_verification_status[$name]}" != "verified" ]; then
-                log_debug "Skipping rank application for $name - IP not verified"
+            if [ -z "${connected_players[$name]}" ] || [ "${player_verification_status[$name]}" != "verified" ]; then
                 continue
             fi
             
@@ -381,31 +261,101 @@ apply_rank_changes() {
             execute_server_command "/unmod $player_name"
             ;;
         "SUPER")
-            # Don't remove from cloud admin immediately - handled by 15-second timer
+            # NUEVO: Iniciar timer de 15 segundos en lugar de eliminar inmediatamente
+            start_super_disconnect_timer "$player_name"
             execute_server_command "/unadmin $player_name"
             ;;
     esac
     
-    # Add new rank - ONLY if IP is verified
-    if [ "${player_verification_status[$player_name]}" = "verified" ]; then
-        case "$new_rank" in
-            "ADMIN")
-                execute_server_command "/admin $player_name"
-                ;;
-            "MOD")
-                execute_server_command "/mod $player_name"
-                ;;
-            "SUPER")
-                execute_server_command "/admin $player_name"
-                handle_super_admin "$player_name" "JOIN"
-                ;;
-        esac
-    else
-        log_debug "Skipping rank application for $player_name - IP not verified"
-    fi
+    # Add new rank
+    case "$new_rank" in
+        "ADMIN")
+            execute_server_command "/admin $player_name"
+            ;;
+        "MOD")
+            execute_server_command "/mod $player_name"
+            ;;
+        "SUPER")
+            add_to_cloud_admin "$player_name"
+            execute_server_command "/admin $player_name"
+            ;;
+    esac
     
     # Reload lists after changes
     execute_server_command "/load-lists"
+}
+
+# NUEVA FUNCIÓN: Timer de 15 segundos para SUPER al desconectarse
+start_super_disconnect_timer() {
+    local player_name="$1"
+    
+    log_debug "Starting 15-second disconnect timer for SUPER admin: $player_name"
+    
+    (
+        sleep 15
+        log_debug "15-second timer completed, removing SUPER admin $player_name from cloud"
+        remove_from_cloud_admin "$player_name"
+        unset super_admin_disconnect_timers["$player_name"]
+    ) &
+    
+    super_admin_disconnect_timers["$player_name"]=$!
+    log_debug "Started 15-second disconnect timer for SUPER $player_name (PID: ${super_admin_disconnect_timers[$player_name]})"
+}
+
+# NUEVA FUNCIÓN: Cancelar timer de desconexión de SUPER si se reconecta
+cancel_super_disconnect_timer() {
+    local player_name="$1"
+    
+    if [ -n "${super_admin_disconnect_timers[$player_name]}" ]; then
+        local pid="${super_admin_disconnect_timers[$player_name]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Cancelled SUPER disconnect timer for $player_name (PID: $pid)"
+        fi
+        unset super_admin_disconnect_timers["$player_name"]
+    fi
+}
+
+# Function to add player to cloud admin list
+add_to_cloud_admin() {
+    local player_name="$1"
+    local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
+    
+    [ ! -f "$cloud_file" ] && touch "$cloud_file"
+    
+    local first_line=$(head -1 "$cloud_file")
+    > "$cloud_file"
+    [ -n "$first_line" ] && echo "$first_line" >> "$cloud_file"
+    
+    if ! grep -q "^$player_name$" "$cloud_file" 2>/dev/null; then
+        echo "$player_name" >> "$cloud_file"
+        log_debug "Added $player_name to cloud admin list"
+    fi
+}
+
+# Function to remove player from cloud admin list
+remove_from_cloud_admin() {
+    local player_name="$1"
+    local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
+    
+    if [ -f "$cloud_file" ]; then
+        local first_line=$(head -1 "$cloud_file")
+        local temp_file=$(mktemp)
+        
+        # Keep first line and remove the player
+        [ -n "$first_line" ] && echo "$first_line" > "$temp_file"
+        grep -v "^$player_name$" "$cloud_file" | tail -n +2 >> "$temp_file"
+        
+        # If only first line remains, remove the file
+        if [ $(wc -l < "$temp_file") -le 1 ] || [ $(wc -l < "$temp_file") -eq 1 -a -z "$first_line" ]; then
+            rm -f "$cloud_file"
+            log_debug "Removed cloud admin file (no super admins)"
+        else
+            mv "$temp_file" "$cloud_file"
+        fi
+        
+        log_debug "Removed $player_name from cloud admin list"
+    fi
 }
 
 # Function to handle blacklist changes using SERVER COMMANDS
@@ -456,6 +406,97 @@ handle_blacklist_change() {
     fi
 }
 
+# Function to monitor players.log for changes
+monitor_players_log() {
+    local last_checksum=""
+    local temp_file=$(mktemp)
+    
+    # Save initial state
+    [ -f "$PLAYERS_LOG" ] && cp "$PLAYERS_LOG" "$temp_file"
+    
+    # Initialize current state tracking
+    if [ -f "$PLAYERS_LOG" ]; then
+        while IFS='|' read -r name first_ip password rank whitelisted blacklisted; do
+            name=$(echo "$name" | xargs)
+            rank=$(echo "$rank" | xargs)
+            blacklisted=$(echo "$blacklisted" | xargs)
+            whitelisted=$(echo "$whitelisted" | xargs)
+            current_player_ranks["$name"]="$rank"
+            current_blacklisted_players["$name"]="$blacklisted"
+            current_whitelisted_players["$name"]="$whitelisted"
+        done < "$PLAYERS_LOG"
+    fi
+    
+    while true; do
+        if [ -f "$PLAYERS_LOG" ]; then
+            local current_checksum=$(md5sum "$PLAYERS_LOG" 2>/dev/null | cut -d' ' -f1)
+            
+            if [ "$current_checksum" != "$last_checksum" ]; then
+                log_debug "Detected change in players.log - processing changes via server commands..."
+                process_players_log_changes "$temp_file"
+                last_checksum="$current_checksum"
+                cp "$PLAYERS_LOG" "$temp_file"
+            fi
+        fi
+        
+        sleep 1
+    done
+    
+    rm -f "$temp_file"
+}
+
+# Function to process changes in players.log using SERVER COMMANDS
+process_players_log_changes() {
+    local previous_file="$1"
+    
+    if [ ! -f "$previous_file" ] || [ ! -f "$PLAYERS_LOG" ]; then
+        sync_lists_from_players_log
+        return
+    fi
+    
+    # Compare previous and current to detect specific changes
+    while IFS='|' read -r name first_ip password rank whitelisted blacklisted; do
+        name=$(echo "$name" | xargs)
+        rank=$(echo "$rank" | xargs)
+        blacklisted=$(echo "$blacklisted" | xargs)
+        whitelisted=$(echo "$whitelisted" | xargs)
+        
+        # Find previous state
+        local previous_line=$(grep -i "^$name|" "$previous_file" 2>/dev/null | head -1)
+        
+        if [ -n "$previous_line" ]; then
+            # Extract previous values
+            local prev_first_ip=$(echo "$previous_line" | cut -d'|' -f2 | xargs)
+            local prev_password=$(echo "$previous_line" | cut -d'|' -f3 | xargs)
+            local prev_rank=$(echo "$previous_line" | cut -d'|' -f4 | xargs)
+            local prev_whitelisted=$(echo "$previous_line" | cut -d'|' -f5 | xargs)
+            local prev_blacklisted=$(echo "$previous_line" | cut -d'|' -f6 | xargs)
+            
+            # Check for rank changes
+            if [ "$prev_rank" != "$rank" ]; then
+                log_debug "Rank change detected via server commands: $name from $prev_rank to $rank"
+                apply_rank_changes "$name" "$prev_rank" "$rank"
+            fi
+            
+            # Check for blacklist changes
+            if [ "$prev_blacklisted" != "$blacklisted" ]; then
+                log_debug "Blacklist change detected via server commands: $name from $prev_blacklisted to $blacklisted"
+                handle_blacklist_change "$name" "$blacklisted"
+            fi
+            
+            # Check for whitelist changes
+            if [ "$prev_whitelisted" != "$whitelisted" ]; then
+                log_debug "Whitelist change detected via server commands: $name from $prev_whitelisted to $whitelisted"
+                local current_ip="${player_ip_map[$name]}"
+                handle_whitelist_change "$name" "$whitelisted" "$current_ip"
+            fi
+        fi
+    done < "$PLAYERS_LOG"
+    
+    # Always sync lists after changes using SERVER COMMANDS
+    sync_lists_from_players_log
+}
+
 # =============================================================================
 # INDEPENDENT TIMER MANAGEMENT SYSTEM
 # =============================================================================
@@ -495,6 +536,9 @@ cancel_player_timers() {
         fi
         unset active_timers["ip_grace_$player_name"]
     fi
+    
+    # NUEVO: Cancelar timer de desconexión de SUPER si se reconecta
+    cancel_super_disconnect_timer "$player_name"
 }
 
 # INDEPENDENT PASSWORD REMINDER TIMER
@@ -703,7 +747,7 @@ handle_password_change() {
     fi
 }
 
-# Function to handle IP change verification with cooldown cancellation
+# Function to handle IP change verification
 handle_ip_change() {
     local player_name="$1" password="$2" current_ip="$3"
     
@@ -727,122 +771,25 @@ handle_ip_change() {
         fi
         
         # Update IP and mark as verified
-        update_player_info "$player_name" "$current_ip" "$current_password" "$rank" "$whitelisted" "$blacklisted"
+        update_player_info "$player_name" "$first_ip" "$current_password" "$rank" "$whitelisted" "$blacklisted"
         player_verification_status["$player_name"]="verified"
-        
-        # CANCEL COOLDOWNS for /kick and /ban ip
-        log_debug "Cancelling cooldowns for /kick and /ban ip for $player_name"
-        execute_server_command "/cooldown reset $player_name kick"
-        execute_server_command "/cooldown reset $player_name ban"
-        execute_server_command "/cooldown reset $player_name ipban"
         
         # Cancel grace period timer
         cancel_player_timers "$player_name"
         
+        # NUEVO: Cancelar cooldown de /kick y /ban IP explícitamente
+        log_debug "IP verification successful for $player_name - cancelling kick/ban IP cooldown"
+        execute_server_command "SECURITY: $player_name IP verification successful. Kick/ban IP cooldown cancelled."
+        
         # Sync lists now that player is verified using SERVER COMMANDS
         sync_lists_from_players_log
         
-        send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your IP has been verified and updated. Cooldowns reset."
+        send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your IP has been verified and updated. All security restrictions lifted."
         return 0
     else
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, player not found in registry."
         return 1
     fi
-}
-
-# =============================================================================
-# LOG MONITORING FUNCTIONS
-# =============================================================================
-
-# Function to monitor players.log for changes
-monitor_players_log() {
-    local last_checksum=""
-    local temp_file=$(mktemp)
-    
-    # Save initial state
-    [ -f "$PLAYERS_LOG" ] && cp "$PLAYERS_LOG" "$temp_file"
-    
-    # Initialize current state tracking
-    if [ -f "$PLAYERS_LOG" ]; then
-        while IFS='|' read -r name first_ip password rank whitelisted blacklisted; do
-            name=$(echo "$name" | xargs)
-            rank=$(echo "$rank" | xargs)
-            blacklisted=$(echo "$blacklisted" | xargs)
-            whitelisted=$(echo "$whitelisted" | xargs)
-            current_player_ranks["$name"]="$rank"
-            current_blacklisted_players["$name"]="$blacklisted"
-            current_whitelisted_players["$name"]="$whitelisted"
-        done < "$PLAYERS_LOG"
-    fi
-    
-    while true; do
-        if [ -f "$PLAYERS_LOG" ]; then
-            local current_checksum=$(md5sum "$PLAYERS_LOG" 2>/dev/null | cut -d' ' -f1)
-            
-            if [ "$current_checksum" != "$last_checksum" ]; then
-                log_debug "Detected change in players.log - processing changes via server commands..."
-                process_players_log_changes "$temp_file"
-                last_checksum="$current_checksum"
-                cp "$PLAYERS_LOG" "$temp_file"
-            fi
-        fi
-        
-        sleep 1
-    done
-    
-    rm -f "$temp_file"
-}
-
-# Function to process changes in players.log using SERVER COMMANDS
-process_players_log_changes() {
-    local previous_file="$1"
-    
-    if [ ! -f "$previous_file" ] || [ ! -f "$PLAYERS_LOG" ]; then
-        sync_lists_from_players_log
-        return
-    fi
-    
-    # Compare previous and current to detect specific changes
-    while IFS='|' read -r name first_ip password rank whitelisted blacklisted; do
-        name=$(echo "$name" | xargs)
-        rank=$(echo "$rank" | xargs)
-        blacklisted=$(echo "$blacklisted" | xargs)
-        whitelisted=$(echo "$whitelisted" | xargs)
-        
-        # Find previous state
-        local previous_line=$(grep -i "^$name|" "$previous_file" 2>/dev/null | head -1)
-        
-        if [ -n "$previous_line" ]; then
-            # Extract previous values
-            local prev_first_ip=$(echo "$previous_line" | cut -d'|' -f2 | xargs)
-            local prev_password=$(echo "$previous_line" | cut -d'|' -f3 | xargs)
-            local prev_rank=$(echo "$previous_line" | cut -d'|' -f4 | xargs)
-            local prev_whitelisted=$(echo "$previous_line" | cut -d'|' -f5 | xargs)
-            local prev_blacklisted=$(echo "$previous_line" | cut -d'|' -f6 | xargs)
-            
-            # Check for rank changes
-            if [ "$prev_rank" != "$rank" ]; then
-                log_debug "Rank change detected via server commands: $name from $prev_rank to $rank"
-                apply_rank_changes "$name" "$prev_rank" "$rank"
-            fi
-            
-            # Check for blacklist changes
-            if [ "$prev_blacklisted" != "$blacklisted" ]; then
-                log_debug "Blacklist change detected via server commands: $name from $prev_blacklisted to $blacklisted"
-                handle_blacklist_change "$name" "$blacklisted"
-            fi
-            
-            # Check for whitelist changes
-            if [ "$prev_whitelisted" != "$whitelisted" ]; then
-                log_debug "Whitelist change detected via server commands: $name from $prev_whitelisted to $whitelisted"
-                local current_ip="${player_ip_map[$name]}"
-                handle_whitelist_change "$name" "$whitelisted" "$current_ip"
-            fi
-        fi
-    done < "$PLAYERS_LOG"
-    
-    # Always sync lists after changes using SERVER COMMANDS
-    sync_lists_from_players_log
 }
 
 # =============================================================================
@@ -885,6 +832,9 @@ monitor_console_log() {
                 
                 log_debug "Player connected: $player_name ($player_ip)"
                 
+                # NUEVO: Cancelar timer de desconexión de SUPER si se reconecta
+                cancel_super_disconnect_timer "$player_name"
+                
                 # Check if player exists in players.log
                 local player_info=$(get_player_info "$player_name")
                 if [ -z "$player_info" ]; then
@@ -907,20 +857,11 @@ monitor_console_log() {
                         log_debug "First real connection for $player_name, updating IP from UNKNOWN to $player_ip"
                         update_player_info "$player_name" "$player_ip" "$password" "$rank" "$whitelisted" "NO"
                         player_verification_status["$player_name"]="verified"
-                        
-                        # Apply rank now that IP is verified
-                        if [ "$rank" != "NONE" ]; then
-                            log_debug "Applying rank $rank for $player_name after IP update"
-                            apply_rank_changes "$player_name" "NONE" "$rank"
-                        fi
                     elif [ "$first_ip" != "$player_ip" ]; then
                         # IP changed - require verification
                         log_debug "IP changed for $player_name: $first_ip -> $player_ip, requiring verification"
                         player_verification_status["$player_name"]="pending"
                         start_ip_grace_timer "$player_name" "$player_ip"
-                        
-                        # Don't apply rank until IP is verified
-                        log_debug "Rank application delayed for $player_name until IP verification"
                     else
                         # IP matches - mark as verified
                         log_debug "IP matches for $player_name, marking as verified"
@@ -931,6 +872,12 @@ monitor_console_log() {
                     if [ "$password" = "NONE" ]; then
                         log_debug "Existing player $player_name has no password, starting enforcement"
                         start_password_enforcement "$player_name"
+                    fi
+                    
+                    # NUEVO: Aplicar rango SUPER inmediatamente si está verificado y tiene contraseña
+                    if [ "${player_verification_status[$player_name]}" = "verified" ] && [ "$password" != "NONE" ] && [ "$rank" = "SUPER" ]; then
+                        log_debug "Verified SUPER admin $player_name connected, adding to cloud admin"
+                        add_to_cloud_admin "$player_name"
                     fi
                 fi
                 
@@ -945,12 +892,15 @@ monitor_console_log() {
             player_name=$(echo "$player_name" | xargs)
             
             if is_valid_player_name "$player_name" ]; then
-                # Check if was SUPER admin to start cleanup timer
+                log_debug "Player disconnected: $player_name"
+                
+                # Check if player was SUPER admin
                 local player_info=$(get_player_info "$player_name")
                 if [ -n "$player_info" ]; then
                     local rank=$(echo "$player_info" | cut -d'|' -f3)
                     if [ "$rank" = "SUPER" ]; then
-                        handle_super_admin "$player_name" "LEAVE"
+                        log_debug "SUPER admin $player_name disconnected, starting 15-second timer for cloud admin removal"
+                        # El timer se iniciará en apply_rank_changes cuando se quite el rango
                     fi
                 fi
                 
@@ -959,18 +909,8 @@ monitor_console_log() {
                 unset player_verification_status["$player_name"]
                 unset player_password_reminder_sent["$player_name"]
                 
-                # Cancel ALL timers except SUPER cleanup
-                for timer_key in "${!active_timers[@]}"; do
-                    if [[ ! "$timer_key" =~ ^super_cleanup_ ]]; then
-                        local pid="${active_timers[$timer_key]}"
-                        if kill -0 "$pid" 2>/dev/null; then
-                            kill "$pid" 2>/dev/null
-                        fi
-                        unset active_timers["$timer_key"]
-                    fi
-                done
-                
-                log_debug "Player disconnected: $player_name"
+                # Cancel ALL timers except SUPER disconnect timer
+                cancel_player_timers "$player_name"
                 
                 # Update lists using SERVER COMMANDS
                 sync_lists_from_players_log
@@ -1044,6 +984,15 @@ cleanup() {
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
             log_debug "Killed timer: $timer_key (PID: $pid)"
+        fi
+    done
+    
+    # NUEVO: Matar todos los timers de desconexión de SUPER
+    for timer_key in "${!super_admin_disconnect_timers[@]}"; do
+        local pid="${super_admin_disconnect_timers[$timer_key]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Killed SUPER disconnect timer: $timer_key (PID: $pid)"
         fi
     done
     
