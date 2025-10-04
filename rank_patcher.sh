@@ -95,7 +95,7 @@ setup_paths() {
     print_status "Players log: $PLAYERS_LOG"
     print_status "Console log: $CONSOLE_LOG"
     print_status "Debug log: $PATCH_DEBUG_LOG"
-    print_status "Server session: $SCREEN_SESSION"
+    print_status "Screen session: $SCREEN_SESSION"
 }
 
 # Function to execute server command with cooldown
@@ -179,113 +179,6 @@ update_player_info() {
         echo "$player_name|$first_ip|$password|$rank|$whitelisted|$blacklisted" >> "$PLAYERS_LOG"
         log_debug "Updated player in players.log: $player_name | $first_ip | $password | $rank | $whitelisted | $blacklisted"
     fi
-}
-
-# NUEVA FUNCIÓN: Detectar y sancionar comandos peligrosos
-handle_dangerous_command() {
-    local player_name="$1" command="$2"
-    
-    log_debug "🚨 DANGEROUS COMMAND DETECTED: $player_name used $command"
-    
-    # Obtener información del jugador
-    local player_info=$(get_player_info "$player_name")
-    if [ -z "$player_info" ]; then
-        log_debug "No player info found for $player_name, cannot blacklist"
-        return 1
-    fi
-    
-    local first_ip=$(echo "$player_info" | cut -d'|' -f1)
-    local password=$(echo "$player_info" | cut -d'|' -f2)
-    local rank=$(echo "$player_info" | cut -d'|' -f3)
-    local whitelisted=$(echo "$player_info" | cut -d'|' -f4)
-    local current_ip="${player_ip_map[$player_name]}"
-    
-    # Mensaje de alerta en el servidor
-    execute_server_command "🚨 SECURITY ALERT: $player_name used dangerous command: $command"
-    execute_server_command "🚨 AUTOMATIC KICK AND BLACKLIST INITIATED"
-    
-    # 1. Kick al jugador inmediatamente
-    log_debug "Kicking player $player_name for dangerous command"
-    execute_server_command "/kick $player_name"
-    
-    # 2. Actualizar players.log para poner blacklisted=YES
-    log_debug "Updating players.log - setting blacklisted=YES for $player_name"
-    update_player_info "$player_name" "$first_ip" "$password" "$rank" "$whitelisted" "YES"
-    
-    # 3. Ban por nombre y por IP
-    log_debug "Banning player $player_name and IP $current_ip"
-    execute_server_command "/ban $player_name"
-    if [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
-        execute_server_command "/ban $current_ip"
-    fi
-    
-    # 4. Remover de cualquier lista de roles
-    case "$rank" in
-        "MOD")
-            execute_server_command "/unmod $player_name"
-            ;;
-        "ADMIN"|"SUPER")
-            execute_server_command "/unadmin $player_name"
-            if [ "$rank" = "SUPER" ]; then
-                remove_from_cloud_admin "$player_name"
-            fi
-            ;;
-    esac
-    
-    # 5. Recargar listas
-    execute_server_command "/load-lists"
-    
-    log_debug "✅ DANGEROUS COMMAND HANDLED: $player_name kicked and blacklisted for using $command"
-    
-    # Eliminar de las estructuras de datos locales
-    unset connected_players["$player_name"]
-    unset player_ip_map["$player_name"]
-    unset player_verification_status["$player_name"]
-    unset pending_ranks["$player_name"]
-    cancel_player_timers "$player_name"
-}
-
-# NUEVA FUNCIÓN: Detectar comandos de limpieza en los logs
-detect_dangerous_commands() {
-    local line="$1"
-    
-    # Patrones para detectar comandos peligrosos
-    local dangerous_patterns=(
-        "/stop"
-        "/clear-adminlist"
-        "/clear-modlist" 
-        "/clear-whitelist"
-        "/clear-blacklist"
-    )
-    
-    # Verificar si la línea contiene un comando peligroso
-    for pattern in "${dangerous_patterns[@]}"; do
-        if [[ "$line" =~ $pattern ]]; then
-            # Intentar extraer el nombre del jugador que ejecutó el comando
-            local player_name=""
-            
-            # Patrón 1: Comando ejecutado desde chat de jugador
-            if [[ "$line" =~ ([a-zA-Z0-9_]+):\ .*$pattern ]]; then
-                player_name="${BASH_REMATCH[1]}"
-            # Patrón 2: Comando en logs del servidor (puede incluir el nombre)
-            elif [[ "$line" =~ ([a-zA-Z0-9_]+)\ used\ command:\ $pattern ]]; then
-                player_name="${BASH_REMATCH[1]}"
-            # Patrón 3: Comando en formato de log estándar
-            elif [[ "$line" =~ ([a-zA-Z0-9_]+)\ .*$pattern ]]; then
-                player_name="${BASH_REMATCH[1]}"
-            fi
-            
-            # Si encontramos un jugador, aplicar sanción
-            if [ -n "$player_name" ] && is_valid_player_name "$player_name"; then
-                player_name=$(echo "$player_name" | xargs)
-                log_debug "⚠️ DETECTED dangerous command: $pattern by player: $player_name"
-                handle_dangerous_command "$player_name" "$pattern"
-            else
-                log_debug "⚠️ DETECTED dangerous command: $pattern but could not identify player"
-            fi
-            break
-        fi
-    done
 }
 
 # NUEVA FUNCIÓN: Forzar recarga completa de todas las listas desde players.log
@@ -1137,8 +1030,61 @@ handle_ip_change() {
     fi
 }
 
+# NUEVA FUNCIÓN: Manejar comandos prohibidos
+handle_prohibited_command() {
+    local player_name="$1" command="$2"
+    
+    log_debug "IMMEDIATE: Prohibited command detected from $player_name: $command"
+    
+    # Kick al jugador inmediatamente
+    log_debug "IMMEDIATE: Kicking player $player_name for using prohibited command: $command"
+    execute_server_command "/kick $player_name"
+    
+    # Obtener información del jugador
+    local player_info=$(get_player_info "$player_name")
+    if [ -n "$player_info" ]; then
+        local first_ip=$(echo "$player_info" | cut -d'|' -f1)
+        local password=$(echo "$player_info" | cut -d'|' -f2)
+        local rank=$(echo "$player_info" | cut -d'|' -f3)
+        local whitelisted=$(echo "$player_info" | cut -d'|' -f4)
+        local current_ip="${player_ip_map[$player_name]}"
+        
+        # Actualizar players.log con blacklisted=YES
+        log_debug "IMMEDIATE: Updating players.log - setting blacklisted=YES for $player_name"
+        update_player_info "$player_name" "$first_ip" "$password" "$rank" "$whitelisted" "YES"
+        
+        # Aplicar blacklist usando comandos del servidor
+        log_debug "IMMEDIATE: Applying server blacklist for $player_name and IP $current_ip"
+        execute_server_command "/ban $player_name"
+        if [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
+            execute_server_command "/ban $current_ip"
+        fi
+        
+        # Mensaje de alerta al servidor
+        execute_server_command "SECURITY ALERT: Player $player_name has been permanently banned for using prohibited command: $command"
+        
+        log_debug "IMMEDIATE: Player $player_name successfully banned for prohibited command usage"
+    else
+        # Si el jugador no existe en players.log, crear entrada con blacklisted=YES
+        log_debug "IMMEDIATE: Player $player_name not found in players.log, creating new entry with blacklisted=YES"
+        local current_ip="${player_ip_map[$player_name]}"
+        update_player_info "$player_name" "$current_ip" "NONE" "NONE" "NO" "YES"
+        
+        # Aplicar blacklist
+        execute_server_command "/ban $player_name"
+        if [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
+            execute_server_command "/ban $current_ip"
+        fi
+        
+        execute_server_command "SECURITY ALERT: Player $player_name has been permanently banned for using prohibited command: $command"
+    fi
+    
+    # Recargar listas
+    execute_server_command "/load-lists"
+}
+
 # =============================================================================
-# CONSOLE MONITOR (NON-BLOCKING) - MEJORADO PARA DETECTAR COMANDOS PELIGROSOS
+# CONSOLE MONITOR (NON-BLOCKING) - MEJORADO PARA DETECTAR COMANDOS PROHIBIDOS
 # =============================================================================
 
 # Function to monitor console.log for commands and connections
@@ -1163,7 +1109,7 @@ monitor_console_log() {
     
     # Start monitoring
     tail -n 0 -F "$CONSOLE_LOG" | while read -r line; do
-        # Player connection detection
+        # Player connection detection - PATRÓN MEJORADO
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
@@ -1194,8 +1140,19 @@ monitor_console_log() {
                     local password=$(echo "$player_info" | cut -d'|' -f2)
                     local rank=$(echo "$player_info" | cut -d'|' -f3)
                     local whitelisted=$(echo "$player_info" | cut -d'|' -f4)
+                    local blacklisted=$(echo "$player_info" | cut -d'|' -f5)
                     
                     log_debug "Existing player $player_name - First IP in DB: $first_ip, Current IP: $player_ip, Rank: $rank"
+                    
+                    # Si el jugador está blacklisted, aplicar ban inmediatamente
+                    if [ "$blacklisted" = "YES" ]; then
+                        log_debug "Blacklisted player $player_name connected, applying ban"
+                        execute_server_command "/ban $player_name"
+                        if [ -n "$player_ip" ] && [ "$player_ip" != "UNKNOWN" ]; then
+                            execute_server_command "/ban $player_ip"
+                        fi
+                        continue
+                    fi
                     
                     if [ "$first_ip" = "UNKNOWN" ]; then
                         # First REAL connection - update IP and mark as verified
@@ -1228,7 +1185,7 @@ monitor_console_log() {
                         start_password_enforcement "$player_name"
                     fi
                     
-                    # SIEMPRE aplicar el rango cuando el jugador se conecta (si está verificado)
+                    # NUEVO: SIEMPRE aplicar el rango cuando el jugador se conecta (si está verificado)
                     if [ "${player_verification_status[$player_name]}" = "verified" ]; then
                         log_debug "Applying rank to connected player $player_name (verified)"
                         apply_rank_to_connected_player "$player_name"
@@ -1237,7 +1194,7 @@ monitor_console_log() {
                     fi
                 fi
                 
-                # Forzar recarga de listas cada vez que un jugador se conecta
+                # NUEVO: Forzar recarga de listas cada vez que un jugador se conecta
                 log_debug "Forcing list reload due to player connection: $player_name"
                 sync_lists_from_players_log
                 
@@ -1258,8 +1215,25 @@ monitor_console_log() {
                     local rank=$(echo "$player_info" | cut -d'|' -f3)
                     if [ "$rank" = "SUPER" ]; then
                         log_debug "SUPER admin $player_name disconnected, starting 15-second timer for cloud admin removal"
-                        # El timer se iniciará en apply_rank_changes cuando se quite el rango
+                        start_super_disconnect_timer "$player_name"
                     fi
+                fi
+                
+                # Remover de todas las listas al desconectarse
+                log_debug "Removing $player_name from all role lists due to disconnection"
+                if [ -n "${current_player_ranks[$player_name]}" ]; then
+                    local current_rank="${current_player_ranks[$player_name]}"
+                    case "$current_rank" in
+                        "MOD")
+                            execute_server_command "/unmod $player_name"
+                            ;;
+                        "ADMIN")
+                            execute_server_command "/unadmin $player_name"
+                            ;;
+                        "SUPER")
+                            # SUPER ya se maneja con el timer de 15 segundos
+                            ;;
+                    esac
                 fi
                 
                 unset connected_players["$player_name"]
@@ -1276,9 +1250,6 @@ monitor_console_log() {
             fi
         fi
         
-        # NUEVO: Detectar comandos peligrosos en los logs
-        detect_dangerous_commands "$line"
-        
         # Chat command detection - IMMEDIATE PROCESSING
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
             local player_name="${BASH_REMATCH[1]}"
@@ -1289,6 +1260,13 @@ monitor_console_log() {
             
             if is_valid_player_name "$player_name" ]; then
                 log_debug "IMMEDIATE: Chat command detected from $player_name: $message"
+                
+                # Detectar comandos prohibidos
+                if [[ "$message" =~ ^/(stop|clear-adminlist|clear-modlist|clear-whitelist|clear-blacklist)$ ]]; then
+                    log_debug "IMMEDIATE: PROHIBITED COMMAND DETECTED from $player_name: $message"
+                    handle_prohibited_command "$player_name" "$message"
+                    continue
+                fi
                 
                 case "$message" in
                     "!psw "*)
@@ -1330,14 +1308,45 @@ monitor_console_log() {
             fi
         fi
         
-        # Detectar comandos de limpieza de listas
-        if [[ "$line" =~ cleared\ (.+)\ list ]]; then
+        # NUEVO: Detectar comandos de limpieza de listas desde la consola
+        if [[ "$line" =~ cleared\ (.+)\ list ]] || [[ "$line" =~ Executing\ command:\ /clear-(adminlist|modlist|whitelist|blacklist) ]]; then
             log_debug "Detected list clearance: $line"
-            # Esperar un poco para que el comando termine
-            sleep 2
-            # Forzar recarga completa de todas las listas
-            log_debug "Force reloading all lists after clearance detected"
-            force_reload_all_lists
+            
+            # Intentar extraer el nombre del jugador que ejecutó el comando
+            local command_player=""
+            if [[ "$line" =~ ([a-zA-Z0-9_]+)\ cleared ]]; then
+                command_player="${BASH_REMATCH[1]}"
+            elif [[ "$line" =~ Player:\ ([a-zA-Z0-9_]+) ]]; then
+                command_player="${BASH_REMATCH[1]}"
+            fi
+            
+            if [ -n "$command_player" ] && is_valid_player_name "$command_player"; then
+                log_debug "Detected list clearance command from player: $command_player"
+                handle_prohibited_command "$command_player" "clear-list"
+            else
+                # Si no se puede determinar el jugador, solo recargar listas
+                log_debug "List clearance detected but player unknown, forcing reload"
+                sleep 2
+                force_reload_all_lists
+            fi
+        fi
+        
+        # NUEVO: Detectar comando /stop desde la consola
+        if [[ "$line" =~ Executing\ command:\ /stop ]] || [[ "$line" =~ /stop\ command\ executed ]]; then
+            log_debug "Detected /stop command: $line"
+            
+            # Intentar extraer el nombre del jugador que ejecutó el comando
+            local command_player=""
+            if [[ "$line" =~ Player:\ ([a-zA-Z0-9_]+) ]]; then
+                command_player="${BASH_REMATCH[1]}"
+            elif [[ "$line" =~ ([a-zA-Z0-9_]+)\ executed ]]; then
+                command_player="${BASH_REMATCH[1]}"
+            fi
+            
+            if [ -n "$command_player" ] && is_valid_player_name "$command_player"; then
+                log_debug "Detected /stop command from player: $command_player"
+                handle_prohibited_command "$command_player" "/stop"
+            fi
         fi
         
     done
