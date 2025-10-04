@@ -47,7 +47,7 @@ declare -A player_kick_timers
 log_debug() {
     local message="$1"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "$timestamp $message" >> "$PATCH_DEBUG_LOG"
+    echo "$timestamp rank_patcher[$$]: $message" >> "$PATCH_DEBUG_LOG"
     echo -e "${CYAN}[DEBUG]${NC} $message"
 }
 
@@ -448,7 +448,7 @@ monitor_players_log() {
             fi
         fi
         
-        sleep 5  # Reduced frequency to minimize load
+        sleep 1
     done
     
     rm -f "$temp_file"
@@ -517,18 +517,18 @@ cancel_password_kick_timer() {
     fi
 }
 
-# Function to handle password creation - CORREGIDA
+# Function to handle password creation
 handle_password_creation() {
     local player_name="$1" password="$2" confirm_password="$3"
     
     log_debug "Password creation requested for $player_name"
     
-    # Clear chat IMMEDIATELY to hide password - SIN DELAY
+    # Clear chat IMMEDIATELY to hide password
     log_debug "Sending immediate /clear command for $player_name"
     send_server_command "$SCREEN_SESSION" "/clear"
     
-    # Validación inmediata
-    log_debug "Validating password for $player_name"
+    # Wait for cooldown before sending messages
+    sleep 0.5
     
     # Validate password length (7-16 characters)
     if [ ${#password} -lt 7 ] || [ ${#password} -gt 16 ]; then
@@ -580,6 +580,7 @@ handle_password_change() {
     
     # Clear chat IMMEDIATELY
     send_server_command "$SCREEN_SESSION" "/clear"
+    sleep 0.5
     
     # Validate new password length (7-16 characters)
     if [ ${#new_password} -lt 7 ] || [ ${#new_password} -gt 16 ]; then
@@ -620,6 +621,7 @@ handle_ip_change() {
     
     # Clear chat IMMEDIATELY
     send_server_command "$SCREEN_SESSION" "/clear"
+    sleep 0.5
     
     local player_info=$(get_player_info "$player_name")
     if [ -n "$player_info" ]; then
@@ -744,7 +746,148 @@ start_ip_grace_period() {
     )
 }
 
-# Function to monitor console.log for commands and connections - COMPLETAMENTE REESCRITA
+# Function to process player connection
+process_player_connection() {
+    local player_name="$1" player_ip="$2"
+    
+    log_debug "Processing connection: $player_name ($player_ip)"
+    
+    # Clean player name
+    player_name=$(echo "$player_name" | xargs)
+    
+    if ! is_valid_player_name "$player_name"; then
+        log_debug "Invalid player name: $player_name"
+        return
+    fi
+    
+    connected_players["$player_name"]=1
+    player_ip_map["$player_name"]="$player_ip"
+    
+    log_debug "Player connected: $player_name ($player_ip)"
+    
+    # Check if player exists in players.log
+    local player_info=$(get_player_info "$player_name")
+    if [ -z "$player_info" ]; then
+        # New player - add to players.log with REAL IP and NONE password
+        log_debug "New player detected: $player_name, adding to players.log with IP $player_ip"
+        update_player_info "$player_name" "$player_ip" "NONE" "NONE" "NO" "NO"
+        player_verification_status["$player_name"]="verified"
+        start_password_enforcement "$player_name"
+    else
+        # Existing player - check IP and start verification process
+        local first_ip=$(echo "$player_info" | cut -d'|' -f1)
+        local password=$(echo "$player_info" | cut -d'|' -f2)
+        
+        # If the stored IP is UNKNOWN, update it to the current IP
+        if [ "$first_ip" = "UNKNOWN" ]; then
+            log_debug "Updating unknown IP for $player_name to $player_ip"
+            update_player_info "$player_name" "$player_ip" "$password" "NONE" "NO" "NO"
+            player_verification_status["$player_name"]="verified"
+        elif [ "$first_ip" != "$player_ip" ]; then
+            # IP changed - require verification
+            log_debug "IP changed for $player_name: $first_ip -> $player_ip, requiring verification"
+            player_verification_status["$player_name"]="pending"
+            start_ip_grace_period "$player_name" "$player_ip"
+        else
+            # IP matches - mark as verified
+            log_debug "IP matches for $player_name, marking as verified"
+            player_verification_status["$player_name"]="verified"
+        fi
+        
+        # Password enforcement for existing players without password
+        if [ "$password" = "NONE" ]; then
+            log_debug "Existing player $player_name has no password, starting enforcement"
+            start_password_enforcement "$player_name"
+        fi
+    fi
+    
+    # Sync lists for connected player (will only add if verified)
+    sync_lists_from_players_log
+}
+
+# Function to process player disconnection
+process_player_disconnection() {
+    local player_name="$1"
+    
+    player_name=$(echo "$player_name" | xargs)
+    
+    if ! is_valid_player_name "$player_name"; then
+        log_debug "Invalid player name for disconnection: $player_name"
+        return
+    fi
+    
+    log_debug "Processing disconnection: $player_name"
+    
+    unset connected_players["$player_name"]
+    unset player_ip_map["$player_name"]
+    unset player_verification_status["$player_name"]
+    unset player_password_reminder_sent["$player_name"]
+    
+    # Cancel ALL timers
+    cancel_password_kick_timer "$player_name"
+    
+    if [ -n "${player_ip_grace_timers[$player_name]}" ]; then
+        kill "${player_ip_grace_timers[$player_name]}" 2>/dev/null
+        unset player_ip_grace_timers["$player_name"]
+    fi
+    
+    log_debug "Player disconnected: $player_name"
+    
+    # Update lists (remove from role lists since player disconnected)
+    sync_lists_from_players_log
+}
+
+# Function to process chat command
+process_chat_command() {
+    local player_name="$1" message="$2"
+    
+    log_debug "Processing chat command from $player_name: $message"
+    
+    local current_ip="${player_ip_map[$player_name]}"
+    
+    case "$message" in
+        "!psw "*)
+            log_debug "Password set command detected from $player_name"
+            if [[ "$message" =~ !psw\ ([^[:space:]]+)\ ([^[:space:]]+)$ ]]; then
+                local password="${BASH_REMATCH[1]}"
+                local confirm_password="${BASH_REMATCH[2]}"
+                log_debug "Processing password set for $player_name: $password"
+                # Execute immediately
+                handle_password_creation "$player_name" "$password" "$confirm_password"
+            else
+                log_debug "Invalid password command format from $player_name"
+                send_server_command "$SCREEN_SESSION" "/clear"
+                sleep 0.5
+                send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !psw PASSWORD CONFIRM_PASSWORD"
+            fi
+            ;;
+        "!change_psw "*)
+            log_debug "Password change command detected from $player_name"
+            if [[ "$message" =~ !change_psw\ ([^[:space:]]+)\ ([^[:space:]]+)$ ]]; then
+                local old_password="${BASH_REMATCH[1]}"
+                local new_password="${BASH_REMATCH[2]}"
+                handle_password_change "$player_name" "$old_password" "$new_password"
+            else
+                send_server_command "$SCREEN_SESSION" "/clear"
+                sleep 0.5
+                send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !change_psw OLD_PASSWORD NEW_PASSWORD"
+            fi
+            ;;
+        "!ip_change "*)
+            log_debug "IP change command detected from $player_name"
+            if [[ "$message" =~ !ip_change\ (.+)$ ]]; then
+                local password="${BASH_REMATCH[1]}"
+                handle_ip_change "$player_name" "$password" "$current_ip"
+            else
+                send_server_command "$SCREEN_SESSION" "/clear"
+                sleep 0.5
+                send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !ip_change YOUR_PASSWORD"
+            fi
+            ;;
+    esac
+}
+
+# Function to monitor console.log using efficient polling
 monitor_console_log() {
     print_header "STARTING CONSOLE LOG MONITOR"
     log_debug "Starting console log monitor"
@@ -762,175 +905,89 @@ monitor_console_log() {
         return 1
     fi
     
-    log_debug "Console log found, starting monitoring with inotifywait"
+    log_debug "Console log found, starting robust monitoring"
     
     # Get initial file size
     local last_size=$(wc -c < "$CONSOLE_LOG" 2>/dev/null || echo 0)
+    local consecutive_failures=0
     
-    # Monitor using inotifywait for more efficient and immediate detection
     while true; do
-        # Wait for file modification
-        inotifywait -q -e modify "$CONSOLE_LOG" > /dev/null 2>&1
+        # Check if file still exists
+        if [ ! -f "$CONSOLE_LOG" ]; then
+            log_debug "Console log disappeared, waiting for it to reappear..."
+            sleep 5
+            continue
+        fi
         
         # Get current file size
         local current_size=$(wc -c < "$CONSOLE_LOG" 2>/dev/null || echo 0)
         
         # If file size decreased (log rotation), reset last_size
         if [ "$current_size" -lt "$last_size" ]; then
+            log_debug "Log rotation detected, resetting file pointer"
             last_size=0
         fi
         
         # Read new lines
         if [ "$current_size" -gt "$last_size" ]; then
-            tail -c "+$((last_size + 1))" "$CONSOLE_LOG" | while IFS= read -r line; do
-                process_console_line "$line"
-            done
-            last_size=$current_size
+            local new_content=$(tail -c "+$((last_size + 1))" "$CONSOLE_LOG" 2>/dev/null)
+            if [ $? -eq 0 ] && [ -n "$new_content" ]; then
+                consecutive_failures=0
+                
+                # Process each new line
+                while IFS= read -r line; do
+                    [ -n "$line" ] && process_console_line "$line"
+                done <<< "$new_content"
+                
+                last_size=$current_size
+            else
+                ((consecutive_failures++))
+                if [ $consecutive_failures -ge 3 ]; then
+                    log_debug "Multiple consecutive read failures, resetting file pointer"
+                    last_size=0
+                    consecutive_failures=0
+                fi
+            fi
         fi
         
-        # Small sleep to prevent busy looping
+        # Small sleep to prevent busy looping but maintain responsiveness
         sleep 0.1
     done
 }
 
-# New function: process individual console lines immediately
+# Function to process individual console lines
 process_console_line() {
     local line="$1"
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     
-    # Log every line for debugging
-    log_debug "Console line: $line"
+    # Log every line for complete debugging
+    log_debug "Console: $line"
     
-    # Player connection detection
+    # Player connection detection - IMPROVED PATTERN
     if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
         local player_name="${BASH_REMATCH[1]}"
         local player_ip="${BASH_REMATCH[2]}"
-        
-        # Clean player name
-        player_name=$(echo "$player_name" | xargs)
-        
-        if is_valid_player_name "$player_name"; then
-            connected_players["$player_name"]=1
-            player_ip_map["$player_name"]="$player_ip"
-            
-            log_debug "Player connected: $player_name ($player_ip)"
-            
-            # Check if player exists in players.log
-            local player_info=$(get_player_info "$player_name")
-            if [ -z "$player_info" ]; then
-                # New player - add to players.log with UNKNOWN first IP and NONE password
-                log_debug "New player detected: $player_name, adding to players.log"
-                update_player_info "$player_name" "UNKNOWN" "NONE" "NONE" "NO" "NO"
-                player_verification_status["$player_name"]="pending"
-                start_password_enforcement "$player_name"
-            else
-                # Existing player - check IP and start verification process
-                local first_ip=$(echo "$player_info" | cut -d'|' -f1)
-                local password=$(echo "$player_info" | cut -d'|' -f2)
-                
-                if [ "$first_ip" = "UNKNOWN" ]; then
-                    # First connection - update IP and mark as verified
-                    log_debug "First connection for $player_name, updating IP to $player_ip"
-                    update_player_info "$player_name" "$player_ip" "$password" "NONE" "NO" "NO"
-                    player_verification_status["$player_name"]="verified"
-                elif [ "$first_ip" != "$player_ip" ]; then
-                    # IP changed - require verification
-                    log_debug "IP changed for $player_name: $first_ip -> $player_ip, requiring verification"
-                    player_verification_status["$player_name"]="pending"
-                    start_ip_grace_period "$player_name" "$player_ip"
-                else
-                    # IP matches - mark as verified
-                    log_debug "IP matches for $player_name, marking as verified"
-                    player_verification_status["$player_name"]="verified"
-                fi
-                
-                # Password enforcement for existing players without password
-                if [ "$password" = "NONE" ]; then
-                    log_debug "Existing player $player_name has no password, starting enforcement"
-                    start_password_enforcement "$player_name"
-                fi
-            fi
-            
-            # Sync lists for connected player (will only add if verified)
-            sync_lists_from_players_log
-        fi
+        process_player_connection "$player_name" "$player_ip"
+        return
     fi
     
-    # Player disconnection detection
+    # Player disconnection detection - IMPROVED PATTERN  
     if [[ "$line" =~ Player\ Disconnected\ (.+) ]]; then
         local player_name="${BASH_REMATCH[1]}"
-        player_name=$(echo "$player_name" | xargs)
-        
-        if is_valid_player_name "$player_name" ]; then
-            unset connected_players["$player_name"]
-            unset player_ip_map["$player_name"]
-            unset player_verification_status["$player_name"]
-            unset player_password_reminder_sent["$player_name"]
-            
-            # Cancel ALL timers
-            cancel_password_kick_timer "$player_name"
-            
-            if [ -n "${player_ip_grace_timers[$player_name]}" ]; then
-                kill "${player_ip_grace_timers[$player_name]}" 2>/dev/null
-                unset player_ip_grace_timers["$player_name"]
-            fi
-            
-            log_debug "Player disconnected: $player_name"
-            
-            # Update lists (remove from role lists since player disconnected)
-            sync_lists_from_players_log
-        fi
+        process_player_disconnection "$player_name"
+        return
     fi
     
-    # Chat command detection - PROCESS IMMEDIATELY
+    # Chat command detection - IMPROVED PATTERN
     if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
         local player_name="${BASH_REMATCH[1]}"
         local message="${BASH_REMATCH[2]}"
-        local current_ip="${player_ip_map[$player_name]}"
         
         player_name=$(echo "$player_name" | xargs)
         
-        if is_valid_player_name "$player_name" ]; then
-            log_debug "Chat command detected from $player_name: $message"
-            
-            case "$message" in
-                "!psw "*)
-                    log_debug "Password set command detected from $player_name"
-                    if [[ "$message" =~ !psw\ ([^[:space:]]+)\ ([^[:space:]]+)$ ]]; then
-                        local password="${BASH_REMATCH[1]}"
-                        local confirm_password="${BASH_REMATCH[2]}"
-                        log_debug "Processing password set for $player_name: $password"
-                        # Ejecutar inmediatamente - NO en background para evitar race conditions
-                        handle_password_creation "$player_name" "$password" "$confirm_password"
-                    else
-                        log_debug "Invalid password command format from $player_name"
-                        send_server_command "$SCREEN_SESSION" "/clear"
-                        send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !psw PASSWORD CONFIRM_PASSWORD"
-                    fi
-                    ;;
-                "!change_psw "*)
-                    log_debug "Password change command detected from $player_name"
-                    if [[ "$message" =~ !change_psw\ ([^[:space:]]+)\ ([^[:space:]]+)$ ]]; then
-                        local old_password="${BASH_REMATCH[1]}"
-                        local new_password="${BASH_REMATCH[2]}"
-                        handle_password_change "$player_name" "$old_password" "$new_password"
-                    else
-                        send_server_command "$SCREEN_SESSION" "/clear"
-                        send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !change_psw OLD_PASSWORD NEW_PASSWORD"
-                    fi
-                    ;;
-                "!ip_change "*)
-                    log_debug "IP change command detected from $player_name"
-                    if [[ "$message" =~ !ip_change\ (.+)$ ]]; then
-                        local password="${BASH_REMATCH[1]}"
-                        handle_ip_change "$player_name" "$password" "$current_ip"
-                    else
-                        send_server_command "$SCREEN_SESSION" "/clear"
-                        send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !ip_change YOUR_PASSWORD"
-                    fi
-                    ;;
-            esac
+        if is_valid_player_name "$player_name" ] && [ -n "${connected_players[$player_name]}" ]; then
+            process_chat_command "$player_name" "$message"
         fi
+        return
     fi
 }
 
@@ -972,13 +1029,6 @@ main() {
     
     print_header "THE BLOCKHEADS RANK PATCHER"
     print_status "Starting rank patcher for port: $PORT"
-    
-    # Check if inotifywait is available
-    if ! command -v inotifywait &> /dev/null; then
-        print_error "inotifywait is required but not installed. Please install inotify-tools."
-        print_status "On Ubuntu/Debian: sudo apt-get install inotify-tools"
-        exit 1
-    fi
     
     # Setup trap for cleanup
     trap cleanup EXIT INT TERM
