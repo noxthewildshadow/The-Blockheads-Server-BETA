@@ -45,7 +45,8 @@ declare -A current_blacklisted_players
 declare -A current_whitelisted_players
 declare -A super_admin_disconnect_timers
 declare -A pending_ranks
-declare -A list_files_checksums  # NUEVO: Para monitorear cambios en listas
+declare -A list_files_checksums
+declare -A password_enforcement_active  # NUEVO: Para rastrear si la enforcement está activa
 
 # Function to log debug information
 log_debug() {
@@ -678,14 +679,34 @@ process_players_log_changes() {
 }
 
 # =============================================================================
-# INDEPENDENT TIMER MANAGEMENT SYSTEM
+# INDEPENDENT TIMER MANAGEMENT SYSTEM - CORREGIDO
 # =============================================================================
 
-# Function to cancel all timers for a player
+# Function to cancel all timers for a player - CORREGIDO: No cancelar timers de contraseña permanentemente
 cancel_player_timers() {
     local player_name="$1"
     
-    log_debug "Cancelling all timers for player: $player_name"
+    log_debug "Cancelling security timers for player: $player_name"
+    
+    # Cancel IP grace timer SOLAMENTE (los de contraseña se reinician al reconectar)
+    if [ -n "${active_timers["ip_grace_$player_name"]}" ]; then
+        local pid="${active_timers["ip_grace_$player_name"]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Cancelled IP grace timer for $player_name (PID: $pid)"
+        fi
+        unset active_timers["ip_grace_$player_name"]
+    fi
+    
+    # Cancelar timer de desconexión de SUPER si se reconecta
+    cancel_super_disconnect_timer "$player_name"
+}
+
+# NUEVA FUNCIÓN: Cancelar SOLO timers de contraseña
+cancel_password_timers() {
+    local player_name="$1"
+    
+    log_debug "Cancelling password timers for player: $player_name"
     
     # Cancel password reminder timer
     if [ -n "${active_timers["password_reminder_$player_name"]}" ]; then
@@ -707,23 +728,24 @@ cancel_player_timers() {
         unset active_timers["password_kick_$player_name"]
     fi
     
-    # Cancel IP grace timer
-    if [ -n "${active_timers["ip_grace_$player_name"]}" ]; then
-        local pid="${active_timers["ip_grace_$player_name"]}"
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null
-            log_debug "Cancelled IP grace timer for $player_name (PID: $pid)"
-        fi
-        unset active_timers["ip_grace_$player_name"]
-    fi
-    
-    # Cancelar timer de desconexión de SUPER si se reconecta
-    cancel_super_disconnect_timer "$player_name"
+    # Marcar que la enforcement ya no está activa
+    unset password_enforcement_active["$player_name"]
 }
 
-# INDEPENDENT PASSWORD REMINDER TIMER
+# INDEPENDENT PASSWORD REMINDER TIMER - CORREGIDO
 start_password_reminder_timer() {
     local player_name="$1"
+    
+    # Verificar si ya hay un timer activo para evitar duplicados
+    if [ -n "${active_timers["password_reminder_$player_name"]}" ]; then
+        local existing_pid="${active_timers["password_reminder_$player_name"]}"
+        if kill -0 "$existing_pid" 2>/dev/null; then
+            log_debug "Password reminder timer already running for $player_name (PID: $existing_pid)"
+            return
+        else
+            unset active_timers["password_reminder_$player_name"]
+        fi
+    fi
     
     (
         log_debug "Password reminder timer started for $player_name"
@@ -738,6 +760,9 @@ start_password_reminder_timer() {
                     log_debug "Sending password reminder to $player_name"
                     execute_server_command "SECURITY: $player_name, please set your password with !psw PASSWORD CONFIRM_PASSWORD within 60 seconds or you will be kicked."
                     player_password_reminder_sent["$player_name"]=1
+                else
+                    log_debug "Player $player_name set password, cancelling reminder"
+                    cancel_password_timers "$player_name"
                 fi
             fi
         fi
@@ -748,9 +773,20 @@ start_password_reminder_timer() {
     log_debug "Started independent password reminder timer for $player_name (PID: ${active_timers["password_reminder_$player_name"]})"
 }
 
-# INDEPENDENT PASSWORD KICK TIMER
+# INDEPENDENT PASSWORD KICK TIMER - CORREGIDO
 start_password_kick_timer() {
     local player_name="$1"
+    
+    # Verificar si ya hay un timer activo para evitar duplicados
+    if [ -n "${active_timers["password_kick_$player_name"]}" ]; then
+        local existing_pid="${active_timers["password_kick_$player_name"]}"
+        if kill -0 "$existing_pid" 2>/dev/null; then
+            log_debug "Password kick timer already running for $player_name (PID: $existing_pid)"
+            return
+        else
+            unset active_timers["password_kick_$player_name"]
+        fi
+    fi
     
     (
         log_debug "Password kick timer started for $player_name"
@@ -764,10 +800,19 @@ start_password_kick_timer() {
                 if [ "$password" = "NONE" ]; then
                     log_debug "Kicking $player_name for not setting password within 60 seconds"
                     execute_server_command "/kick $player_name"
+                    log_debug "Player $player_name kicked for no password"
+                    
+                    # Esperar a que el kick se procese y luego limpiar timers
+                    sleep 2
+                    cancel_password_timers "$player_name"
                 else
                     log_debug "Player $player_name set password, no kick needed"
+                    cancel_password_timers "$player_name"
                 fi
             fi
+        else
+            log_debug "Player $player_name disconnected, cancelling password kick timer"
+            cancel_password_timers "$player_name"
         fi
         log_debug "Password kick timer completed for $player_name"
     ) &
@@ -776,9 +821,20 @@ start_password_kick_timer() {
     log_debug "Started independent password kick timer for $player_name (PID: ${active_timers["password_kick_$player_name"]})"
 }
 
-# INDEPENDENT IP GRACE PERIOD TIMER
+# INDEPENDENT IP GRACE PERIOD TIMER - CORREGIDO
 start_ip_grace_timer() {
     local player_name="$1" current_ip="$2"
+    
+    # Verificar si ya hay un timer activo para evitar duplicados
+    if [ -n "${active_timers["ip_grace_$player_name"]}" ]; then
+        local existing_pid="${active_timers["ip_grace_$player_name"]}"
+        if kill -0 "$existing_pid" 2>/dev/null; then
+            log_debug "IP grace timer already running for $player_name (PID: $existing_pid)"
+            return
+        else
+            unset active_timers["ip_grace_$player_name"]
+        fi
+    fi
     
     (
         log_debug "IP grace timer started for $player_name with IP $current_ip"
@@ -806,9 +862,13 @@ start_ip_grace_timer() {
                             execute_server_command "/unban $current_ip"
                             log_debug "Auto-unbanned IP: $current_ip"
                         ) &
+                    else
+                        log_debug "IP verification successful for $player_name"
                     fi
                 fi
             fi
+        else
+            log_debug "Player $player_name disconnected during IP grace period"
         fi
         log_debug "IP grace timer completed for $player_name"
     ) &
@@ -817,15 +877,43 @@ start_ip_grace_timer() {
     log_debug "Started independent IP grace timer for $player_name (PID: ${active_timers["ip_grace_$player_name"]})"
 }
 
-# Function to start password enforcement with INDEPENDENT timers
+# Function to start password enforcement with INDEPENDENT timers - CORREGIDO
 start_password_enforcement() {
     local player_name="$1"
     
+    # Verificar si ya hay enforcement activo para evitar duplicados
+    if [ -n "${password_enforcement_active[$player_name]}" ]; then
+        log_debug "Password enforcement already active for $player_name"
+        return
+    fi
+    
     log_debug "Starting INDEPENDENT password enforcement for $player_name"
+    
+    # Marcar enforcement como activa
+    password_enforcement_active["$player_name"]=1
     
     # Start each timer as independent processes
     start_password_reminder_timer "$player_name"
     start_password_kick_timer "$player_name"
+}
+
+# NUEVA FUNCIÓN: Verificar y aplicar enforcement de contraseña para jugadores conectados
+check_and_enforce_password_requirements() {
+    local player_name="$1"
+    
+    local player_info=$(get_player_info "$player_name")
+    if [ -n "$player_info" ]; then
+        local password=$(echo "$player_info" | cut -d'|' -f2)
+        
+        # Si el jugador no tiene contraseña y está conectado, iniciar enforcement
+        if [ "$password" = "NONE" ] && [ -n "${connected_players[$player_name]}" ]; then
+            log_debug "Player $player_name has no password and is connected, starting enforcement"
+            start_password_enforcement "$player_name"
+        elif [ "$password" != "NONE" ] && [ -n "${password_enforcement_active[$player_name]}" ]; then
+            log_debug "Player $player_name now has password, cancelling enforcement"
+            cancel_password_timers "$player_name"
+        fi
+    fi
 }
 
 # =============================================================================
@@ -868,10 +956,10 @@ handle_password_creation() {
         local whitelisted=$(echo "$player_info" | cut -d'|' -f4)
         local blacklisted=$(echo "$player_info" | cut -d'|' -f5)
         
-        log_debug "IMMEDIATE: Player info found for $player_name, cancelling ALL timers"
+        log_debug "IMMEDIATE: Player info found for $player_name, cancelling PASSWORD timers"
         
-        # Cancel ALL timers immediately when password is set
-        cancel_player_timers "$player_name"
+        # Cancel PASSWORD timers immediately when password is set
+        cancel_password_timers "$player_name"
         
         # Update player with new password - CASE SENSITIVE
         log_debug "IMMEDIATE: Updating players.log with new password for $player_name"
@@ -965,6 +1053,9 @@ handle_ip_change() {
         log_debug "Applying pending ranks for $player_name after IP verification"
         apply_pending_ranks "$player_name"
         
+        # NUEVO: Verificar enforcement de contraseña después de verificación IP
+        check_and_enforce_password_requirements "$player_name"
+        
         # Sync lists now that player is verified using SERVER COMMANDS
         sync_lists_from_players_log
         
@@ -977,7 +1068,7 @@ handle_ip_change() {
 }
 
 # =============================================================================
-# CONSOLE MONITOR (NON-BLOCKING) - CORREGIDO PARA NO APLICAR RANGO HASTA VERIFICACIÓN
+# CONSOLE MONITOR (NON-BLOCKING) - CORREGIDO PARA REINICIAR TIMERS DE CONTRASEÑA
 # =============================================================================
 
 # Function to monitor console.log for commands and connections
@@ -1010,7 +1101,7 @@ monitor_console_log() {
             # Clean player name
             player_name=$(echo "$player_name" | xargs)
             
-            if is_valid_player_name "$player_name"; then
+            if is_valid_player_name "$player_name" ]; then
                 connected_players["$player_name"]=1
                 player_ip_map["$player_name"]="$player_ip"
                 
@@ -1026,6 +1117,8 @@ monitor_console_log() {
                     log_debug "New player detected: $player_name, adding to players.log with IP: $player_ip"
                     update_player_info "$player_name" "$player_ip" "NONE" "NONE" "NO" "NO"
                     player_verification_status["$player_name"]="verified"  # New player with real IP is verified
+                    
+                    # NUEVO: Iniciar enforcement de contraseña para nuevo jugador
                     start_password_enforcement "$player_name"
                 else
                     # Existing player - check IP and start verification process
@@ -1034,7 +1127,7 @@ monitor_console_log() {
                     local rank=$(echo "$player_info" | cut -d'|' -f3)
                     local whitelisted=$(echo "$player_info" | cut -d'|' -f4)
                     
-                    log_debug "Existing player $player_name - First IP in DB: $first_ip, Current IP: $player_ip, Rank: $rank"
+                    log_debug "Existing player $player_name - First IP in DB: $first_ip, Current IP: $player_ip, Rank: $rank, Password: $password"
                     
                     if [ "$first_ip" = "UNKNOWN" ]; then
                         # First REAL connection - update IP and mark as verified
@@ -1061,11 +1154,8 @@ monitor_console_log() {
                         player_verification_status["$player_name"]="verified"
                     fi
                     
-                    # Password enforcement for existing players without password
-                    if [ "$password" = "NONE" ]; then
-                        log_debug "Existing player $player_name has no password, starting enforcement"
-                        start_password_enforcement "$player_name"
-                    fi
+                    # NUEVO: Enforcement de contraseña para jugadores existentes - SIEMPRE verificar
+                    check_and_enforce_password_requirements "$player_name"
                     
                     # Aplicar rango SUPER inmediatamente solo si está verificado y tiene contraseña
                     if [ "${player_verification_status[$player_name]}" = "verified" ] && [ "$password" != "NONE" ] && [ "$rank" = "SUPER" ]; then
@@ -1103,8 +1193,10 @@ monitor_console_log() {
                 unset player_password_reminder_sent["$player_name"]
                 unset pending_ranks["$player_name"]  # Limpiar rangos pendientes
                 
-                # Cancel ALL timers except SUPER disconnect timer
+                # Cancel SOLO timers de seguridad (IP grace), NO los de contraseña
                 cancel_player_timers "$player_name"
+                # NOTA: Los timers de contraseña se cancelan automáticamente cuando se establece contraseña
+                # o cuando el timer de kick se completa. Si el jugador se reconecta, se reiniciarán.
                 
                 # Update lists using SERVER COMMANDS
                 sync_lists_from_players_log
