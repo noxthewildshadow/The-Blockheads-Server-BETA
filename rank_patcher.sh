@@ -40,6 +40,9 @@ declare -A player_ip_map
 declare -A player_verification_status
 declare -A player_password_reminder_sent
 declare -A active_timers
+declare -A current_player_ranks
+declare -A current_blacklisted_players
+declare -A current_whitelisted_ips
 
 # Function to log debug information
 log_debug() {
@@ -78,9 +81,6 @@ setup_paths() {
     [ ! -f "$PLAYERS_LOG" ] && touch "$PLAYERS_LOG"
     [ ! -f "$PATCH_DEBUG_LOG" ] && touch "$PATCH_DEBUG_LOG"
     
-    # Initialize list files as EMPTY (keeping only first line)
-    initialize_list_files
-    
     log_debug "=== RANK PATCHER STARTED ==="
     log_debug "World ID: $WORLD_ID"
     log_debug "Port: $port"
@@ -93,60 +93,6 @@ setup_paths() {
     print_status "Console log: $CONSOLE_LOG"
     print_status "Debug log: $PATCH_DEBUG_LOG"
     print_status "Screen session: $SCREEN_SESSION"
-}
-
-# Function to initialize list files as empty (keeping only first line with default comments)
-initialize_list_files() {
-    local world_dir="$BASE_SAVES_DIR/$WORLD_ID"
-    local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
-    
-    # Default comment lines for each file
-    local ADMIN_COMMENT="Usernames in this file will be able to issue all server commands via chat, and pick up and remove all objects. One username per line, non case sensitive. This first line is ignored."
-    local MOD_COMMENT="Usernames in this file will be able to issue most server commands via chat. One username per line, non case sensitive. This first line is ignored."
-    local WHITE_COMMENT="Only usernames or IP addresses in this file will be able to connect. One username or IP address per line, non case sensitive. This first line is ignored."
-    local BLACK_COMMENT="Usernames or IP addresses in this file will not be able to connect. One username or IP address per line, non case sensitive. This first line is ignored."
-    
-    # List of files to initialize with their default comments
-    local list_files=(
-        "$world_dir/adminlist.txt:$ADMIN_COMMENT"
-        "$world_dir/modlist.txt:$MOD_COMMENT" 
-        "$world_dir/whitelist.txt:$WHITE_COMMENT"
-        "$world_dir/blacklist.txt:$BLACK_COMMENT"
-    )
-    
-    for file_entry in "${list_files[@]}"; do
-        local file_path="${file_entry%:*}"
-        local default_comment="${file_entry#*:}"
-        
-        if [ -f "$file_path" ]; then
-            # File exists - preserve the first line (comment)
-            local first_line=$(head -1 "$file_path")
-            # If first line is empty, use default comment
-            if [ -z "$first_line" ]; then
-                first_line="$default_comment"
-            fi
-            
-            # Empty the file but keep the first line
-            > "$file_path"
-            echo "$first_line" >> "$file_path"
-            log_debug "Initialized with preserved comment: $(basename "$file_path")"
-        else
-            # File doesn't exist - create with default comment
-            echo "$default_comment" > "$file_path"
-            log_debug "Created with default comment: $(basename "$file_path")"
-        fi
-    done
-    
-    # Cloud admin file should be empty initially (no comment needed)
-    if [ -f "$cloud_file" ]; then
-        local first_line=$(head -1 "$cloud_file")
-        > "$cloud_file"
-        [ -n "$first_line" ] && echo "$first_line" >> "$cloud_file"
-    else
-        touch "$cloud_file"
-    fi
-    
-    log_debug "All list files initialized with preserved comments"
 }
 
 # Function to execute server command with cooldown
@@ -232,49 +178,11 @@ update_player_info() {
     fi
 }
 
-# Function to sync lists from players.log (ONLY for verified players) - PRESERVING COMMENTS
+# Function to sync lists from players.log using SERVER COMMANDS only
 sync_lists_from_players_log() {
-    local world_dir="$BASE_SAVES_DIR/$WORLD_ID"
+    log_debug "Syncing lists from players.log using server commands..."
     
-    # List files to manage
-    local ADMIN_LIST="$world_dir/adminlist.txt"
-    local MOD_LIST="$world_dir/modlist.txt"
-    local WHITE_LIST="$world_dir/whitelist.txt"
-    local BLACK_LIST="$world_dir/blacklist.txt"
-    local CLOUD_ADMIN_FILE="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
-    
-    # Default comment lines for each file (in case they get deleted)
-    local ADMIN_COMMENT="Usernames in this file will be able to issue all server commands via chat, and pick up and remove all objects. One username per line, non case sensitive. This first line is ignored."
-    local MOD_COMMENT="Usernames in this file will be able to issue most server commands via chat. One username per line, non case sensitive. This first line is ignored."
-    local WHITE_COMMENT="Only usernames or IP addresses in this file will be able to connect. One username or IP address per line, non case sensitive. This first line is ignored."
-    local BLACK_COMMENT="Usernames or IP addresses in this file will not be able to connect. One username or IP address per line, non case sensitive. This first line is ignored."
-    
-    # Clear existing lists but preserve first line (comment)
-    local admin_first_line=$(head -1 "$ADMIN_LIST" 2>/dev/null)
-    local mod_first_line=$(head -1 "$MOD_LIST" 2>/dev/null)
-    local white_first_line=$(head -1 "$WHITE_LIST" 2>/dev/null)
-    local black_first_line=$(head -1 "$BLACK_LIST" 2>/dev/null)
-    
-    # If first line is empty, use default comment
-    [ -z "$admin_first_line" ] && admin_first_line="$ADMIN_COMMENT"
-    [ -z "$mod_first_line" ] && mod_first_line="$MOD_COMMENT"
-    [ -z "$white_first_line" ] && white_first_line="$WHITE_COMMENT"
-    [ -z "$black_first_line" ] && black_first_line="$BLACK_COMMENT"
-    
-    # Recreate files with preserved comments
-    echo "$admin_first_line" > "$ADMIN_LIST"
-    echo "$mod_first_line" > "$MOD_LIST"
-    echo "$white_first_line" > "$WHITE_LIST"
-    echo "$black_first_line" > "$BLACK_LIST"
-    
-    # Clear cloud admin file (will be repopulated from SUPER admins)
-    if [ -f "$CLOUD_ADMIN_FILE" ]; then
-        local cloud_first_line=$(head -1 "$CLOUD_ADMIN_FILE")
-        > "$CLOUD_ADMIN_FILE"
-        [ -n "$cloud_first_line" ] && echo "$cloud_first_line" >> "$CLOUD_ADMIN_FILE"
-    fi
-    
-    # Process players.log - ONLY add to lists if player is connected and verified
+    # Process players.log - ONLY for verified and connected players
     if [ -f "$PLAYERS_LOG" ]; then
         while IFS='|' read -r name first_ip password rank whitelisted blacklisted; do
             # Clean fields
@@ -292,47 +200,47 @@ sync_lists_from_players_log() {
             # Get current IP for connected player
             local current_ip="${player_ip_map[$name]}"
             
-            # Add to appropriate lists based on rank and status (APPEND after first line)
-            case "$rank" in
-                "ADMIN")
-                    echo "$name" >> "$ADMIN_LIST"
-                    ;;
-                "MOD")
-                    echo "$name" >> "$MOD_LIST"
-                    ;;
-                "SUPER")
-                    # Add to cloud admin list
-                    if ! grep -q "^$name$" "$CLOUD_ADMIN_FILE" 2>/dev/null; then
-                        echo "$name" >> "$CLOUD_ADMIN_FILE"
-                    fi
-                    echo "$name" >> "$ADMIN_LIST"
-                    ;;
-            esac
-            
-            # Handle whitelist/blacklist (APPEND after first line)
-            if [ "$whitelisted" = "YES" ] && [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
-                echo "$current_ip" >> "$WHITE_LIST"
+            # Handle rank changes using SERVER COMMANDS
+            local current_rank="${current_player_ranks[$name]}"
+            if [ "$current_rank" != "$rank" ]; then
+                log_debug "Rank change detected for $name: $current_rank -> $rank"
+                apply_rank_changes "$name" "$current_rank" "$rank"
+                current_player_ranks["$name"]="$rank"
             fi
             
-            if [ "$blacklisted" = "YES" ]; then
-                echo "$name" >> "$BLACK_LIST"
-                if [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
-                    echo "$current_ip" >> "$BLACK_LIST"
-                fi
+            # Handle blacklist changes using SERVER COMMANDS
+            local current_blacklisted="${current_blacklisted_players[$name]}"
+            if [ "$current_blacklisted" != "$blacklisted" ]; then
+                log_debug "Blacklist change detected for $name: $current_blacklisted -> $blacklisted"
+                handle_blacklist_change "$name" "$blacklisted"
+                current_blacklisted_players["$name"]="$blacklisted"
+            fi
+            
+            # Handle whitelist changes using SERVER COMMANDS
+            local current_whitelisted="${current_whitelisted_ips[$current_ip]}"
+            if [ "$whitelisted" = "YES" ] && [ "$current_whitelisted" != "YES" ] && [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
+                log_debug "Adding IP to whitelist: $current_ip for player $name"
+                execute_server_command "/whitelist $current_ip"
+                current_whitelisted_ips["$current_ip"]="YES"
+            elif [ "$whitelisted" = "NO" ] && [ "$current_whitelisted" = "YES" ] && [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
+                log_debug "Removing IP from whitelist: $current_ip for player $name"
+                execute_server_command "/unwhitelist $current_ip"
+                current_whitelisted_ips["$current_ip"]="NO"
             fi
             
         done < "$PLAYERS_LOG"
     fi
     
-    log_debug "Synced lists from players.log (verified players only) - comments preserved"
+    log_debug "Completed syncing lists using server commands"
 }
 
 # Function to apply rank changes using server commands
 apply_rank_changes() {
     local player_name="$1" old_rank="$2" new_rank="$3"
     
-    log_debug "Applying rank change: $player_name from $old_rank to $new_rank"
+    log_debug "Applying rank change via server commands: $player_name from $old_rank to $new_rank"
     
+    # Remove old rank
     case "$old_rank" in
         "ADMIN")
             execute_server_command "/unadmin $player_name"
@@ -346,6 +254,7 @@ apply_rank_changes() {
             ;;
     esac
     
+    # Add new rank
     case "$new_rank" in
         "ADMIN")
             execute_server_command "/admin $player_name"
@@ -405,11 +314,13 @@ remove_from_cloud_admin() {
     fi
 }
 
-# Function to handle blacklist changes
+# Function to handle blacklist changes using SERVER COMMANDS
 handle_blacklist_change() {
     local player_name="$1" blacklisted="$2"
-    local player_info=$(get_player_info "$player_name")
     
+    log_debug "Handling blacklist change via server commands: $player_name -> $blacklisted"
+    
+    local player_info=$(get_player_info "$player_name")
     if [ -n "$player_info" ]; then
         local first_ip=$(echo "$player_info" | cut -d'|' -f1)
         local password=$(echo "$player_info" | cut -d'|' -f2)
@@ -417,7 +328,7 @@ handle_blacklist_change() {
         local current_ip="${player_ip_map[$player_name]}"
         
         if [ "$blacklisted" = "YES" ]; then
-            # Remove from roles and ban
+            # Remove from roles and ban using SERVER COMMANDS
             case "$rank" in
                 "MOD")
                     execute_server_command "/unmod $player_name"
@@ -430,19 +341,20 @@ handle_blacklist_change() {
                     ;;
             esac
             
+            # Ban player and IP using SERVER COMMANDS
             execute_server_command "/ban $player_name"
             if [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
                 execute_server_command "/ban $current_ip"
             fi
             
-            log_debug "Blacklisted player: $player_name"
+            log_debug "Blacklisted player via server commands: $player_name"
         else
-            # Unban player
+            # Unban player and IP using SERVER COMMANDS
             execute_server_command "/unban $player_name"
             if [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
                 execute_server_command "/unban $current_ip"
             fi
-            log_debug "Removed $player_name from blacklist"
+            log_debug "Removed $player_name from blacklist via server commands"
         fi
         
         # Reload lists
@@ -458,12 +370,23 @@ monitor_players_log() {
     # Save initial state
     [ -f "$PLAYERS_LOG" ] && cp "$PLAYERS_LOG" "$temp_file"
     
+    # Initialize current state tracking
+    if [ -f "$PLAYERS_LOG" ]; then
+        while IFS='|' read -r name first_ip password rank whitelisted blacklisted; do
+            name=$(echo "$name" | xargs)
+            rank=$(echo "$rank" | xargs)
+            blacklisted=$(echo "$blacklisted" | xargs)
+            current_player_ranks["$name"]="$rank"
+            current_blacklisted_players["$name"]="$blacklisted"
+        done < "$PLAYERS_LOG"
+    fi
+    
     while true; do
         if [ -f "$PLAYERS_LOG" ]; then
             local current_checksum=$(md5sum "$PLAYERS_LOG" 2>/dev/null | cut -d' ' -f1)
             
             if [ "$current_checksum" != "$last_checksum" ]; then
-                log_debug "Detected change in players.log - processing changes..."
+                log_debug "Detected change in players.log - processing changes via server commands..."
                 process_players_log_changes "$temp_file"
                 last_checksum="$current_checksum"
                 cp "$PLAYERS_LOG" "$temp_file"
@@ -476,7 +399,7 @@ monitor_players_log() {
     rm -f "$temp_file"
 }
 
-# Function to process changes in players.log
+# Function to process changes in players.log using SERVER COMMANDS
 process_players_log_changes() {
     local previous_file="$1"
     
@@ -504,19 +427,19 @@ process_players_log_changes() {
             
             # Check for rank changes
             if [ "$prev_rank" != "$rank" ]; then
-                log_debug "Rank change detected: $name from $prev_rank to $rank"
+                log_debug "Rank change detected via server commands: $name from $prev_rank to $rank"
                 apply_rank_changes "$name" "$prev_rank" "$rank"
             fi
             
             # Check for blacklist changes
             if [ "$prev_blacklisted" != "$blacklisted" ]; then
-                log_debug "Blacklist change detected: $name from $prev_blacklisted to $blacklisted"
+                log_debug "Blacklist change detected via server commands: $name from $prev_blacklisted to $blacklisted"
                 handle_blacklist_change "$name" "$blacklisted"
             fi
         fi
     done < "$PLAYERS_LOG"
     
-    # Always sync lists after changes
+    # Always sync lists after changes using SERVER COMMANDS
     sync_lists_from_players_log
 }
 
@@ -797,7 +720,7 @@ handle_ip_change() {
         # Cancel grace period timer
         cancel_player_timers "$player_name"
         
-        # Sync lists now that player is verified
+        # Sync lists now that player is verified using SERVER COMMANDS
         sync_lists_from_players_log
         
         send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your IP has been verified and updated."
@@ -886,7 +809,7 @@ monitor_console_log() {
                     fi
                 fi
                 
-                # Sync lists for connected player (will only add if verified)
+                # Sync lists for connected player using SERVER COMMANDS
                 sync_lists_from_players_log
             fi
         fi
@@ -907,7 +830,7 @@ monitor_console_log() {
                 
                 log_debug "Player disconnected: $player_name"
                 
-                # Update lists (remove from role lists since player disconnected)
+                # Update lists using SERVER COMMANDS
                 sync_lists_from_players_log
             fi
         fi
