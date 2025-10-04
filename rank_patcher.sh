@@ -44,7 +44,8 @@ declare -A current_player_ranks
 declare -A current_blacklisted_players
 declare -A current_whitelisted_players
 declare -A super_admin_disconnect_timers
-declare -A pending_ranks  # NUEVO: Almacena rangos pendientes hasta verificación IP
+declare -A pending_ranks
+declare -A list_files_checksums  # NUEVO: Para monitorear cambios en listas
 
 # Function to log debug information
 log_debug() {
@@ -180,6 +181,131 @@ update_player_info() {
     fi
 }
 
+# NUEVA FUNCIÓN: Reconstruir todas las listas desde players.log
+rebuild_all_lists_from_players_log() {
+    log_debug "=== REBUILDING ALL LISTS FROM players.log ==="
+    
+    local adminlist_file="$BASE_SAVES_DIR/$WORLD_ID/adminlist.txt"
+    local modlist_file="$BASE_SAVES_DIR/$WORLD_ID/modlist.txt"
+    local blacklist_file="$BASE_SAVES_DIR/$WORLD_ID/blacklist.txt"
+    local whitelist_file="$BASE_SAVES_DIR/$WORLD_ID/whitelist.txt"
+    local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
+    
+    # Limpiar listas existentes
+    > "$adminlist_file"
+    > "$modlist_file"
+    # NOTA: No limpiamos blacklist.txt y whitelist.txt porque pueden tener entradas manuales
+    
+    # Reconstruir desde players.log
+    if [ -f "$PLAYERS_LOG" ]; then
+        while IFS='|' read -r name first_ip password rank whitelisted blacklisted; do
+            name=$(echo "$name" | xargs)
+            rank=$(echo "$rank" | xargs)
+            whitelisted=$(echo "$whitelisted" | xargs)
+            blacklisted=$(echo "$blacklisted" | xargs)
+            
+            # Solo procesar jugadores verificados
+            if [ "${player_verification_status[$name]}" != "verified" ]; then
+                continue
+            fi
+            
+            # Agregar a adminlist
+            if [ "$rank" = "ADMIN" ] || [ "$rank" = "SUPER" ]; then
+                if ! grep -q "^$name$" "$adminlist_file" 2>/dev/null; then
+                    echo "$name" >> "$adminlist_file"
+                    log_debug "Added to adminlist: $name"
+                fi
+            fi
+            
+            # Agregar a modlist
+            if [ "$rank" = "MOD" ]; then
+                if ! grep -q "^$name$" "$modlist_file" 2>/dev/null; then
+                    echo "$name" >> "$modlist_file"
+                    log_debug "Added to modlist: $name"
+                fi
+            fi
+            
+            # Agregar a cloud admin (SUPER)
+            if [ "$rank" = "SUPER" ]; then
+                if [ ! -f "$cloud_file" ]; then
+                    touch "$cloud_file"
+                fi
+                local first_line=$(head -1 "$cloud_file")
+                > "$cloud_file"
+                [ -n "$first_line" ] && echo "$first_line" >> "$cloud_file"
+                if ! grep -q "^$name$" "$cloud_file" 2>/dev/null; then
+                    echo "$name" >> "$cloud_file"
+                    log_debug "Added to cloud admin: $name"
+                fi
+            fi
+            
+            # Manejar whitelist
+            if [ "$whitelisted" = "YES" ] && [ -n "${player_ip_map[$name]}" ] && [ "${player_ip_map[$name]}" != "UNKNOWN" ]; then
+                local current_ip="${player_ip_map[$name]}"
+                if ! grep -q "^$current_ip$" "$whitelist_file" 2>/dev/null; then
+                    echo "$current_ip" >> "$whitelist_file"
+                    log_debug "Added to whitelist: $current_ip ($name)"
+                fi
+            fi
+            
+            # Manejar blacklist
+            if [ "$blacklisted" = "YES" ]; then
+                if ! grep -q "^$name$" "$blacklist_file" 2>/dev/null; then
+                    echo "$name" >> "$blacklist_file"
+                    log_debug "Added to blacklist: $name"
+                fi
+                if [ -n "${player_ip_map[$name]}" ] && [ "${player_ip_map[$name]}" != "UNKNOWN" ]; then
+                    local current_ip="${player_ip_map[$name]}"
+                    if ! grep -q "^$current_ip$" "$blacklist_file" 2>/dev/null; then
+                        echo "$current_ip" >> "$blacklist_file"
+                        log_debug "Added to blacklist (IP): $current_ip ($name)"
+                    fi
+                fi
+            fi
+            
+        done < "$PLAYERS_LOG"
+    fi
+    
+    # Recargar listas en el servidor
+    execute_server_command "/load-lists"
+    log_debug "Reloaded all lists in server"
+    
+    log_debug "=== COMPLETED REBUILDING ALL LISTS ==="
+}
+
+# NUEVA FUNCIÓN: Monitorear cambios en archivos de lista
+monitor_list_files() {
+    log_debug "Starting list files monitor..."
+    
+    local adminlist_file="$BASE_SAVES_DIR/$WORLD_ID/adminlist.txt"
+    local modlist_file="$BASE_SAVES_DIR/$WORLD_ID/modlist.txt"
+    
+    # Inicializar checksums
+    list_files_checksums["adminlist"]=$(md5sum "$adminlist_file" 2>/dev/null | cut -d' ' -f1)
+    list_files_checksums["modlist"]=$(md5sum "$modlist_file" 2>/dev/null | cut -d' ' -f1)
+    
+    while true; do
+        local current_adminlist_checksum=$(md5sum "$adminlist_file" 2>/dev/null | cut -d' ' -f1)
+        local current_modlist_checksum=$(md5sum "$modlist_file" 2>/dev/null | cut -d' ' -f1)
+        
+        # Detectar cambios en adminlist.txt
+        if [ "$current_adminlist_checksum" != "${list_files_checksums["adminlist"]}" ]; then
+            log_debug "DETECTED CHANGE: adminlist.txt was modified - rebuilding from players.log"
+            list_files_checksums["adminlist"]="$current_adminlist_checksum"
+            rebuild_all_lists_from_players_log
+        fi
+        
+        # Detectar cambios en modlist.txt
+        if [ "$current_modlist_checksum" != "${list_files_checksums["modlist"]}" ]; then
+            log_debug "DETECTED CHANGE: modlist.txt was modified - rebuilding from players.log"
+            list_files_checksums["modlist"]="$current_modlist_checksum"
+            rebuild_all_lists_from_players_log
+        fi
+        
+        sleep 2
+    done
+}
+
 # Function to sync lists from players.log using SERVER COMMANDS only
 sync_lists_from_players_log() {
     log_debug "Syncing lists from players.log using server commands..."
@@ -194,7 +320,7 @@ sync_lists_from_players_log() {
             whitelisted=$(echo "$whitelisted" | xargs)
             blacklisted=$(echo "$blacklisted" | xargs)
             
-            # Skip if player is not connected OR not IP verified
+            # Skip if player is not connected
             if [ -z "${connected_players[$name]}" ]; then
                 continue
             fi
@@ -240,6 +366,9 @@ sync_lists_from_players_log() {
         done < "$PLAYERS_LOG"
     fi
     
+    # NUEVO: Reconstruir archivos de lista para asegurar consistencia
+    rebuild_all_lists_from_players_log
+    
     log_debug "Completed syncing lists using server commands"
 }
 
@@ -249,7 +378,7 @@ apply_pending_ranks() {
     
     if [ -n "${pending_ranks[$player_name]}" ]; then
         local pending_rank="${pending_ranks[$player_name]}"
-        log_debug "Applying pending rank for $name: $pending_rank"
+        log_debug "Applying pending rank for $player_name: $pending_rank"
         
         case "$pending_rank" in
             "ADMIN")
@@ -259,7 +388,6 @@ apply_pending_ranks() {
                 execute_server_command "/mod $player_name"
                 ;;
             "SUPER")
-                add_to_cloud_admin "$player_name"
                 execute_server_command "/admin $player_name"
                 ;;
         esac
@@ -270,6 +398,9 @@ apply_pending_ranks() {
         
         # Reload lists after changes
         execute_server_command "/load-lists"
+        
+        # NUEVO: Reconstruir listas
+        rebuild_all_lists_from_players_log
     fi
 }
 
@@ -319,7 +450,6 @@ apply_rank_changes() {
                 execute_server_command "/mod $player_name"
                 ;;
             "SUPER")
-                add_to_cloud_admin "$player_name"
                 execute_server_command "/admin $player_name"
                 ;;
         esac
@@ -327,6 +457,9 @@ apply_rank_changes() {
     
     # Reload lists after changes
     execute_server_command "/load-lists"
+    
+    # NUEVO: Reconstruir listas
+    rebuild_all_lists_from_players_log
 }
 
 # Timer de 15 segundos para SUPER al desconectarse
@@ -447,6 +580,9 @@ handle_blacklist_change() {
         
         # Reload lists
         execute_server_command "/load-lists"
+        
+        # NUEVO: Reconstruir listas
+        rebuild_all_lists_from_players_log
     fi
 }
 
@@ -1093,6 +1229,10 @@ main() {
     
     print_step "Starting console.log monitor..."
     monitor_console_log &
+    
+    # NUEVO: Iniciar monitoreo de archivos de lista
+    print_step "Starting list files monitor..."
+    monitor_list_files &
     
     print_header "RANK PATCHER IS NOW RUNNING"
     print_status "Monitoring: $CONSOLE_LOG"
