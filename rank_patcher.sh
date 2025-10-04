@@ -42,7 +42,7 @@ declare -A player_password_reminder_sent
 declare -A active_timers
 declare -A current_player_ranks
 declare -A current_blacklisted_players
-declare -A current_whitelisted_ips
+declare -A current_whitelisted_players  # Nuevo: para rastrear estado de whitelist por jugador
 
 # Function to log debug information
 log_debug() {
@@ -216,22 +216,33 @@ sync_lists_from_players_log() {
                 current_blacklisted_players["$name"]="$blacklisted"
             fi
             
-            # Handle whitelist changes using SERVER COMMANDS
-            local current_whitelisted="${current_whitelisted_ips[$current_ip]}"
-            if [ "$whitelisted" = "YES" ] && [ "$current_whitelisted" != "YES" ] && [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
-                log_debug "Adding IP to whitelist: $current_ip for player $name"
-                execute_server_command "/whitelist $current_ip"
-                current_whitelisted_ips["$current_ip"]="YES"
-            elif [ "$whitelisted" = "NO" ] && [ "$current_whitelisted" = "YES" ] && [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
-                log_debug "Removing IP from whitelist: $current_ip for player $name"
-                execute_server_command "/unwhitelist $current_ip"
-                current_whitelisted_ips["$current_ip"]="NO"
+            # Handle whitelist changes using SERVER COMMANDS - CORREGIDO
+            local current_whitelisted="${current_whitelisted_players[$name]}"
+            if [ "$current_whitelisted" != "$whitelisted" ]; then
+                log_debug "Whitelist change detected for $name: $current_whitelisted -> $whitelisted"
+                handle_whitelist_change "$name" "$whitelisted" "$current_ip"
+                current_whitelisted_players["$name"]="$whitelisted"
             fi
             
         done < "$PLAYERS_LOG"
     fi
     
     log_debug "Completed syncing lists using server commands"
+}
+
+# Function to handle whitelist changes using SERVER COMMANDS - NUEVA FUNCIÓN
+handle_whitelist_change() {
+    local player_name="$1" whitelisted="$2" current_ip="$3"
+    
+    log_debug "Handling whitelist change via server commands: $player_name -> $whitelisted (IP: $current_ip)"
+    
+    if [ "$whitelisted" = "YES" ] && [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
+        log_debug "Adding IP to whitelist: $current_ip for player $player_name"
+        execute_server_command "/whitelist $current_ip"
+    elif [ "$whitelisted" = "NO" ] && [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
+        log_debug "Removing IP from whitelist: $current_ip for player $player_name"
+        execute_server_command "/unwhitelist $current_ip"
+    fi
 }
 
 # Function to apply rank changes using server commands
@@ -376,8 +387,10 @@ monitor_players_log() {
             name=$(echo "$name" | xargs)
             rank=$(echo "$rank" | xargs)
             blacklisted=$(echo "$blacklisted" | xargs)
+            whitelisted=$(echo "$whitelisted" | xargs)  # Nuevo: inicializar whitelist
             current_player_ranks["$name"]="$rank"
             current_blacklisted_players["$name"]="$blacklisted"
+            current_whitelisted_players["$name"]="$whitelisted"  # Nuevo: rastrear whitelist
         done < "$PLAYERS_LOG"
     fi
     
@@ -413,6 +426,7 @@ process_players_log_changes() {
         name=$(echo "$name" | xargs)
         rank=$(echo "$rank" | xargs)
         blacklisted=$(echo "$blacklisted" | xargs)
+        whitelisted=$(echo "$whitelisted" | xargs)  # Nuevo: procesar whitelist
         
         # Find previous state
         local previous_line=$(grep -i "^$name|" "$previous_file" 2>/dev/null | head -1)
@@ -422,7 +436,7 @@ process_players_log_changes() {
             local prev_first_ip=$(echo "$previous_line" | cut -d'|' -f2 | xargs)
             local prev_password=$(echo "$previous_line" | cut -d'|' -f3 | xargs)
             local prev_rank=$(echo "$previous_line" | cut -d'|' -f4 | xargs)
-            local prev_whitelisted=$(echo "$previous_line" | cut -d'|' -f5 | xargs)
+            local prev_whitelisted=$(echo "$previous_line" | cut -d'|' -f5 | xargs)  # Nuevo
             local prev_blacklisted=$(echo "$previous_line" | cut -d'|' -f6 | xargs)
             
             # Check for rank changes
@@ -435,6 +449,13 @@ process_players_log_changes() {
             if [ "$prev_blacklisted" != "$blacklisted" ]; then
                 log_debug "Blacklist change detected via server commands: $name from $prev_blacklisted to $blacklisted"
                 handle_blacklist_change "$name" "$blacklisted"
+            fi
+            
+            # Check for whitelist changes - NUEVO
+            if [ "$prev_whitelisted" != "$whitelisted" ]; then
+                log_debug "Whitelist change detected via server commands: $name from $prev_whitelisted to $whitelisted"
+                local current_ip="${player_ip_map[$name]}"
+                handle_whitelist_change "$name" "$whitelisted" "$current_ip"
             fi
         fi
     done < "$PLAYERS_LOG"
@@ -783,13 +804,14 @@ monitor_console_log() {
                     # Existing player - check IP and start verification process
                     local first_ip=$(echo "$player_info" | cut -d'|' -f1)
                     local password=$(echo "$player_info" | cut -d'|' -f2)
+                    local whitelisted=$(echo "$player_info" | cut -d'|' -f4)  # Nuevo: obtener whitelisted
                     
                     log_debug "Existing player $player_name - First IP in DB: $first_ip, Current IP: $player_ip"
                     
                     if [ "$first_ip" = "UNKNOWN" ]; then
                         # First REAL connection - update IP and mark as verified
                         log_debug "First real connection for $player_name, updating IP from UNKNOWN to $player_ip"
-                        update_player_info "$player_name" "$player_ip" "$password" "NONE" "NO" "NO"
+                        update_player_info "$player_name" "$player_ip" "$password" "NONE" "$whitelisted" "NO"
                         player_verification_status["$player_name"]="verified"
                     elif [ "$first_ip" != "$player_ip" ]; then
                         # IP changed - require verification
