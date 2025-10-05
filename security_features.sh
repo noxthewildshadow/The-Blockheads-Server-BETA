@@ -33,6 +33,7 @@ declare -A connected_players
 declare -A player_ip_map
 declare -A active_timers
 declare -A dangerous_command_offenders
+declare -A security_verified_players
 
 log_debug() {
     local message="$1"
@@ -82,20 +83,20 @@ setup_paths() {
 
 execute_server_command() {
     local command="$1"
-    log_debug "Executing server command: $command"
+    log_debug "Executing security server command: $command"
     send_server_command "$SCREEN_SESSION" "$command"
-    sleep 0.5
+    sleep 0.3
 }
 
 send_server_command() {
     local screen_session="$1"
     local command="$2"
-    log_debug "Sending command to screen session $screen_session: $command"
+    log_debug "Sending security command to screen session $screen_session: $command"
     if screen -S "$screen_session" -p 0 -X stuff "$command$(printf \\r)" 2>/dev/null; then
-        log_debug "Command sent successfully: $command"
+        log_debug "Security command sent successfully: $command"
         return 0
     else
-        log_debug "FAILED to send command: $command"
+        log_debug "FAILED to send security command: $command"
         return 1
     fi
 }
@@ -205,6 +206,23 @@ get_player_info() {
     echo ""
 }
 
+check_rank_patcher_verified() {
+    local player_name="$1"
+    
+    local verification_file="$BASE_SAVES_DIR/$WORLD_ID/security_verified.txt"
+    
+    if [ -f "$verification_file" ]; then
+        if grep -q "^$player_name$" "$verification_file" 2>/dev/null; then
+            log_debug "Player $player_name verified by rank patcher"
+            security_verified_players["$player_name"]=1
+            return 0
+        fi
+    fi
+    
+    log_debug "Player $player_name NOT verified by rank patcher"
+    return 1
+}
+
 validate_list_entries() {
     local list_file="$1"
     local list_type="$2"
@@ -220,6 +238,12 @@ validate_list_entries() {
         line=$(echo "$line" | xargs)
         
         if [ -z "$line" ]; then
+            continue
+        fi
+        
+        if ! check_rank_patcher_verified "$line"; then
+            log_debug "Unauthorized entry found in $list_type: $line - Not verified by rank patcher"
+            needs_update=true
             continue
         fi
         
@@ -256,13 +280,13 @@ validate_list_entries() {
         fi
         
         if [ -z "${connected_players[$line]}" ]; then
-            log_debug "Player not connected but in $list_type: $line - Keeping for now"
+            log_debug "Player not connected but in $list_type: $line - Keeping (may be temporary)"
             echo "$line" >> "$temp_file"
             continue
         fi
         
         local current_ip="${player_ip_map[$line]}"
-        if [ "$first_ip" != "UNKNOWN" ] && [ "$first_ip" != "$current_ip" ]; then
+        if [ "$first_ip" != "UNKNOWN" ] && [ "$first_ip" != "$current_ip" ] && [ -z "${security_verified_players[$line]}" ]; then
             log_debug "IP mismatch for player in $list_type: $line - First IP: $first_ip, Current IP: $current_ip"
             needs_update=true
             continue
@@ -308,7 +332,7 @@ monitor_lists() {
             fi
         fi
         
-        sleep 1
+        sleep 2
     done
 }
 
@@ -438,6 +462,7 @@ monitor_console_log() {
             
             unset connected_players["$player_name"]
             unset player_ip_map["$player_name"]
+            unset security_verified_players["$player_name"]
             
             cancel_name_validation_timers "$player_name"
             cancel_dangerous_command_timers "$player_name"
@@ -562,6 +587,8 @@ main() {
     print_status "  - Player name validation"
     print_status "  - List integrity protection"
     print_status "  - Dangerous command detection"
+    print_warning "NOTE: This script works alongside rank_patcher.sh"
+    print_warning "Make sure rank_patcher.sh is also running for full functionality"
     
     wait
 }
