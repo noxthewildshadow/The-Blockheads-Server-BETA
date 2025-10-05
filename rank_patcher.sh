@@ -38,8 +38,12 @@ declare -A current_player_ranks
 declare -A current_blacklisted_players
 declare -A current_whitelisted_players
 declare -A super_admin_disconnect_timers
+declare -A admin_disconnect_timers
+declare -A mod_disconnect_timers
 declare -A pending_ranks
 declare -A list_files_initialized
+declare -A rank_apply_kick_timers
+declare -A rank_kick_messages_sent
 
 log_debug() {
     local message="$1"
@@ -209,6 +213,69 @@ force_reload_all_lists() {
     log_debug "=== COMPLETE RELOAD OF ALL LISTS FINISHED ==="
 }
 
+start_rank_apply_kick_timer() {
+    local player_name="$1" rank="$2"
+    
+    log_debug "Starting rank apply kick timer for $player_name (Rank: $rank)"
+    
+    if [ -n "${rank_apply_kick_timers[$player_name]}" ]; then
+        local pid="${rank_apply_kick_timers[$player_name]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Cancelled existing rank apply kick timer for $player_name"
+        fi
+    fi
+    
+    (
+        sleep 5
+        
+        if [ -n "${connected_players[$player_name]}" ] && [ -z "${rank_kick_messages_sent[$player_name]}" ]; then
+            log_debug "Sending rank kick warning to $player_name"
+            execute_server_command "RANK SYSTEM: $player_name, your $rank rank requires a reconnect to apply completely. You will be kicked in 10 seconds. Please reconnect within 15 seconds."
+            rank_kick_messages_sent["$player_name"]=1
+        fi
+        
+        sleep 10
+        
+        if [ -n "${connected_players[$player_name]}" ]; then
+            log_debug "Executing rank apply kick for $player_name"
+            execute_server_command "/kick $player_name"
+            
+            sleep 15
+            
+            if [ -n "${connected_players[$player_name]}" ]; then
+                log_debug "Player $player_name reconnected within 15 seconds, rank should be applied"
+                unset rank_kick_messages_sent["$player_name"]
+            else
+                log_debug "Player $player_name did not reconnect within 15 seconds, rank application may be incomplete"
+            fi
+        else
+            log_debug "Player $player_name disconnected before rank apply kick"
+            unset rank_kick_messages_sent["$player_name"]
+        fi
+        
+        unset rank_apply_kick_timers["$player_name"]
+    ) &
+    
+    rank_apply_kick_timers["$player_name"]=$!
+    log_debug "Started rank apply kick timer for $player_name (PID: ${rank_apply_kick_timers[$player_name]})"
+}
+
+cancel_rank_apply_kick_timer() {
+    local player_name="$1"
+    
+    if [ -n "${rank_apply_kick_timers[$player_name]}" ]; then
+        local pid="${rank_apply_kick_timers[$player_name]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Cancelled rank apply kick timer for $player_name (PID: $pid)"
+        fi
+        unset rank_apply_kick_timers["$player_name"]
+    fi
+    
+    unset rank_kick_messages_sent["$player_name"]
+}
+
 apply_rank_to_connected_player() {
     local player_name="$1"
     
@@ -237,28 +304,38 @@ apply_rank_to_connected_player() {
             "MOD")
                 execute_server_command "/mod $player_name"
                 current_player_ranks["$player_name"]="$rank"
+                log_debug "Starting rank apply kick process for MOD $player_name"
+                start_rank_apply_kick_timer "$player_name" "MOD"
                 ;;
             "ADMIN")
                 execute_server_command "/admin $player_name"
                 current_player_ranks["$player_name"]="$rank"
+                log_debug "Starting rank apply kick process for ADMIN $player_name"
+                start_rank_apply_kick_timer "$player_name" "ADMIN"
                 ;;
             "SUPER")
                 execute_server_command "/admin $player_name"
                 add_to_cloud_admin "$player_name"
                 current_player_ranks["$player_name"]="$rank"
+                log_debug "Starting rank apply kick process for SUPER $player_name"
+                start_rank_apply_kick_timer "$player_name" "SUPER"
                 ;;
             "NONE")
+                cancel_rank_apply_kick_timer "$player_name"
                 if [ -n "${current_player_ranks[$player_name]}" ]; then
                     local current_rank="${current_player_ranks[$player_name]}"
                     case "$current_rank" in
                         "MOD")
                             execute_server_command "/unmod $player_name"
+                            start_mod_disconnect_timer "$player_name"
                             ;;
-                        "ADMIN"|"SUPER")
+                        "ADMIN")
                             execute_server_command "/unadmin $player_name"
-                            if [ "$current_rank" = "SUPER" ]; then
-                                remove_from_cloud_admin "$player_name"
-                            fi
+                            start_admin_disconnect_timer "$player_name"
+                            ;;
+                        "SUPER")
+                            execute_server_command "/unadmin $player_name"
+                            start_super_disconnect_timer "$player_name"
                             ;;
                     esac
                     unset current_player_ranks["$player_name"]
@@ -270,6 +347,7 @@ apply_rank_to_connected_player() {
         if [ "$rank" != "NONE" ]; then
             pending_ranks["$player_name"]="$rank"
         fi
+        cancel_rank_apply_kick_timer "$player_name"
     fi
     
     if [ "$whitelisted" = "YES" ] && [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
@@ -353,17 +431,22 @@ apply_pending_ranks() {
         case "$pending_rank" in
             "ADMIN")
                 execute_server_command "/admin $player_name"
+                current_player_ranks["$player_name"]="$pending_rank"
+                start_rank_apply_kick_timer "$player_name" "ADMIN"
                 ;;
             "MOD")
                 execute_server_command "/mod $player_name"
+                current_player_ranks["$player_name"]="$pending_rank"
+                start_rank_apply_kick_timer "$player_name" "MOD"
                 ;;
             "SUPER")
                 add_to_cloud_admin "$player_name"
                 execute_server_command "/admin $player_name"
+                current_player_ranks["$player_name"]="$pending_rank"
+                start_rank_apply_kick_timer "$player_name" "SUPER"
                 ;;
         esac
         
-        current_player_ranks["$player_name"]="$pending_rank"
         unset pending_ranks["$player_name"]
         log_debug "Successfully applied pending rank $pending_rank to $player_name"
         
@@ -393,9 +476,11 @@ apply_rank_changes() {
     case "$old_rank" in
         "ADMIN")
             execute_server_command "/unadmin $player_name"
+            start_admin_disconnect_timer "$player_name"
             ;;
         "MOD")
             execute_server_command "/unmod $player_name"
+            start_mod_disconnect_timer "$player_name"
             ;;
         "SUPER")
             start_super_disconnect_timer "$player_name"
@@ -407,15 +492,23 @@ apply_rank_changes() {
         case "$new_rank" in
             "ADMIN")
                 execute_server_command "/admin $player_name"
+                current_player_ranks["$player_name"]="$new_rank"
+                start_rank_apply_kick_timer "$player_name" "ADMIN"
                 ;;
             "MOD")
                 execute_server_command "/mod $player_name"
+                current_player_ranks["$player_name"]="$new_rank"
+                start_rank_apply_kick_timer "$player_name" "MOD"
                 ;;
             "SUPER")
                 add_to_cloud_admin "$player_name"
                 execute_server_command "/admin $player_name"
+                current_player_ranks["$player_name"]="$new_rank"
+                start_rank_apply_kick_timer "$player_name" "SUPER"
                 ;;
         esac
+    else
+        cancel_rank_apply_kick_timer "$player_name"
     fi
     
     execute_server_command "/load-lists"
@@ -437,6 +530,38 @@ start_super_disconnect_timer() {
     log_debug "Started 15-second disconnect timer for SUPER $player_name (PID: ${super_admin_disconnect_timers[$player_name]})"
 }
 
+start_admin_disconnect_timer() {
+    local player_name="$1"
+    
+    log_debug "Starting 15-second disconnect timer for ADMIN: $player_name"
+    
+    (
+        sleep 15
+        log_debug "15-second timer completed, ensuring ADMIN $player_name is removed from adminlist"
+        execute_server_command "/unadmin $player_name"
+        unset admin_disconnect_timers["$player_name"]
+    ) &
+    
+    admin_disconnect_timers["$player_name"]=$!
+    log_debug "Started 15-second disconnect timer for ADMIN $player_name (PID: ${admin_disconnect_timers[$player_name]})"
+}
+
+start_mod_disconnect_timer() {
+    local player_name="$1"
+    
+    log_debug "Starting 15-second disconnect timer for MOD: $player_name"
+    
+    (
+        sleep 15
+        log_debug "15-second timer completed, ensuring MOD $player_name is removed from modlist"
+        execute_server_command "/unmod $player_name"
+        unset mod_disconnect_timers["$player_name"]
+    ) &
+    
+    mod_disconnect_timers["$player_name"]=$!
+    log_debug "Started 15-second disconnect timer for MOD $player_name (PID: ${mod_disconnect_timers[$player_name]})"
+}
+
 cancel_super_disconnect_timer() {
     local player_name="$1"
     
@@ -447,6 +572,32 @@ cancel_super_disconnect_timer() {
             log_debug "Cancelled SUPER disconnect timer for $player_name (PID: $pid)"
         fi
         unset super_admin_disconnect_timers["$player_name"]
+    fi
+}
+
+cancel_admin_disconnect_timer() {
+    local player_name="$1"
+    
+    if [ -n "${admin_disconnect_timers[$player_name]}" ]; then
+        local pid="${admin_disconnect_timers[$player_name]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Cancelled ADMIN disconnect timer for $player_name (PID: $pid)"
+        fi
+        unset admin_disconnect_timers["$player_name"]
+    fi
+}
+
+cancel_mod_disconnect_timer() {
+    local player_name="$1"
+    
+    if [ -n "${mod_disconnect_timers[$player_name]}" ]; then
+        local pid="${mod_disconnect_timers[$player_name]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Cancelled MOD disconnect timer for $player_name (PID: $pid)"
+        fi
+        unset mod_disconnect_timers["$player_name"]
     fi
 }
 
@@ -504,11 +655,14 @@ handle_blacklist_change() {
             case "$rank" in
                 "MOD")
                     execute_server_command "/unmod $player_name"
+                    start_mod_disconnect_timer "$player_name"
                     ;;
                 "ADMIN"|"SUPER")
                     execute_server_command "/unadmin $player_name"
                     if [ "$rank" = "SUPER" ]; then
                         remove_from_cloud_admin "$player_name"
+                    else
+                        start_admin_disconnect_timer "$player_name"
                     fi
                     ;;
             esac
@@ -543,11 +697,8 @@ monitor_list_files() {
         if [ -f "$admin_list" ]; then
             local current_admin_checksum=$(md5sum "$admin_list" 2>/dev/null | cut -d' ' -f1)
             if [ "$current_admin_checksum" != "$last_admin_checksum" ]; then
-                log_debug "Detected change in adminlist.txt - forcing reload from players.log"
-                sleep 2
-                for player in "${!connected_players[@]}"; do
-                    apply_rank_to_connected_player "$player"
-                done
+                log_debug "Detected change in adminlist.txt - verifying against players.log"
+                verify_admin_list
                 last_admin_checksum="$current_admin_checksum"
             fi
         fi
@@ -555,17 +706,104 @@ monitor_list_files() {
         if [ -f "$mod_list" ]; then
             local current_mod_checksum=$(md5sum "$mod_list" 2>/dev/null | cut -d' ' -f1)
             if [ "$current_mod_checksum" != "$last_mod_checksum" ]; then
-                log_debug "Detected change in modlist.txt - forcing reload from players.log"
-                sleep 2
-                for player in "${!connected_players[@]}"; do
-                    apply_rank_to_connected_player "$player"
-                done
+                log_debug "Detected change in modlist.txt - verifying against players.log"
+                verify_mod_list
                 last_mod_checksum="$current_mod_checksum"
             fi
         fi
         
-        sleep 5
+        sleep 1
     done
+}
+
+verify_admin_list() {
+    local world_dir="$BASE_SAVES_DIR/$WORLD_ID"
+    local admin_list="$world_dir/adminlist.txt"
+    
+    if [ ! -f "$admin_list" ]; then
+        return
+    fi
+    
+    local temp_file=$(mktemp)
+    local needs_update=false
+    
+    while IFS= read -r line; do
+        line=$(echo "$line" | xargs)
+        if [ -z "$line" ]; then
+            continue
+        fi
+        
+        local player_name="$line"
+        local player_info=$(get_player_info "$player_name")
+        
+        if [ -n "$player_info" ]; then
+            local rank=$(echo "$player_info" | cut -d'|' -f3)
+            local blacklisted=$(echo "$player_info" | cut -d'|' -f5)
+            
+            if [ "$rank" = "ADMIN" ] || [ "$rank" = "SUPER" ] && [ "$blacklisted" != "YES" ]; then
+                echo "$player_name" >> "$temp_file"
+            else
+                log_debug "Removing unauthorized player from adminlist: $player_name (Rank: $rank, Blacklisted: $blacklisted)"
+                needs_update=true
+            fi
+        else
+            log_debug "Removing unknown player from adminlist: $player_name"
+            needs_update=true
+        fi
+    done < "$admin_list"
+    
+    if [ "$needs_update" = true ] || ! cmp -s "$admin_list" "$temp_file"; then
+        log_debug "Updating adminlist.txt with verified players only"
+        mv "$temp_file" "$admin_list"
+        execute_server_command "/load-lists"
+    else
+        rm -f "$temp_file"
+    fi
+}
+
+verify_mod_list() {
+    local world_dir="$BASE_SAVES_DIR/$WORLD_ID"
+    local mod_list="$world_dir/modlist.txt"
+    
+    if [ ! -f "$mod_list" ]; then
+        return
+    fi
+    
+    local temp_file=$(mktemp)
+    local needs_update=false
+    
+    while IFS= read -r line; do
+        line=$(echo "$line" | xargs)
+        if [ -z "$line" ]; then
+            continue
+        fi
+        
+        local player_name="$line"
+        local player_info=$(get_player_info "$player_name")
+        
+        if [ -n "$player_info" ]; then
+            local rank=$(echo "$player_info" | cut -d'|' -f3)
+            local blacklisted=$(echo "$player_info" | cut -d'|' -f5)
+            
+            if [ "$rank" = "MOD" ] && [ "$blacklisted" != "YES" ]; then
+                echo "$player_name" >> "$temp_file"
+            else
+                log_debug "Removing unauthorized player from modlist: $player_name (Rank: $rank, Blacklisted: $blacklisted)"
+                needs_update=true
+            fi
+        else
+            log_debug "Removing unknown player from modlist: $player_name"
+            needs_update=true
+        fi
+    done < "$mod_list"
+    
+    if [ "$needs_update" = true ] || ! cmp -s "$mod_list" "$temp_file"; then
+        log_debug "Updating modlist.txt with verified players only"
+        mv "$temp_file" "$mod_list"
+        execute_server_command "/load-lists"
+    else
+        rm -f "$temp_file"
+    fi
 }
 
 monitor_players_log() {
@@ -681,6 +919,9 @@ cancel_player_timers() {
     fi
     
     cancel_super_disconnect_timer "$player_name"
+    cancel_admin_disconnect_timer "$player_name"
+    cancel_mod_disconnect_timer "$player_name"
+    cancel_rank_apply_kick_timer "$player_name"
 }
 
 start_password_reminder_timer() {
@@ -981,6 +1222,9 @@ monitor_console_log() {
                 log_debug "Player connected: $player_name ($player_ip)"
                 
                 cancel_super_disconnect_timer "$player_name"
+                cancel_admin_disconnect_timer "$player_name"
+                cancel_mod_disconnect_timer "$player_name"
+                cancel_rank_apply_kick_timer "$player_name"
                 
                 local player_info=$(get_player_info "$player_name")
                 if [ -z "$player_info" ]; then
@@ -1055,10 +1299,20 @@ monitor_console_log() {
                 local player_info=$(get_player_info "$player_name")
                 if [ -n "$player_info" ]; then
                     local rank=$(echo "$player_info" | cut -d'|' -f3)
-                    if [ "$rank" = "SUPER" ]; then
-                        log_debug "SUPER admin $player_name disconnected, starting 15-second timer for cloud admin removal"
-                        start_super_disconnect_timer "$player_name"
-                    fi
+                    case "$rank" in
+                        "SUPER")
+                            log_debug "SUPER admin $player_name disconnected, starting 15-second timer for cloud admin removal"
+                            start_super_disconnect_timer "$player_name"
+                            ;;
+                        "ADMIN")
+                            log_debug "ADMIN $player_name disconnected, starting 15-second timer for adminlist removal"
+                            start_admin_disconnect_timer "$player_name"
+                            ;;
+                        "MOD")
+                            log_debug "MOD $player_name disconnected, starting 15-second timer for modlist removal"
+                            start_mod_disconnect_timer "$player_name"
+                            ;;
+                    esac
                 fi
                 
                 log_debug "Removing $player_name from all role lists due to disconnection"
@@ -1067,9 +1321,11 @@ monitor_console_log() {
                     case "$current_rank" in
                         "MOD")
                             execute_server_command "/unmod $player_name"
+                            start_mod_disconnect_timer "$player_name"
                             ;;
                         "ADMIN")
                             execute_server_command "/unadmin $player_name"
+                            start_admin_disconnect_timer "$player_name"
                             ;;
                     esac
                 fi
@@ -1199,6 +1455,30 @@ cleanup() {
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
             log_debug "Killed SUPER disconnect timer: $timer_key (PID: $pid)"
+        fi
+    done
+    
+    for timer_key in "${!admin_disconnect_timers[@]}"; do
+        local pid="${admin_disconnect_timers[$timer_key]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Killed ADMIN disconnect timer: $timer_key (PID: $pid)"
+        fi
+    done
+    
+    for timer_key in "${!mod_disconnect_timers[@]}"; do
+        local pid="${mod_disconnect_timers[$timer_key]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Killed MOD disconnect timer: $timer_key (PID: $pid)"
+        fi
+    done
+    
+    for timer_key in "${!rank_apply_kick_timers[@]}"; do
+        local pid="${rank_apply_kick_timers[$timer_key]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Killed rank apply kick timer: $timer_key (PID: $pid)"
         fi
     done
     
