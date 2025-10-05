@@ -1,9 +1,5 @@
 #!/bin/bash
-# =============================================================================
-# THE BLOCKHEADS SERVER MANAGER
-# =============================================================================
 
-# Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -23,21 +19,17 @@ print_header() {
     echo -e "${MAGENTA}================================================================================${NC}"
 }
 
-# Server binary and default port
 SERVER_BINARY="./blockheads_server171"
 DEFAULT_PORT=12153
 
-# Function to check if screen session exists
 screen_session_exists() {
     screen -list | grep -q "$1"
 }
 
-# Function to check if port is in use
 is_port_in_use() {
     lsof -Pi ":$1" -sTCP:LISTEN -t >/dev/null 2>&1
 }
 
-# Function to check if world exists
 check_world_exists() {
     local world_id="$1"
     local saves_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
@@ -53,7 +45,6 @@ check_world_exists() {
     return 0
 }
 
-# Function to free port
 free_port() {
     local port="$1"
     print_warning "Freeing port $port..."
@@ -71,7 +62,6 @@ free_port() {
     ! is_port_in_use "$port"
 }
 
-# Function to start server
 start_server() {
     local world_id="$1"
     local port="${2:-$DEFAULT_PORT}"
@@ -105,10 +95,8 @@ start_server() {
     
     print_header "STARTING SERVER - WORLD: $world_id, PORT: $port"
     
-    # Save world ID for this port
     echo "$world_id" > "world_id_$port.txt"
     
-    # Create startup script
     cat > /tmp/start_server_$$.sh << EOF
 #!/bin/bash
 cd '$PWD'
@@ -131,12 +119,10 @@ EOF
     
     chmod +x /tmp/start_server_$$.sh
     
-    # Start server in screen session
     print_step "Starting server in screen session: $SCREEN_SERVER"
     if command -v screen >/dev/null 2>&1; then
         if screen -dmS "$SCREEN_SERVER" /tmp/start_server_$$.sh; then
             print_success "Server screen session created successfully"
-            # Clean up temporary script after delay
             (sleep 10; rm -f /tmp/start_server_$$.sh) &
         else
             print_error "Failed to create screen session for server"
@@ -206,7 +192,6 @@ EOF
     fi
 }
 
-# Function to stop server
 stop_server() {
     local port="$1"
     
@@ -226,7 +211,6 @@ stop_server() {
         
         pkill -f "$SERVER_BINARY" 2>/dev/null || true
         
-        # Clean up world ID files
         rm -f world_id_*.txt 2>/dev/null || true
         
         print_success "All servers and rank patchers stopped."
@@ -253,14 +237,12 @@ stop_server() {
         
         pkill -f "$SERVER_BINARY.*$port" 2>/dev/null || true
         
-        # Clean up world ID file for this port
         rm -f "world_id_$port.txt" 2>/dev/null || true
         
         print_success "Server cleanup completed for port $port."
     fi
 }
 
-# Function to list servers
 list_servers() {
     print_header "LIST OF RUNNING SERVERS"
     
@@ -278,7 +260,6 @@ list_servers() {
     print_header "END OF LIST"
 }
 
-# Function to show status
 show_status() {
     local port="$1"
     
@@ -341,7 +322,6 @@ show_status() {
     print_header "END OF STATUS"
 }
 
-# Function to show usage
 show_usage() {
     print_header "THE BLOCKHEADS SERVER MANAGER"
     print_status "Usage: $0 [command]"
@@ -366,7 +346,6 @@ show_usage() {
     print_warning "After creating the world, press CTRL+C to exit"
 }
 
-# Main execution
 case "$1" in
     start)
         [ -z "$2" ] && print_error "You must specify a WORLD_NAME" && show_usage && exit 1
