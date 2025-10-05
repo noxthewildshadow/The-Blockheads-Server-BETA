@@ -37,9 +37,10 @@ declare -A active_timers
 declare -A current_player_ranks
 declare -A current_blacklisted_players
 declare -A current_whitelisted_players
+declare -A super_admin_disconnect_timers
 declare -A pending_ranks
+declare -A list_files_initialized
 declare -A disconnect_timers
-declare -A connect_timers
 
 log_debug() {
     local message="$1"
@@ -158,6 +159,25 @@ update_player_info() {
     fi
 }
 
+start_rank_application_timer() {
+    local player_name="$1"
+    
+    log_debug "Starting 5-second rank application timer for: $player_name"
+    
+    (
+        sleep 5
+        if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" = "verified" ]; then
+            log_debug "5-second timer completed, applying rank for verified player: $player_name"
+            apply_rank_to_connected_player "$player_name"
+        else
+            log_debug "5-second timer completed but player $player_name not verified or disconnected"
+        fi
+    ) &
+    
+    active_timers["rank_application_$player_name"]=$!
+    log_debug "Started rank application timer for $player_name (PID: ${active_timers["rank_application_$player_name"]})"
+}
+
 start_disconnect_timer() {
     local player_name="$1"
     
@@ -165,8 +185,8 @@ start_disconnect_timer() {
     
     (
         sleep 15
-        log_debug "15-second disconnect timer completed, removing ranks for: $player_name"
-        remove_player_ranks "$player_name"
+        log_debug "15-second disconnect timer completed, removing rank for: $player_name"
+        remove_player_rank "$player_name"
         unset disconnect_timers["$player_name"]
     ) &
     
@@ -174,26 +194,23 @@ start_disconnect_timer() {
     log_debug "Started disconnect timer for $player_name (PID: ${disconnect_timers[$player_name]})"
 }
 
-start_connect_timer() {
+cancel_disconnect_timer() {
     local player_name="$1"
     
-    log_debug "Starting 5-second connect timer for: $player_name"
-    
-    (
-        sleep 5
-        log_debug "5-second connect timer completed, applying ranks for: $player_name"
-        apply_rank_after_connect "$player_name"
-        unset connect_timers["$player_name"]
-    ) &
-    
-    connect_timers["$player_name"]=$!
-    log_debug "Started connect timer for $player_name (PID: ${connect_timers[$player_name]})"
+    if [ -n "${disconnect_timers[$player_name]}" ]; then
+        local pid="${disconnect_timers[$player_name]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Cancelled disconnect timer for $player_name (PID: $pid)"
+        fi
+        unset disconnect_timers["$player_name"]
+    fi
 }
 
-remove_player_ranks() {
+remove_player_rank() {
     local player_name="$1"
     
-    log_debug "Removing ranks for player: $player_name"
+    log_debug "Removing rank for disconnected player: $player_name"
     
     local player_info=$(get_player_info "$player_name")
     if [ -n "$player_info" ]; then
@@ -211,16 +228,12 @@ remove_player_ranks() {
                 remove_from_cloud_admin "$player_name"
                 ;;
         esac
-    else
-        execute_server_command "/unmod $player_name"
-        execute_server_command "/unadmin $player_name"
-        remove_from_cloud_admin "$player_name"
+        
+        log_debug "Removed rank $rank for disconnected player: $player_name"
     fi
-    
-    execute_server_command "/load-lists"
 }
 
-apply_rank_after_connect() {
+apply_rank_to_connected_player() {
     local player_name="$1"
     
     if [ -z "${connected_players[$player_name]}" ]; then
@@ -229,56 +242,274 @@ apply_rank_after_connect() {
     fi
     
     if [ "${player_verification_status[$player_name]}" != "verified" ]; then
-        log_debug "Player $player_name is not verified, skipping rank application"
+        log_debug "Player $player_name not verified, skipping rank application"
         return
     fi
     
-    log_debug "Applying rank to connected and verified player: $player_name"
-    
     local player_info=$(get_player_info "$player_name")
-    if [ -n "$player_info" ]; then
-        local rank=$(echo "$player_info" | cut -d'|' -f3)
+    if [ -z "$player_info" ]; then
+        log_debug "No player info found for $player_name"
+        return
+    fi
+    
+    local first_ip=$(echo "$player_info" | cut -d'|' -f1)
+    local password=$(echo "$player_info" | cut -d'|' -f2)
+    local rank=$(echo "$player_info" | cut -d'|' -f3)
+    local whitelisted=$(echo "$player_info" | cut -d'|' -f4)
+    local blacklisted=$(echo "$player_info" | cut -d'|' -f5)
+    local current_ip="${player_ip_map[$player_name]}"
+    
+    log_debug "Applying rank to connected player: $player_name (Rank: $rank)"
+    
+    if [ "$password" = "NONE" ]; then
+        log_debug "Player $player_name has no password, skipping rank application"
+        return
+    fi
+    
+    case "$rank" in
+        "MOD")
+            execute_server_command "/mod $player_name"
+            current_player_ranks["$player_name"]="$rank"
+            ;;
+        "ADMIN")
+            execute_server_command "/admin $player_name"
+            current_player_ranks["$player_name"]="$rank"
+            ;;
+        "SUPER")
+            execute_server_command "/admin $player_name"
+            add_to_cloud_admin "$player_name"
+            current_player_ranks["$player_name"]="$rank"
+            ;;
+    esac
+    
+    if [ "$whitelisted" = "YES" ] && [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
+        execute_server_command "/whitelist $current_ip"
+    fi
+    
+    if [ "$blacklisted" = "YES" ]; then
+        execute_server_command "/ban $player_name"
+        if [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
+            execute_server_command "/ban $current_ip"
+        fi
+    fi
+    
+    execute_server_command "/load-lists"
+}
+
+force_reload_all_lists() {
+    log_debug "=== FORCING COMPLETE RELOAD OF ALL LISTS FROM PLAYERS.LOG ==="
+    
+    if [ ! -f "$PLAYERS_LOG" ]; then
+        log_debug "No players.log found, skipping reload"
+        return
+    fi
+    
+    while IFS='|' read -r name first_ip password rank whitelisted blacklisted; do
+        name=$(echo "$name" | xargs)
+        first_ip=$(echo "$first_ip" | xargs)
+        password=$(echo "$password" | xargs)
+        rank=$(echo "$rank" | xargs)
+        whitelisted=$(echo "$whitelisted" | xargs)
+        blacklisted=$(echo "$blacklisted" | xargs)
         
-        case "$rank" in
-            "MOD")
-                execute_server_command "/mod $player_name"
-                ;;
+        if [ "$rank" != "NONE" ]; then
+            log_debug "Reloading player from players.log: $name (Rank: $rank)"
+            
+            case "$rank" in
+                "MOD")
+                    execute_server_command "/mod $name"
+                    ;;
+                "ADMIN")
+                    execute_server_command "/admin $name"
+                    ;;
+                "SUPER")
+                    execute_server_command "/admin $name"
+                    add_to_cloud_admin "$name"
+                    ;;
+            esac
+        fi
+        
+        if [ "$whitelisted" = "YES" ] && [ "$first_ip" != "UNKNOWN" ]; then
+            execute_server_command "/whitelist $first_ip"
+        fi
+        
+        if [ "$blacklisted" = "YES" ]; then
+            execute_server_command "/ban $name"
+            if [ "$first_ip" != "UNKNOWN" ]; then
+                execute_server_command "/ban $first_ip"
+            fi
+        fi
+        
+    done < "$PLAYERS_LOG"
+    
+    execute_server_command "/load-lists"
+    
+    log_debug "=== COMPLETE RELOAD OF ALL LISTS FINISHED ==="
+}
+
+sync_lists_from_players_log() {
+    log_debug "Syncing lists from players.log using server commands..."
+    
+    if [ -z "${list_files_initialized["$WORLD_ID"]}" ]; then
+        log_debug "First sync for world $WORLD_ID, forcing complete reload"
+        force_reload_all_lists
+        list_files_initialized["$WORLD_ID"]=1
+    fi
+    
+    if [ -f "$PLAYERS_LOG" ]; then
+        while IFS='|' read -r name first_ip password rank whitelisted blacklisted; do
+            name=$(echo "$name" | xargs)
+            first_ip=$(echo "$first_ip" | xargs)
+            rank=$(echo "$rank" | xargs)
+            whitelisted=$(echo "$whitelisted" | xargs)
+            blacklisted=$(echo "$blacklisted" | xargs)
+            
+            if [ -z "${connected_players[$name]}" ]; then
+                continue
+            fi
+            
+            if [ "${player_verification_status[$name]}" != "verified" ]; then
+                log_debug "SKIPPING rank application for $name - IP not verified (Status: ${player_verification_status[$name]})"
+                if [ "$rank" != "NONE" ]; then
+                    pending_ranks["$name"]="$rank"
+                    log_debug "Saved pending rank for $name: $rank"
+                fi
+                continue
+            fi
+            
+            local current_ip="${player_ip_map[$name]}"
+            
+            local current_rank="${current_player_ranks[$name]}"
+            if [ "$current_rank" != "$rank" ]; then
+                log_debug "Rank change detected for $name: $current_rank -> $rank"
+                apply_rank_changes "$name" "$current_rank" "$rank"
+                current_player_ranks["$name"]="$rank"
+            fi
+            
+            local current_blacklisted="${current_blacklisted_players[$name]}"
+            if [ "$current_blacklisted" != "$blacklisted" ]; then
+                log_debug "Blacklist change detected for $name: $current_blacklisted -> $blacklisted"
+                handle_blacklist_change "$name" "$blacklisted"
+                current_blacklisted_players["$name"]="$blacklisted"
+            fi
+            
+            local current_whitelisted="${current_whitelisted_players[$name]}"
+            if [ "$current_whitelisted" != "$whitelisted" ]; then
+                log_debug "Whitelist change detected for $name: $current_whitelisted -> $whitelisted"
+                handle_whitelist_change "$name" "$whitelisted" "$current_ip"
+                current_whitelisted_players["$name"]="$whitelisted"
+            fi
+            
+        done < "$PLAYERS_LOG"
+    fi
+    
+    log_debug "Completed syncing lists using server commands"
+}
+
+apply_pending_ranks() {
+    local player_name="$1"
+    
+    if [ -n "${pending_ranks[$player_name]}" ]; then
+        local pending_rank="${pending_ranks[$player_name]}"
+        log_debug "Applying pending rank for $player_name: $pending_rank"
+        
+        case "$pending_rank" in
             "ADMIN")
                 execute_server_command "/admin $player_name"
                 ;;
+            "MOD")
+                execute_server_command "/mod $player_name"
+                ;;
             "SUPER")
-                execute_server_command "/admin $player_name"
                 add_to_cloud_admin "$player_name"
+                execute_server_command "/admin $player_name"
                 ;;
         esac
+        
+        current_player_ranks["$player_name"]="$pending_rank"
+        unset pending_ranks["$player_name"]
+        log_debug "Successfully applied pending rank $pending_rank to $player_name"
         
         execute_server_command "/load-lists"
     fi
 }
 
-cancel_disconnect_timer() {
-    local player_name="$1"
+handle_whitelist_change() {
+    local player_name="$1" whitelisted="$2" current_ip="$3"
     
-    if [ -n "${disconnect_timers[$player_name]}" ]; then
-        local pid="${disconnect_timers[$player_name]}"
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null
-            log_debug "Cancelled disconnect timer for $player_name (PID: $pid)"
-        fi
-        unset disconnect_timers["$player_name"]
+    log_debug "Handling whitelist change via server commands: $player_name -> $whitelisted (IP: $current_ip)"
+    
+    if [ "$whitelisted" = "YES" ] && [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
+        log_debug "Adding IP to whitelist: $current_ip for player $player_name"
+        execute_server_command "/whitelist $current_ip"
+    elif [ "$whitelisted" = "NO" ] && [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
+        log_debug "Removing IP from whitelist: $current_ip for player $player_name"
+        execute_server_command "/unwhitelist $current_ip"
     fi
 }
 
-cancel_connect_timer() {
+apply_rank_changes() {
+    local player_name="$1" old_rank="$2" new_rank="$3"
+    
+    log_debug "Applying rank change via server commands: $player_name from $old_rank to $new_rank"
+    
+    case "$old_rank" in
+        "ADMIN")
+            execute_server_command "/unadmin $player_name"
+            ;;
+        "MOD")
+            execute_server_command "/unmod $player_name"
+            ;;
+        "SUPER")
+            start_super_disconnect_timer "$player_name"
+            execute_server_command "/unadmin $player_name"
+            ;;
+    esac
+    
+    if [ "$new_rank" != "NONE" ]; then
+        case "$new_rank" in
+            "ADMIN")
+                execute_server_command "/admin $player_name"
+                ;;
+            "MOD")
+                execute_server_command "/mod $player_name"
+                ;;
+            "SUPER")
+                add_to_cloud_admin "$player_name"
+                execute_server_command "/admin $player_name"
+                ;;
+        esac
+    fi
+    
+    execute_server_command "/load-lists"
+}
+
+start_super_disconnect_timer() {
     local player_name="$1"
     
-    if [ -n "${connect_timers[$player_name]}" ]; then
-        local pid="${connect_timers[$player_name]}"
+    log_debug "Starting 15-second SUPER disconnect timer for: $player_name"
+    
+    (
+        sleep 15
+        log_debug "15-second SUPER timer completed, removing from cloud admin: $player_name"
+        remove_from_cloud_admin "$player_name"
+        unset super_admin_disconnect_timers["$player_name"]
+    ) &
+    
+    super_admin_disconnect_timers["$player_name"]=$!
+    log_debug "Started SUPER disconnect timer for $player_name (PID: ${super_admin_disconnect_timers[$player_name]})"
+}
+
+cancel_super_disconnect_timer() {
+    local player_name="$1"
+    
+    if [ -n "${super_admin_disconnect_timers[$player_name]}" ]; then
+        local pid="${super_admin_disconnect_timers[$player_name]}"
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
-            log_debug "Cancelled connect timer for $player_name (PID: $pid)"
+            log_debug "Cancelled SUPER disconnect timer for $player_name (PID: $pid)"
         fi
-        unset connect_timers["$player_name"]
+        unset super_admin_disconnect_timers["$player_name"]
     fi
 }
 
@@ -320,6 +551,166 @@ remove_from_cloud_admin() {
     fi
 }
 
+handle_blacklist_change() {
+    local player_name="$1" blacklisted="$2"
+    
+    log_debug "Handling blacklist change via server commands: $player_name -> $blacklisted"
+    
+    local player_info=$(get_player_info "$player_name")
+    if [ -n "$player_info" ]; then
+        local first_ip=$(echo "$player_info" | cut -d'|' -f1)
+        local password=$(echo "$player_info" | cut -d'|' -f2)
+        local rank=$(echo "$player_info" | cut -d'|' -f3)
+        local current_ip="${player_ip_map[$player_name]}"
+        
+        if [ "$blacklisted" = "YES" ]; then
+            case "$rank" in
+                "MOD")
+                    execute_server_command "/unmod $player_name"
+                    ;;
+                "ADMIN"|"SUPER")
+                    execute_server_command "/unadmin $player_name"
+                    if [ "$rank" = "SUPER" ]; then
+                        remove_from_cloud_admin "$player_name"
+                    fi
+                    ;;
+            esac
+            
+            execute_server_command "/ban $player_name"
+            if [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
+                execute_server_command "/ban $current_ip"
+            fi
+            
+            log_debug "Blacklisted player via server commands: $player_name"
+        else
+            execute_server_command "/unban $player_name"
+            if [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
+                execute_server_command "/unban $current_ip"
+            fi
+            log_debug "Removed $player_name from blacklist via server commands"
+        fi
+        
+        execute_server_command "/load-lists"
+    fi
+}
+
+monitor_list_files() {
+    local world_dir="$BASE_SAVES_DIR/$WORLD_ID"
+    local admin_list="$world_dir/adminlist.txt"
+    local mod_list="$world_dir/modlist.txt"
+    
+    local last_admin_checksum=""
+    local last_mod_checksum=""
+    
+    while true; do
+        if [ -f "$admin_list" ]; then
+            local current_admin_checksum=$(md5sum "$admin_list" 2>/dev/null | cut -d' ' -f1)
+            if [ "$current_admin_checksum" != "$last_admin_checksum" ]; then
+                log_debug "Detected change in adminlist.txt - forcing reload from players.log"
+                sleep 2
+                for player in "${!connected_players[@]}"; do
+                    apply_rank_to_connected_player "$player"
+                done
+                last_admin_checksum="$current_admin_checksum"
+            fi
+        fi
+        
+        if [ -f "$mod_list" ]; then
+            local current_mod_checksum=$(md5sum "$mod_list" 2>/dev/null | cut -d' ' -f1)
+            if [ "$current_mod_checksum" != "$last_mod_checksum" ]; then
+                log_debug "Detected change in modlist.txt - forcing reload from players.log"
+                sleep 2
+                for player in "${!connected_players[@]}"; do
+                    apply_rank_to_connected_player "$player"
+                done
+                last_mod_checksum="$current_mod_checksum"
+            fi
+        fi
+        
+        sleep 5
+    done
+}
+
+monitor_players_log() {
+    local last_checksum=""
+    local temp_file=$(mktemp)
+    
+    [ -f "$PLAYERS_LOG" ] && cp "$PLAYERS_LOG" "$temp_file"
+    
+    if [ -f "$PLAYERS_LOG" ]; then
+        while IFS='|' read -r name first_ip password rank whitelisted blacklisted; do
+            name=$(echo "$name" | xargs)
+            rank=$(echo "$rank" | xargs)
+            blacklisted=$(echo "$blacklisted" | xargs)
+            whitelisted=$(echo "$whitelisted" | xargs)
+            current_player_ranks["$name"]="$rank"
+            current_blacklisted_players["$name"]="$blacklisted"
+            current_whitelisted_players["$name"]="$whitelisted"
+        done < "$PLAYERS_LOG"
+    fi
+    
+    while true; do
+        if [ -f "$PLAYERS_LOG" ]; then
+            local current_checksum=$(md5sum "$PLAYERS_LOG" 2>/dev/null | cut -d' ' -f1)
+            
+            if [ "$current_checksum" != "$last_checksum" ]; then
+                log_debug "Detected change in players.log - processing changes via server commands..."
+                process_players_log_changes "$temp_file"
+                last_checksum="$current_checksum"
+                cp "$PLAYERS_LOG" "$temp_file"
+            fi
+        fi
+        
+        sleep 1
+    done
+    
+    rm -f "$temp_file"
+}
+
+process_players_log_changes() {
+    local previous_file="$1"
+    
+    if [ ! -f "$previous_file" ] || [ ! -f "$PLAYERS_LOG" ]; then
+        sync_lists_from_players_log
+        return
+    fi
+    
+    while IFS='|' read -r name first_ip password rank whitelisted blacklisted; do
+        name=$(echo "$name" | xargs)
+        rank=$(echo "$rank" | xargs)
+        blacklisted=$(echo "$blacklisted" | xargs)
+        whitelisted=$(echo "$whitelisted" | xargs)
+        
+        local previous_line=$(grep -i "^$name|" "$previous_file" 2>/dev/null | head -1)
+        
+        if [ -n "$previous_line" ]; then
+            local prev_first_ip=$(echo "$previous_line" | cut -d'|' -f2 | xargs)
+            local prev_password=$(echo "$previous_line" | cut -d'|' -f3 | xargs)
+            local prev_rank=$(echo "$previous_line" | cut -d'|' -f4 | xargs)
+            local prev_whitelisted=$(echo "$previous_line" | cut -d'|' -f5 | xargs)
+            local prev_blacklisted=$(echo "$previous_line" | cut -d'|' -f6 | xargs)
+            
+            if [ "$prev_rank" != "$rank" ]; then
+                log_debug "Rank change detected via server commands: $name from $prev_rank to $rank"
+                apply_rank_changes "$name" "$prev_rank" "$rank"
+            fi
+            
+            if [ "$prev_blacklisted" != "$blacklisted" ]; then
+                log_debug "Blacklist change detected via server commands: $name from $prev_blacklisted to $blacklisted"
+                handle_blacklist_change "$name" "$blacklisted"
+            fi
+            
+            if [ "$prev_whitelisted" != "$whitelisted" ]; then
+                log_debug "Whitelist change detected via server commands: $name from $prev_whitelisted to $whitelisted"
+                local current_ip="${player_ip_map[$name]}"
+                handle_whitelist_change "$name" "$whitelisted" "$current_ip"
+            fi
+        fi
+    done < "$PLAYERS_LOG"
+    
+    sync_lists_from_players_log
+}
+
 cancel_player_timers() {
     local player_name="$1"
     
@@ -352,8 +743,17 @@ cancel_player_timers() {
         unset active_timers["ip_grace_$player_name"]
     fi
     
-    cancel_connect_timer "$player_name"
+    if [ -n "${active_timers["rank_application_$player_name"]}" ]; then
+        local pid="${active_timers["rank_application_$player_name"]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Cancelled rank application timer for $player_name (PID: $pid)"
+        fi
+        unset active_timers["rank_application_$player_name"]
+    fi
+    
     cancel_disconnect_timer "$player_name"
+    cancel_super_disconnect_timer "$player_name"
 }
 
 start_password_reminder_timer() {
@@ -563,29 +963,11 @@ handle_ip_change() {
         execute_server_command "SECURITY: $player_name IP verification successful. Kick/ban IP cooldown cancelled."
         
         log_debug "Applying pending ranks for $player_name after IP verification"
-        if [ -n "${pending_ranks[$player_name]}" ]; then
-            local pending_rank="${pending_ranks[$player_name]}"
-            log_debug "Applying pending rank for $player_name: $pending_rank"
-            
-            case "$pending_rank" in
-                "ADMIN")
-                    execute_server_command "/admin $player_name"
-                    ;;
-                "MOD")
-                    execute_server_command "/mod $player_name"
-                    ;;
-                "SUPER")
-                    add_to_cloud_admin "$player_name"
-                    execute_server_command "/admin $player_name"
-                    ;;
-            esac
-            
-            current_player_ranks["$player_name"]="$pending_rank"
-            unset pending_ranks["$player_name"]
-            log_debug "Successfully applied pending rank $pending_rank to $player_name"
-            
-            execute_server_command "/load-lists"
-        fi
+        apply_pending_ranks "$player_name"
+        
+        apply_rank_to_connected_player "$player_name"
+        
+        sync_lists_from_players_log
         
         send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your IP has been verified and updated. All security restrictions lifted."
         return 0
@@ -620,13 +1002,14 @@ monitor_console_log() {
             
             player_name=$(echo "$player_name" | xargs)
             
-            if is_valid_player_name "$player_name"; then
+            if is_valid_player_name "$player_name" ]; then
+                cancel_disconnect_timer "$player_name"
+                cancel_super_disconnect_timer "$player_name"
+                
                 connected_players["$player_name"]=1
                 player_ip_map["$player_name"]="$player_ip"
                 
                 log_debug "Player connected: $player_name ($player_ip)"
-                
-                cancel_disconnect_timer "$player_name"
                 
                 local player_info=$(get_player_info "$player_name")
                 if [ -z "$player_info" ]; then
@@ -652,6 +1035,7 @@ monitor_console_log() {
                         
                         if [ "$rank" != "NONE" ]; then
                             log_debug "Removing current rank $rank from $player_name until IP verification"
+                            apply_rank_changes "$player_name" "$rank" "NONE"
                             pending_ranks["$player_name"]="$rank"
                         fi
                         
@@ -665,9 +1049,18 @@ monitor_console_log() {
                         log_debug "Existing player $player_name has no password, starting enforcement"
                         start_password_enforcement "$player_name"
                     fi
+                    
+                    if [ "${player_verification_status[$player_name]}" = "verified" ]; then
+                        log_debug "Starting 5-second rank application timer for verified player: $player_name"
+                        start_rank_application_timer "$player_name"
+                    else
+                        log_debug "Player $player_name not verified, rank application deferred"
+                    fi
                 fi
                 
-                start_connect_timer "$player_name"
+                log_debug "Forcing list reload due to player connection: $player_name"
+                sync_lists_from_players_log
+                
             fi
         fi
         
@@ -678,8 +1071,9 @@ monitor_console_log() {
             if is_valid_player_name "$player_name" ]; then
                 log_debug "Player disconnected: $player_name"
                 
-                cancel_connect_timer "$player_name"
+                cancel_player_timers "$player_name"
                 
+                log_debug "Starting 15-second disconnect timer for: $player_name"
                 start_disconnect_timer "$player_name"
                 
                 unset connected_players["$player_name"]
@@ -688,7 +1082,7 @@ monitor_console_log() {
                 unset player_password_reminder_sent["$player_name"]
                 unset pending_ranks["$player_name"]
                 
-                cancel_player_timers "$player_name"
+                sync_lists_from_players_log
             fi
         fi
         
@@ -739,6 +1133,14 @@ monitor_console_log() {
                 esac
             fi
         fi
+        
+        if [[ "$line" =~ cleared\ (.+)\ list ]]; then
+            log_debug "Detected list clearance: $line"
+            sleep 2
+            log_debug "Force reloading all lists after clearance detected"
+            force_reload_all_lists
+        fi
+        
     done
 }
 
@@ -752,23 +1154,27 @@ cleanup() {
         local pid="${active_timers[$timer_key]}"
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
-            log_debug "Killed timer: $timer_key (PID: $pid)"
         fi
     done
     
-    for timer_key in "${!disconnect_timers[@]}"; do
-        local pid="${disconnect_timers[$timer_key]}"
+    for player_name in "${!connect_timers[@]}"; do
+        local pid="${connect_timers[$player_name]}"
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
-            log_debug "Killed disconnect timer: $timer_key (PID: $pid)"
         fi
     done
     
-    for timer_key in "${!connect_timers[@]}"; do
-        local pid="${connect_timers[$timer_key]}"
+    for player_name in "${!disconnect_timers[@]}"; do
+        local pid="${disconnect_timers[$player_name]}"
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
-            log_debug "Killed connect timer: $timer_key (PID: $pid)"
+        fi
+    done
+    
+    for player_name in "${!super_admin_disconnect_timers[@]}"; do
+        local pid="${super_admin_disconnect_timers[$player_name]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
         fi
     done
     
@@ -801,8 +1207,14 @@ main() {
         exit 1
     fi
     
+    print_step "Starting players.log monitor..."
+    monitor_players_log &
+    
     print_step "Starting console.log monitor..."
     monitor_console_log &
+    
+    print_step "Starting list files monitor..."
+    monitor_list_files &
     
     print_header "RANK PATCHER IS NOW RUNNING"
     print_status "Monitoring: $CONSOLE_LOG"
