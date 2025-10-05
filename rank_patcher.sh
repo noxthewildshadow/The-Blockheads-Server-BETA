@@ -44,9 +44,12 @@ declare -A current_player_ranks
 declare -A current_blacklisted_players
 declare -A current_whitelisted_players
 declare -A rank_apply_timers
-declare -A rank_remove_timers
+declare -A admin_remove_timers  # NUEVO: Timer separado para adminlist
+declare -A mod_remove_timers    # NUEVO: Timer separado para modlist
+declare -A super_remove_timers  # NUEVO: Timer separado para SUPER
 declare -A pending_ranks
 declare -A list_files_initialized
+declare -A player_session_ids   # NUEVO: Para rastrear session IDs
 
 # Function to log debug information
 log_debug() {
@@ -364,85 +367,184 @@ cancel_rank_apply_timer() {
     fi
 }
 
-# NUEVA FUNCIÓN: Programar remoción de rango después de 15 segundos de desconexión
-schedule_rank_remove() {
+# =============================================================================
+# SISTEMA SEPARADO DE TIMERS PARA CADA LISTA - CORREGIDO
+# =============================================================================
+
+# NUEVA FUNCIÓN: Programar remoción de ADMIN después de 15 segundos de desconexión
+schedule_admin_remove() {
     local player_name="$1"
     
-    log_debug "Scheduling rank removal for $player_name in 15 seconds"
+    log_debug "Scheduling ADMIN removal for $player_name in 15 seconds"
     
-    # Cancelar cualquier timer previo de remoción de rango
-    cancel_rank_remove_timer "$player_name"
+    # Cancelar cualquier timer previo de remoción de admin
+    cancel_admin_remove_timer "$player_name"
     
     (
         sleep 15
-        log_debug "Executing scheduled rank removal for $player_name"
+        log_debug "Executing scheduled ADMIN removal for $player_name"
         
         # Verificar que el jugador todavía esté desconectado
         if [ -z "${connected_players[$player_name]}" ]; then
-            log_debug "Player $player_name still disconnected, removing rank from lists"
-            remove_player_rank_completely "$player_name"
+            log_debug "Player $player_name still disconnected, removing from adminlist.txt"
+            remove_player_from_adminlist "$player_name"
         else
-            log_debug "Player $player_name reconnected, cancelling rank removal"
+            log_debug "Player $player_name reconnected, cancelling ADMIN removal"
         fi
     ) &
     
-    rank_remove_timers["$player_name"]=$!
-    log_debug "Scheduled rank remove timer for $player_name (PID: ${rank_remove_timers[$player_name]})"
+    admin_remove_timers["$player_name"]=$!
+    log_debug "Scheduled ADMIN remove timer for $player_name (PID: ${admin_remove_timers[$player_name]})"
 }
 
-# NUEVA FUNCIÓN: Cancelar timer de remoción de rango
-cancel_rank_remove_timer() {
+# NUEVA FUNCIÓN: Cancelar timer de remoción de ADMIN
+cancel_admin_remove_timer() {
     local player_name="$1"
     
-    if [ -n "${rank_remove_timers[$player_name]}" ]; then
-        local pid="${rank_remove_timers[$player_name]}"
+    if [ -n "${admin_remove_timers[$player_name]}" ]; then
+        local pid="${admin_remove_timers[$player_name]}"
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
-            log_debug "Cancelled rank remove timer for $player_name (PID: $pid)"
+            log_debug "Cancelled ADMIN remove timer for $player_name (PID: $pid)"
         fi
-        unset rank_remove_timers["$player_name"]
+        unset admin_remove_timers["$player_name"]
     fi
 }
 
-# NUEVA FUNCIÓN CORREGIDA: Remover completamente el rango de un jugador de las listas txt (después de 15 segundos)
-remove_player_rank_completely() {
+# NUEVA FUNCIÓN: Programar remoción de MOD después de 15 segundos de desconexión
+schedule_mod_remove() {
     local player_name="$1"
     
-    log_debug "Completely removing rank for player from lists: $player_name"
+    log_debug "Scheduling MOD removal for $player_name in 15 seconds"
+    
+    # Cancelar cualquier timer previo de remoción de mod
+    cancel_mod_remove_timer "$player_name"
+    
+    (
+        sleep 15
+        log_debug "Executing scheduled MOD removal for $player_name"
+        
+        # Verificar que el jugador todavía esté desconectado
+        if [ -z "${connected_players[$player_name]}" ]; then
+            log_debug "Player $player_name still disconnected, removing from modlist.txt"
+            remove_player_from_modlist "$player_name"
+        else
+            log_debug "Player $player_name reconnected, cancelling MOD removal"
+        fi
+    ) &
+    
+    mod_remove_timers["$player_name"]=$!
+    log_debug "Scheduled MOD remove timer for $player_name (PID: ${mod_remove_timers[$player_name]})"
+}
+
+# NUEVA FUNCIÓN: Cancelar timer de remoción de MOD
+cancel_mod_remove_timer() {
+    local player_name="$1"
+    
+    if [ -n "${mod_remove_timers[$player_name]}" ]; then
+        local pid="${mod_remove_timers[$player_name]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Cancelled MOD remove timer for $player_name (PID: $pid)"
+        fi
+        unset mod_remove_timers["$player_name"]
+    fi
+}
+
+# NUEVA FUNCIÓN: Programar remoción de SUPER después de 15 segundos de desconexión
+schedule_super_remove() {
+    local player_name="$1"
+    
+    log_debug "Scheduling SUPER removal for $player_name in 15 seconds"
+    
+    # Cancelar cualquier timer previo de remoción de super
+    cancel_super_remove_timer "$player_name"
+    
+    (
+        sleep 15
+        log_debug "Executing scheduled SUPER removal for $player_name"
+        
+        # Verificar que el jugador todavía esté desconectado
+        if [ -z "${connected_players[$player_name]}" ]; then
+            log_debug "Player $player_name still disconnected, removing from adminlist.txt and cloud admin"
+            remove_player_from_adminlist "$player_name"
+            remove_from_cloud_admin "$player_name"
+        else
+            log_debug "Player $player_name reconnected, cancelling SUPER removal"
+        fi
+    ) &
+    
+    super_remove_timers["$player_name"]=$!
+    log_debug "Scheduled SUPER remove timer for $player_name (PID: ${super_remove_timers[$player_name]})"
+}
+
+# NUEVA FUNCIÓN: Cancelar timer de remoción de SUPER
+cancel_super_remove_timer() {
+    local player_name="$1"
+    
+    if [ -n "${super_remove_timers[$player_name]}" ]; then
+        local pid="${super_remove_timers[$player_name]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Cancelled SUPER remove timer for $player_name (PID: $pid)"
+        fi
+        unset super_remove_timers["$player_name"]
+    fi
+}
+
+# NUEVA FUNCIÓN CORREGIDA: Remover jugador de adminlist.txt usando /unadmin
+remove_player_from_adminlist() {
+    local player_name="$1"
+    
+    log_debug "Removing player from adminlist.txt: $player_name"
+    execute_server_command "/unadmin $player_name"
+    execute_server_command "/load-lists"
+    log_debug "Removed $player_name from adminlist.txt using /unadmin"
+}
+
+# NUEVA FUNCIÓN CORREGIDA: Remover jugador de modlist.txt usando /unmod
+remove_player_from_modlist() {
+    local player_name="$1"
+    
+    log_debug "Removing player from modlist.txt: $player_name"
+    execute_server_command "/unmod $player_name"
+    execute_server_command "/load-lists"
+    log_debug "Removed $player_name from modlist.txt using /unmod"
+}
+
+# NUEVA FUNCIÓN: Programar remoción de todos los rangos según el tipo
+schedule_all_rank_removals() {
+    local player_name="$1"
+    
+    log_debug "Scheduling all rank removals for $player_name"
     
     local player_info=$(get_player_info "$player_name")
     if [ -n "$player_info" ]; then
         local rank=$(echo "$player_info" | cut -d'|' -f3)
         
-        log_debug "Removing rank $rank from $player_name using server commands"
-        
         case "$rank" in
             "MOD")
-                # Remover de modlist.txt usando comando del servidor
-                execute_server_command "/unmod $player_name"
-                log_debug "Removed $player_name from modlist.txt using /unmod"
+                schedule_mod_remove "$player_name"
                 ;;
             "ADMIN")
-                # Remover de adminlist.txt usando comando del servidor
-                execute_server_command "/unadmin $player_name"
-                log_debug "Removed $player_name from adminlist.txt using /unadmin"
+                schedule_admin_remove "$player_name"
                 ;;
             "SUPER")
-                # Remover de adminlist.txt y cloud admin list
-                execute_server_command "/unadmin $player_name"
-                remove_from_cloud_admin "$player_name"
-                log_debug "Removed $player_name from adminlist.txt and cloud admin list"
+                schedule_admin_remove "$player_name"  # SUPER también está en adminlist
+                schedule_super_remove "$player_name"  # Y tiene timer separado para cloud admin
                 ;;
         esac
-        
-        # Recargar listas después de los cambios
-        execute_server_command "/load-lists"
-        log_debug "Reloaded lists after removing $player_name"
-        
-        log_debug "Completely removed rank $rank from $player_name from all lists"
-    else
-        log_debug "No player info found for $player_name, cannot remove rank"
     fi
+}
+
+# NUEVA FUNCIÓN: Cancelar todos los timers de remoción
+cancel_all_rank_removals() {
+    local player_name="$1"
+    
+    log_debug "Cancelling all rank removal timers for $player_name"
+    cancel_admin_remove_timer "$player_name"
+    cancel_mod_remove_timer "$player_name"
+    cancel_super_remove_timer "$player_name"
 }
 
 # Function to sync lists from players.log using SERVER COMMANDS only
@@ -866,7 +968,7 @@ cancel_player_timers() {
     
     # Cancelar timers de aplicación y remoción de rangos
     cancel_rank_apply_timer "$player_name"
-    cancel_rank_remove_timer "$player_name"
+    cancel_all_rank_removals "$player_name"
 }
 
 # INDEPENDENT PASSWORD REMINDER TIMER
@@ -1128,7 +1230,7 @@ handle_ip_change() {
 }
 
 # =============================================================================
-# CONSOLE MONITOR (NON-BLOCKING) - MEJORADO CON TIMERS DE 5 Y 15 SEGUNDOS
+# CONSOLE MONITOR (NON-BLOCKING) - CORREGIDO CON DETECCIÓN DE DESCONEXIÓN
 # =============================================================================
 
 # Function to monitor console.log for commands and connections
@@ -1157,6 +1259,7 @@ monitor_console_log() {
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
+            local session_id="${BASH_REMATCH[3]}"
             
             # Clean player name
             player_name=$(echo "$player_name" | xargs)
@@ -1164,11 +1267,12 @@ monitor_console_log() {
             if is_valid_player_name "$player_name"; then
                 connected_players["$player_name"]=1
                 player_ip_map["$player_name"]="$player_ip"
+                player_session_ids["$player_name"]="$session_id"
                 
-                log_debug "Player connected: $player_name ($player_ip)"
+                log_debug "Player connected: $player_name ($player_ip) - Session: $session_id"
                 
-                # Cancelar timer de remoción de rango si existe (se reconectó dentro de 15 segundos)
-                cancel_rank_remove_timer "$player_name"
+                # Cancelar todos los timers de remoción (se reconectó dentro de 15 segundos)
+                cancel_all_rank_removals "$player_name"
                 
                 # Check if player exists in players.log
                 local player_info=$(get_player_info "$player_name")
@@ -1234,39 +1338,36 @@ monitor_console_log() {
             fi
         fi
         
-        # Player disconnection detection
+        # Player disconnection detection - PATRÓN CORREGIDO
+        if [[ "$line" =~ Client\ disconnected:([0-9a-f]+) ]]; then
+            local session_id="${BASH_REMATCH[1]}"
+            log_debug "Client disconnected with session ID: $session_id"
+            
+            # Buscar el nombre del jugador que tiene este session ID
+            local disconnected_player=""
+            for player in "${!player_session_ids[@]}"; do
+                if [ "${player_session_ids[$player]}" = "$session_id" ]; then
+                    disconnected_player="$player"
+                    break
+                fi
+            done
+            
+            if [ -n "$disconnected_player" ]; then
+                log_debug "Found disconnected player: $disconnected_player (Session: $session_id)"
+                handle_player_disconnection "$disconnected_player"
+            else
+                log_debug "No player found with session ID: $session_id"
+            fi
+        fi
+        
+        # Player disconnection detection - Formato alternativo
         if [[ "$line" =~ Player\ Disconnected\ (.+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             player_name=$(echo "$player_name" | xargs)
             
             if is_valid_player_name "$player_name" ]; then
-                log_debug "Player disconnected: $player_name"
-                
-                # Cancelar timer de aplicación de rango (si existe)
-                cancel_rank_apply_timer "$player_name"
-                
-                # Programar remoción de rango después de 15 segundos
-                local player_info=$(get_player_info "$player_name")
-                if [ -n "$player_info" ]; then
-                    local rank=$(echo "$player_info" | cut -d'|' -f3)
-                    if [ "$rank" != "NONE" ]; then
-                        log_debug "Scheduling rank removal for $player_name in 15 seconds"
-                        schedule_rank_remove "$player_name"
-                    fi
-                fi
-                
-                # Limpiar datos del jugador después de programar la remoción
-                unset connected_players["$player_name"]
-                unset player_ip_map["$player_name"]
-                unset player_verification_status["$player_name"]
-                unset player_password_reminder_sent["$player_name"]
-                unset pending_ranks["$player_name"]
-                
-                # Cancelar otros timers (pero NO el de remoción de rango)
-                cancel_player_timers "$player_name"
-                
-                # Update lists using SERVER COMMANDS
-                sync_lists_from_players_log
+                log_debug "Player disconnected (alternate format): $player_name"
+                handle_player_disconnection "$player_name"
             fi
         fi
         
@@ -1334,6 +1435,35 @@ monitor_console_log() {
     done
 }
 
+# NUEVA FUNCIÓN: Manejar desconexión de jugador
+handle_player_disconnection() {
+    local player_name="$1"
+    
+    log_debug "Handling disconnection for player: $player_name"
+    
+    # Cancelar timer de aplicación de rango (si existe)
+    cancel_rank_apply_timer "$player_name"
+    
+    # Programar remoción de todos los rangos después de 15 segundos
+    schedule_all_rank_removals "$player_name"
+    
+    # Limpiar datos del jugador después de programar la remoción
+    unset connected_players["$player_name"]
+    unset player_ip_map["$player_name"]
+    unset player_verification_status["$player_name"]
+    unset player_password_reminder_sent["$player_name"]
+    unset player_session_ids["$player_name"]
+    unset pending_ranks["$player_name"]
+    
+    # Cancelar otros timers (pero NO los de remoción de rangos)
+    cancel_player_timers "$player_name"
+    
+    # Update lists using SERVER COMMANDS
+    sync_lists_from_players_log
+    
+    log_debug "Completed disconnection handling for $player_name"
+}
+
 # Function to cleanup
 cleanup() {
     print_header "CLEANING UP RANK PATCHER"
@@ -1360,11 +1490,27 @@ cleanup() {
         fi
     done
     
-    for timer_key in "${!rank_remove_timers[@]}"; do
-        local pid="${rank_remove_timers[$timer_key]}"
+    for timer_key in "${!admin_remove_timers[@]}"; do
+        local pid="${admin_remove_timers[$timer_key]}"
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
-            log_debug "Killed rank remove timer: $timer_key (PID: $pid)"
+            log_debug "Killed admin remove timer: $timer_key (PID: $pid)"
+        fi
+    done
+    
+    for timer_key in "${!mod_remove_timers[@]}"; do
+        local pid="${mod_remove_timers[$timer_key]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Killed mod remove timer: $timer_key (PID: $pid)"
+        fi
+    done
+    
+    for timer_key in "${!super_remove_timers[@]}"; do
+        local pid="${super_remove_timers[$timer_key]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Killed super remove timer: $timer_key (PID: $pid)"
         fi
     done
     
