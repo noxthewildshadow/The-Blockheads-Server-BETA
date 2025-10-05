@@ -85,11 +85,6 @@ setup_paths() {
     log_debug "Console log: $CONSOLE_LOG"
     log_debug "Debug log: $PATCH_DEBUG_LOG"
     log_debug "Screen session: $SCREEN_SESSION"
-    
-    print_status "Players log: $PLAYERS_LOG"
-    print_status "Console log: $CONSOLE_LOG"
-    print_status "Debug log: $PATCH_DEBUG_LOG"
-    print_status "Screen session: $SCREEN_SESSION"
 }
 
 execute_server_command() {
@@ -252,7 +247,6 @@ apply_rank_to_connected_player() {
                 add_to_cloud_admin "$player_name"
                 current_player_ranks["$player_name"]="$rank"
                 execute_server_command "msg $player_name SUPER rank applied. Please rejoin the server for it to take full effect."
-                log_debug "SUPER rank applied to $player_name - rejoin message sent"
                 ;;
             "NONE")
                 if [ -n "${current_player_ranks[$player_name]}" ]; then
@@ -856,7 +850,6 @@ cancel_player_timers() {
     fi
     
     cancel_rank_apply_timer "$player_name"
-    cancel_all_rank_removals "$player_name"
 }
 
 start_password_reminder_timer() {
@@ -989,6 +982,7 @@ handle_password_creation() {
         log_debug "IMMEDIATE: Player info found for $player_name, cancelling ALL timers"
         
         cancel_player_timers "$player_name"
+        cancel_all_rank_removals "$player_name"
         
         log_debug "IMMEDIATE: Updating players.log with new password for $player_name"
         update_player_info "$player_name" "$first_ip" "$password" "$rank" "$whitelisted" "$blacklisted"
@@ -1062,6 +1056,7 @@ handle_ip_change() {
         player_verification_status["$player_name"]="verified"
         
         cancel_player_timers "$player_name"
+        cancel_all_rank_removals "$player_name"
         
         log_debug "IP verification successful for $player_name - cancelling kick/ban IP cooldown"
         execute_server_command "SECURITY: $player_name IP verification successful. Kick/ban IP cooldown cancelled."
@@ -1108,6 +1103,8 @@ monitor_console_log() {
             player_name=$(echo "$player_name" | xargs)
             
             if is_valid_player_name "$player_name"; then
+                unset processed_disconnections["$player_name"]
+
                 connected_players["$player_name"]=1
                 player_ip_map["$player_name"]="$player_ip"
                 player_session_ids["$player_name"]="$session_id"
@@ -1275,7 +1272,6 @@ handle_player_disconnection() {
     unset player_password_reminder_sent["$player_name"]
     unset player_session_ids["$player_name"]
     unset pending_ranks["$player_name"]
-    unset processed_disconnections["$player_name"]
     
     cancel_player_timers "$player_name"
     
