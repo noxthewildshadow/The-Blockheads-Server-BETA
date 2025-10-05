@@ -41,8 +41,6 @@ declare -A super_admin_disconnect_timers
 declare -A pending_ranks
 declare -A list_files_initialized
 declare -A disconnect_timers
-declare -A connected_admins
-declare -A connected_mods
 
 log_debug() {
     local message="$1"
@@ -161,22 +159,6 @@ update_player_info() {
     fi
 }
 
-check_and_clean_empty_lists() {
-    local world_dir="$BASE_SAVES_DIR/$WORLD_ID"
-    local admin_list="$world_dir/adminlist.txt"
-    local mod_list="$world_dir/modlist.txt"
-    
-    if [ ${#connected_admins[@]} -eq 0 ] && [ -f "$admin_list" ]; then
-        log_debug "No connected admins, removing adminlist.txt"
-        rm -f "$admin_list"
-    fi
-    
-    if [ ${#connected_mods[@]} -eq 0 ] && [ -f "$mod_list" ]; then
-        log_debug "No connected mods, removing modlist.txt"
-        rm -f "$mod_list"
-    fi
-}
-
 start_rank_application_timer() {
     local player_name="$1"
     
@@ -205,7 +187,6 @@ start_disconnect_timer() {
         sleep 15
         log_debug "15-second disconnect timer completed, removing rank for: $player_name"
         remove_player_rank "$player_name"
-        check_and_clean_empty_lists
         unset disconnect_timers["$player_name"]
     ) &
     
@@ -238,15 +219,12 @@ remove_player_rank() {
         case "$rank" in
             "MOD")
                 execute_server_command "/unmod $player_name"
-                unset connected_mods["$player_name"]
                 ;;
             "ADMIN")
                 execute_server_command "/unadmin $player_name"
-                unset connected_admins["$player_name"]
                 ;;
             "SUPER")
                 execute_server_command "/unadmin $player_name"
-                unset connected_admins["$player_name"]
                 remove_from_cloud_admin "$player_name"
                 ;;
         esac
@@ -292,18 +270,15 @@ apply_rank_to_connected_player() {
         "MOD")
             execute_server_command "/mod $player_name"
             current_player_ranks["$player_name"]="$rank"
-            connected_mods["$player_name"]=1
             ;;
         "ADMIN")
             execute_server_command "/admin $player_name"
             current_player_ranks["$player_name"]="$rank"
-            connected_admins["$player_name"]=1
             ;;
         "SUPER")
             execute_server_command "/admin $player_name"
             add_to_cloud_admin "$player_name"
             current_player_ranks["$player_name"]="$rank"
-            connected_admins["$player_name"]=1
             ;;
     esac
     
@@ -441,16 +416,13 @@ apply_pending_ranks() {
         case "$pending_rank" in
             "ADMIN")
                 execute_server_command "/admin $player_name"
-                connected_admins["$player_name"]=1
                 ;;
             "MOD")
                 execute_server_command "/mod $player_name"
-                connected_mods["$player_name"]=1
                 ;;
             "SUPER")
                 add_to_cloud_admin "$player_name"
                 execute_server_command "/admin $player_name"
-                connected_admins["$player_name"]=1
                 ;;
         esac
         
@@ -484,16 +456,13 @@ apply_rank_changes() {
     case "$old_rank" in
         "ADMIN")
             execute_server_command "/unadmin $player_name"
-            unset connected_admins["$player_name"]
             ;;
         "MOD")
             execute_server_command "/unmod $player_name"
-            unset connected_mods["$player_name"]
             ;;
         "SUPER")
             start_super_disconnect_timer "$player_name"
             execute_server_command "/unadmin $player_name"
-            unset connected_admins["$player_name"]
             ;;
     esac
     
@@ -501,16 +470,13 @@ apply_rank_changes() {
         case "$new_rank" in
             "ADMIN")
                 execute_server_command "/admin $player_name"
-                connected_admins["$player_name"]=1
                 ;;
             "MOD")
                 execute_server_command "/mod $player_name"
-                connected_mods["$player_name"]=1
                 ;;
             "SUPER")
                 add_to_cloud_admin "$player_name"
                 execute_server_command "/admin $player_name"
-                connected_admins["$player_name"]=1
                 ;;
         esac
     fi
@@ -601,11 +567,9 @@ handle_blacklist_change() {
             case "$rank" in
                 "MOD")
                     execute_server_command "/unmod $player_name"
-                    unset connected_mods["$player_name"]
                     ;;
                 "ADMIN"|"SUPER")
                     execute_server_command "/unadmin $player_name"
-                    unset connected_admins["$player_name"]
                     if [ "$rank" = "SUPER" ]; then
                         remove_from_cloud_admin "$player_name"
                     fi
@@ -856,7 +820,7 @@ start_ip_grace_timer() {
                 local first_ip=$(echo "$player_info" | cut -d'|' -f1)
                 if [ "$first_ip" != "UNKNOWN" ] && [ "$first_ip" != "$current_ip" ]; then
                     log_debug "IP change detected for $player_name: $first_ip -> $current_ip"
-                    execute_server_command "SECURITY ALERT: $player_name, your IP has changed! Verify with !ip_change YOUR_PASSWORD within 25 seconds or you will be kicked and IP banned."
+                    execute_server_command "SECURITY ALERT: $player_name, your IP has changed! Verify with !ip_change within 25 seconds or you will be kicked and IP banned for 30 seconds."
                     
                     sleep 25
                     if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" != "verified" ]; then
@@ -900,13 +864,13 @@ handle_password_creation() {
     
     if [ ${#password} -lt 7 ] || [ ${#password} -gt 16 ]; then
         log_debug "IMMEDIATE: Password validation failed: length invalid (${#password} chars)"
-        send_server_command "$SCREEN_SESSION" "ERROR: $player_name, password must be between 7 and 16 characters."
+        send_server_command "$SCREEN_SESSION" "ERROR: password must be between 7 and 16 characters."
         return 1
     fi
     
     if [ "$password" != "$confirm_password" ]; then
         log_debug "IMMEDIATE: Password validation failed: passwords don't match"
-        send_server_command "$SCREEN_SESSION" "ERROR: $player_name, passwords do not match."
+        send_server_command "$SCREEN_SESSION" "ERROR: passwords do not match."
         return 1
     fi
     
@@ -926,7 +890,7 @@ handle_password_creation() {
         update_player_info "$player_name" "$first_ip" "$password" "$rank" "$whitelisted" "$blacklisted"
         
         log_debug "IMMEDIATE: Password set successfully for $player_name"
-        send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your password has been set successfully."
+        send_server_command "$SCREEN_SESSION" "SUCCESS: password has been set successfully."
         return 0
     else
         log_debug "IMMEDIATE: Player info NOT found for $player_name"
@@ -943,7 +907,7 @@ handle_password_change() {
     send_server_command "$SCREEN_SESSION" "/clear"
     
     if [ ${#new_password} -lt 7 ] || [ ${#new_password} -gt 16 ]; then
-        send_server_command "$SCREEN_SESSION" "ERROR: $player_name, new password must be between 7 and 16 characters."
+        send_server_command "$SCREEN_SESSION" "ERROR: new password must be between 7 and 16 characters."
         return 1
     fi
     
@@ -956,13 +920,13 @@ handle_password_change() {
         local blacklisted=$(echo "$player_info" | cut -d'|' -f5)
         
         if [ "$current_password" != "$old_password" ]; then
-            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, old password is incorrect."
+            send_server_command "$SCREEN_SESSION" "ERROR: old password is incorrect."
             return 1
         fi
         
         update_player_info "$player_name" "$first_ip" "$new_password" "$rank" "$whitelisted" "$blacklisted"
         
-        send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your password has been changed successfully."
+        send_server_command "$SCREEN_SESSION" "SUCCESS: password has been changed successfully."
         return 0
     else
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, player not found in registry."
@@ -996,7 +960,7 @@ handle_ip_change() {
         cancel_player_timers "$player_name"
         
         log_debug "IP verification successful for $player_name - cancelling kick/ban IP cooldown"
-        execute_server_command "SECURITY: $player_name IP verification successful. Kick/ban IP cooldown cancelled."
+        execute_server_command "SECURITY: IP verification successful."
         
         log_debug "Applying pending ranks for $player_name after IP verification"
         apply_pending_ranks "$player_name"
@@ -1005,7 +969,7 @@ handle_ip_change() {
         
         sync_lists_from_players_log
         
-        send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your IP has been verified and updated. All security restrictions lifted."
+        send_server_command "$SCREEN_SESSION" "SUCCESS: IP has been verified and updated."
         return 0
     else
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, player not found in registry."
@@ -1142,7 +1106,7 @@ monitor_console_log() {
                             handle_password_creation "$player_name" "$password" "$confirm_password"
                         else
                             send_server_command "$SCREEN_SESSION" "/clear"
-                            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !psw PASSWORD CONFIRM_PASSWORD"
+                            send_server_command "$SCREEN_SESSION" "ERROR: invalid format. Use: !psw PASSWORD CONFIRM_PASSWORD"
                         fi
                         ;;
                     "!change_psw "*)
@@ -1153,7 +1117,7 @@ monitor_console_log() {
                             handle_password_change "$player_name" "$old_password" "$new_password"
                         else
                             send_server_command "$SCREEN_SESSION" "/clear"
-                            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !change_psw OLD_PASSWORD NEW_PASSWORD"
+                            send_server_command "$SCREEN_SESSION" "ERROR: invalid format. Use: !change_psw OLD_PASSWORD NEW_PASSWORD"
                         fi
                         ;;
                     "!ip_change "*)
@@ -1163,7 +1127,7 @@ monitor_console_log() {
                             handle_ip_change "$player_name" "$password" "$current_ip"
                         else
                             send_server_command "$SCREEN_SESSION" "/clear"
-                            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !ip_change YOUR_PASSWORD"
+                            send_server_command "$SCREEN_SESSION" "ERROR: invalid format. Use: !ip_change + YOUR_PASSWORD"
                         fi
                         ;;
                 esac
@@ -1188,6 +1152,13 @@ cleanup() {
     
     for timer_key in "${!active_timers[@]}"; do
         local pid="${active_timers[$timer_key]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+        fi
+    done
+    
+    for player_name in "${!connect_timers[@]}"; do
+        local pid="${connect_timers[$player_name]}"
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
         fi
