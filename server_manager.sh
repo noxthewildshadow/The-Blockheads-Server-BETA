@@ -112,26 +112,35 @@ start_server() {
     # Save world ID for this port
     echo "$world_id" > "world_id_$port.txt"
     
-    # Create startup script
-    cat > /tmp/start_server_$$.sh << EOF
+    # Create startup script - CORREGIDO
+    cat > /tmp/start_server_$$.sh << 'EOF'
 #!/bin/bash
-cd '$PWD'
+cd "$PWD"
+WORLD_ID='%WORLD_ID%'
+PORT=%PORT%
+LOG_FILE='%LOG_FILE%'
+
 while true; do
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting server..."
-    if ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'; then
-        echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server closed normally"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting server..."
+    if ./blockheads_server171 -o "$WORLD_ID" -p $PORT 2>&1 | tee -a "$LOG_FILE"; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Server closed normally"
     else
-        exit_code=\$?
-        echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server failed with code: \$exit_code"
-        if [ \$exit_code -eq 1 ] && tail -n 5 '$log_file' | grep -q "port.*already in use"; then
-            echo "[\$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Port already in use. Will not retry."
+        exit_code=$?
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Server failed with code: $exit_code"
+        if [ $exit_code -eq 1 ] && tail -n 5 "$LOG_FILE" | grep -q "port.*already in use"; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Port already in use. Will not retry."
             break
         fi
     fi
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Restarting in 5 seconds..."
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Restarting in 5 seconds..."
     sleep 5
 done
 EOF
+
+    # Reemplazar variables en el script temporal
+    sed -i "s|%WORLD_ID%|$world_id|g" /tmp/start_server_$$.sh
+    sed -i "s|%PORT%|$port|g" /tmp/start_server_$$.sh
+    sed -i "s|%LOG_FILE%|$log_file|g" /tmp/start_server_$$.sh
     
     chmod +x /tmp/start_server_$$.sh
     
@@ -164,7 +173,7 @@ EOF
     [ ! -f "$log_file" ] && {
         print_error "Could not create log file. Server may not have started."
         return 1
-    fi
+    }
     
     local server_ready=false
     for i in {1..30}; do
