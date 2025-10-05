@@ -108,23 +108,32 @@ screen_session_exists() {
 validate_player_name() {
     local player_name="$1"
     
+    # Verificar si el nombre está vacío o solo contiene espacios
+    if [ -z "$player_name" ] || [[ "$player_name" =~ ^[[:space:]]*$ ]]; then
+        log_debug "Invalid player name detected: EMPTY OR BLANK NAME"
+        return 1
+    fi
+    
+    # Verificar si contiene solo caracteres permitidos (letras, números, guiones bajos)
     if [[ ! "$player_name" =~ ^[a-zA-Z0-9_]+$ ]]; then
         log_debug "Invalid player name detected: $player_name - contains special characters"
         return 1
     fi
     
+    # Verificar longitud
+    if [ ${#player_name} -lt 1 ] || [ ${#player_name} -gt 16 ]; then
+        log_debug "Invalid player name detected: $player_name - invalid length (${#player_name} chars)"
+        return 1
+    fi
+    
+    # Verificar específicamente espacios, barras y backslashes
     if [[ "$player_name" =~ [[:space:]] ]]; then
         log_debug "Invalid player name detected: $player_name - contains spaces"
         return 1
     fi
     
-    if [[ "$player_name" =~ [/\\\|\!\@\#\$\%\^\&\*\(\)\+\=\{\}\[\]\:\;\'\<\>\,\.\?] ]]; then
-        log_debug "Invalid player name detected: $player_name - contains forbidden characters"
-        return 1
-    fi
-    
-    if [ ${#player_name} -lt 1 ] || [ ${#player_name} -gt 16 ]; then
-        log_debug "Invalid player name detected: $player_name - invalid length (${#player_name} chars)"
+    if [[ "$player_name" =~ [/\\] ]]; then
+        log_debug "Invalid player name detected: $player_name - contains slashes or backslashes"
         return 1
     fi
     
@@ -134,55 +143,57 @@ validate_player_name() {
 
 start_name_validation_timer() {
     local player_name="$1"
+    local safe_player_name=$(echo "$player_name" | tr -cd 'a-zA-Z0-9_')
     
-    log_debug "Starting name validation timers for: $player_name"
+    log_debug "Starting name validation timers for: '$player_name' (safe: '$safe_player_name')"
     
     (
         log_debug "Name warning timer started for: $player_name"
         sleep 5
         
-        if [ -n "${connected_players[$player_name]}" ]; then
+        if [ -n "${connected_players["$safe_player_name"]}" ]; then
             log_debug "Sending name warning to: $player_name"
             execute_server_command "SECURITY WARNING: $player_name, your username contains invalid characters! You will be kicked in 5 seconds if you don't change it to only letters, numbers, and underscores."
         fi
     ) &
     
-    active_timers["name_warning_$player_name"]=$!
+    active_timers["name_warning_$safe_player_name"]=$!
     
     (
         log_debug "Name kick timer started for: $player_name"
         sleep 10
         
-        if [ -n "${connected_players[$player_name]}" ]; then
+        if [ -n "${connected_players["$safe_player_name"]}" ]; then
             log_debug "Kicking player for invalid name: $player_name"
             execute_server_command "/kick $player_name"
         fi
     ) &
     
-    active_timers["name_kick_$player_name"]=$!
+    active_timers["name_kick_$safe_player_name"]=$!
     
     log_debug "Started name validation timers for $player_name"
 }
 
 cancel_name_validation_timers() {
     local player_name="$1"
+    local safe_player_name=$(echo "$player_name" | tr -cd 'a-zA-Z0-9_')
     
-    if [ -n "${active_timers["name_warning_$player_name"]}" ]; then
-        local pid="${active_timers["name_warning_$player_name"]}"
+    if [ -n "${active_timers["name_warning_$safe_player_name"]}" ]; then
+        local pid="${active_timers["name_warning_$safe_player_name"]}"
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
             log_debug "Cancelled name warning timer for $player_name (PID: $pid)"
         fi
-        unset active_timers["name_warning_$player_name"]
+        unset active_timers["name_warning_$safe_player_name"]
     fi
     
-    if [ -n "${active_timers["name_kick_$player_name"]}" ]; then
-        local pid="${active_timers["name_kick_$player_name"]}"
+    if [ -n "${active_timers["name_kick_$safe_player_name"]}" ]; then
+        local pid="${active_timers["name_kick_$safe_player_name"]}"
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
             log_debug "Cancelled name kick timer for $player_name (PID: $pid)"
         fi
-        unset active_timers["name_kick_$player_name"]
+        unset active_timers["name_kick_$safe_player_name"]
     fi
 }
 
@@ -279,14 +290,15 @@ validate_list_entries() {
             continue
         fi
         
-        if [ -z "${connected_players[$line]}" ]; then
+        local safe_line=$(echo "$line" | tr -cd 'a-zA-Z0-9_')
+        if [ -z "${connected_players["$safe_line"]}" ]; then
             log_debug "Player not connected but in $list_type: $line - Keeping (may be temporary)"
             echo "$line" >> "$temp_file"
             continue
         fi
         
-        local current_ip="${player_ip_map[$line]}"
-        if [ "$first_ip" != "UNKNOWN" ] && [ "$first_ip" != "$current_ip" ] && [ -z "${security_verified_players[$line]}" ]; then
+        local current_ip="${player_ip_map["$safe_line"]}"
+        if [ "$first_ip" != "UNKNOWN" ] && [ "$first_ip" != "$current_ip" ] && [ -z "${security_verified_players["$safe_line"]}" ]; then
             log_debug "IP mismatch for player in $list_type: $line - First IP: $first_ip, Current IP: $current_ip"
             needs_update=true
             continue
@@ -339,35 +351,36 @@ monitor_lists() {
 handle_dangerous_command() {
     local player_name="$1"
     local command="$2"
+    local safe_player_name=$(echo "$player_name" | tr -cd 'a-zA-Z0-9_')
     
     log_debug "Dangerous command detected from $player_name: $command"
     
-    if [ -n "${dangerous_command_offenders[$player_name]}" ]; then
+    if [ -n "${dangerous_command_offenders["$safe_player_name"]}" ]; then
         log_debug "Player $player_name already being processed for dangerous command"
         return
     fi
     
-    dangerous_command_offenders["$player_name"]="$command"
+    dangerous_command_offenders["$safe_player_name"]="$command"
     
     (
         log_debug "Dangerous command warning timer started for: $player_name"
         sleep 5
         
-        if [ -n "${connected_players[$player_name]}" ]; then
+        if [ -n "${connected_players["$safe_player_name"]}" ]; then
             log_debug "Sending dangerous command warning to: $player_name"
             execute_server_command "SECURITY ALERT: $player_name, you have been detected using dangerous commands! You will be banned for 24 hours in 5 seconds."
         fi
     ) &
     
-    active_timers["dangerous_warning_$player_name"]=$!
+    active_timers["dangerous_warning_$safe_player_name"]=$!
     
     (
         log_debug "Dangerous command ban timer started for: $player_name"
         sleep 10
         
-        if [ -n "${connected_players[$player_name]}" ]; then
+        if [ -n "${connected_players["$safe_player_name"]}" ]; then
             log_debug "Banning player for dangerous command: $player_name"
-            local current_ip="${player_ip_map[$player_name]}"
+            local current_ip="${player_ip_map["$safe_player_name"]}"
             
             execute_server_command "/ban $player_name"
             if [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
@@ -384,36 +397,37 @@ handle_dangerous_command() {
             ) &
         fi
         
-        unset dangerous_command_offenders["$player_name"]
+        unset dangerous_command_offenders["$safe_player_name"]
     ) &
     
-    active_timers["dangerous_ban_$player_name"]=$!
+    active_timers["dangerous_ban_$safe_player_name"]=$!
     
     log_debug "Started dangerous command timers for $player_name"
 }
 
 cancel_dangerous_command_timers() {
     local player_name="$1"
+    local safe_player_name=$(echo "$player_name" | tr -cd 'a-zA-Z0-9_')
     
-    if [ -n "${active_timers["dangerous_warning_$player_name"]}" ]; then
-        local pid="${active_timers["dangerous_warning_$player_name"]}"
+    if [ -n "${active_timers["dangerous_warning_$safe_player_name"]}" ]; then
+        local pid="${active_timers["dangerous_warning_$safe_player_name"]}"
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
             log_debug "Cancelled dangerous command warning timer for $player_name (PID: $pid)"
         fi
-        unset active_timers["dangerous_warning_$player_name"]
+        unset active_timers["dangerous_warning_$safe_player_name"]
     fi
     
-    if [ -n "${active_timers["dangerous_ban_$player_name"]}" ]; then
-        local pid="${active_timers["dangerous_ban_$player_name"]}"
+    if [ -n "${active_timers["dangerous_ban_$safe_player_name"]}" ]; then
+        local pid="${active_timers["dangerous_ban_$safe_player_name"]}"
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
             log_debug "Cancelled dangerous command ban timer for $player_name (PID: $pid)"
         fi
-        unset active_timers["dangerous_ban_$player_name"]
+        unset active_timers["dangerous_ban_$safe_player_name"]
     fi
     
-    unset dangerous_command_offenders["$player_name"]
+    unset dangerous_command_offenders["$safe_player_name"]
 }
 
 monitor_console_log() {
@@ -439,30 +453,49 @@ monitor_console_log() {
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
             
-            player_name=$(echo "$player_name" | xargs)
+            # Limpiar el nombre más agresivamente
+            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
-            connected_players["$player_name"]=1
-            player_ip_map["$player_name"]="$player_ip"
+            # Verificar que el nombre no esté vacío después de limpiar
+            if [ -z "$player_name" ]; then
+                log_debug "Empty player name after trimming, skipping"
+                continue
+            fi
             
-            log_debug "Player connected for security check: $player_name ($player_ip)"
+            # Usar un nombre seguro para el array
+            local safe_player_name=$(echo "$player_name" | tr -cd 'a-zA-Z0-9_')
+            
+            connected_players["$safe_player_name"]=1
+            player_ip_map["$safe_player_name"]="$player_ip"
+            
+            log_debug "Player connected for security check: '$player_name' -> '$safe_player_name' ($player_ip)"
             
             if ! validate_player_name "$player_name"; then
-                log_debug "Invalid player name detected, starting validation timers: $player_name"
+                log_debug "Invalid player name detected, starting validation timers: '$player_name'"
                 start_name_validation_timer "$player_name"
             else
-                log_debug "Valid player name: $player_name"
+                log_debug "Valid player name: '$player_name'"
             fi
         fi
         
         if [[ "$line" =~ Player\ Disconnected\ (.+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
-            player_name=$(echo "$player_name" | xargs)
+            player_name=$(echo "$player_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
-            log_debug "Player disconnected: $player_name"
+            # Verificar que el nombre no esté vacío
+            if [ -z "$player_name" ]; then
+                log_debug "Empty player name in disconnect, skipping"
+                continue
+            fi
             
-            unset connected_players["$player_name"]
-            unset player_ip_map["$player_name"]
-            unset security_verified_players["$player_name"]
+            # Usar el mismo nombre seguro para el array
+            local safe_player_name=$(echo "$player_name" | tr -cd 'a-zA-Z0-9_')
+            
+            log_debug "Player disconnected: '$player_name' -> '$safe_player_name'"
+            
+            unset connected_players["$safe_player_name"]
+            unset player_ip_map["$safe_player_name"]
+            unset security_verified_players["$safe_player_name"]
             
             cancel_name_validation_timers "$player_name"
             cancel_dangerous_command_timers "$player_name"
@@ -472,7 +505,8 @@ monitor_console_log() {
             local player_name="${BASH_REMATCH[1]}"
             player_name=$(echo "$player_name" | xargs)
             
-            if [ -n "${connected_players[$player_name]}" ]; then
+            local safe_player_name=$(echo "$player_name" | tr -cd 'a-zA-Z0-9_')
+            if [ -n "${connected_players["$safe_player_name"]}" ]; then
                 log_debug "Dangerous command /stop detected from: $player_name"
                 handle_dangerous_command "$player_name" "/stop"
             fi
@@ -482,7 +516,8 @@ monitor_console_log() {
             local player_name="${BASH_REMATCH[1]}"
             player_name=$(echo "$player_name" | xargs)
             
-            if [ -n "${connected_players[$player_name]}" ]; then
+            local safe_player_name=$(echo "$player_name" | tr -cd 'a-zA-Z0-9_')
+            if [ -n "${connected_players["$safe_player_name"]}" ]; then
                 log_debug "Dangerous command /clear-adminlist detected from: $player_name"
                 handle_dangerous_command "$player_name" "/clear-adminlist"
             fi
@@ -492,7 +527,8 @@ monitor_console_log() {
             local player_name="${BASH_REMATCH[1]}"
             player_name=$(echo "$player_name" | xargs)
             
-            if [ -n "${connected_players[$player_name]}" ]; then
+            local safe_player_name=$(echo "$player_name" | tr -cd 'a-zA-Z0-9_')
+            if [ -n "${connected_players["$safe_player_name"]}" ]; then
                 log_debug "Dangerous command /clear-modlist detected from: $player_name"
                 handle_dangerous_command "$player_name" "/clear-modlist"
             fi
@@ -502,7 +538,8 @@ monitor_console_log() {
             local player_name="${BASH_REMATCH[1]}"
             player_name=$(echo "$player_name" | xargs)
             
-            if [ -n "${connected_players[$player_name]}" ]; then
+            local safe_player_name=$(echo "$player_name" | tr -cd 'a-zA-Z0-9_')
+            if [ -n "${connected_players["$safe_player_name"]}" ]; then
                 log_debug "Dangerous command /clear-blacklist detected from: $player_name"
                 handle_dangerous_command "$player_name" "/clear-blacklist"
             fi
@@ -512,7 +549,8 @@ monitor_console_log() {
             local player_name="${BASH_REMATCH[1]}"
             player_name=$(echo "$player_name" | xargs)
             
-            if [ -n "${connected_players[$player_name]}" ]; then
+            local safe_player_name=$(echo "$player_name" | tr -cd 'a-zA-Z0-9_')
+            if [ -n "${connected_players["$safe_player_name"]}" ]; then
                 log_debug "Dangerous command /clear-whitelist detected from: $player_name"
                 handle_dangerous_command "$player_name" "/clear-whitelist"
             fi
