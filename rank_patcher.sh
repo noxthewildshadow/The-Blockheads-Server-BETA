@@ -43,8 +43,8 @@ declare -A active_timers
 declare -A current_player_ranks
 declare -A current_blacklisted_players
 declare -A current_whitelisted_players
-declare -A rank_apply_timers  # NUEVO: Timers para aplicar rangos después de 5 segundos
-declare -A rank_remove_timers  # NUEVO: Timers para remover rangos después de 15 segundos de desconexión
+declare -A rank_apply_timers
+declare -A rank_remove_timers
 declare -A pending_ranks
 declare -A list_files_initialized
 
@@ -281,6 +281,9 @@ apply_rank_to_connected_player() {
                 execute_server_command "/admin $player_name"
                 add_to_cloud_admin "$player_name"
                 current_player_ranks["$player_name"]="$rank"
+                # NUEVO: Enviar mensaje para que salga y vuelva a entrar
+                execute_server_command "msg $player_name SUPER rank applied. Please rejoin the server for it to take full effect."
+                log_debug "SUPER rank applied to $player_name - rejoin message sent"
                 ;;
             "NONE")
                 # Remover cualquier rango existente
@@ -376,7 +379,7 @@ schedule_rank_remove() {
         
         # Verificar que el jugador todavía esté desconectado
         if [ -z "${connected_players[$player_name]}" ]; then
-            log_debug "Player $player_name still disconnected, removing rank"
+            log_debug "Player $player_name still disconnected, removing rank from lists"
             remove_player_rank_completely "$player_name"
         else
             log_debug "Player $player_name reconnected, cancelling rank removal"
@@ -401,33 +404,44 @@ cancel_rank_remove_timer() {
     fi
 }
 
-# NUEVA FUNCIÓN: Remover completamente el rango de un jugador (después de 15 segundos)
+# NUEVA FUNCIÓN CORREGIDA: Remover completamente el rango de un jugador de las listas txt (después de 15 segundos)
 remove_player_rank_completely() {
     local player_name="$1"
     
-    log_debug "Completely removing rank for player: $player_name"
+    log_debug "Completely removing rank for player from lists: $player_name"
     
     local player_info=$(get_player_info "$player_name")
     if [ -n "$player_info" ]; then
         local rank=$(echo "$player_info" | cut -d'|' -f3)
         
+        log_debug "Removing rank $rank from $player_name using server commands"
+        
         case "$rank" in
             "MOD")
+                # Remover de modlist.txt usando comando del servidor
                 execute_server_command "/unmod $player_name"
+                log_debug "Removed $player_name from modlist.txt using /unmod"
                 ;;
             "ADMIN")
+                # Remover de adminlist.txt usando comando del servidor
                 execute_server_command "/unadmin $player_name"
+                log_debug "Removed $player_name from adminlist.txt using /unadmin"
                 ;;
             "SUPER")
+                # Remover de adminlist.txt y cloud admin list
                 execute_server_command "/unadmin $player_name"
                 remove_from_cloud_admin "$player_name"
+                log_debug "Removed $player_name from adminlist.txt and cloud admin list"
                 ;;
         esac
         
-        log_debug "Completely removed rank $rank from $player_name"
-        
         # Recargar listas después de los cambios
         execute_server_command "/load-lists"
+        log_debug "Reloaded lists after removing $player_name"
+        
+        log_debug "Completely removed rank $rank from $player_name from all lists"
+    else
+        log_debug "No player info found for $player_name, cannot remove rank"
     fi
 }
 
@@ -519,6 +533,8 @@ apply_pending_ranks() {
             "SUPER")
                 add_to_cloud_admin "$player_name"
                 execute_server_command "/admin $player_name"
+                # NUEVO: Enviar mensaje para que salga y vuelva a entrar
+                execute_server_command "msg $player_name SUPER rank applied. Please rejoin the server for it to take full effect."
                 ;;
         esac
         
@@ -577,6 +593,8 @@ apply_rank_changes() {
             "SUPER")
                 add_to_cloud_admin "$player_name"
                 execute_server_command "/admin $player_name"
+                # NUEVO: Enviar mensaje para que salga y vuelva a entrar
+                execute_server_command "msg $player_name SUPER rank applied. Please rejoin the server for it to take full effect."
                 ;;
         esac
     fi
