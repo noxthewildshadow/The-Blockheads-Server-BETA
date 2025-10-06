@@ -112,7 +112,11 @@ handle_invalid_player_name() {
     
     (
         sleep 3
-        execute_server_command "WARNING: Invalid player name '$player_name'! Names must be 3-16 alphanumeric characters, no spaces/symbols. You will be kicked in 3 seconds."
+        execute_server_command "WARNING: Invalid player name '$player_name'! Names must be 3-16 alphanumeric characters, no spaces/symbols or nullbytes!"
+        
+        sleep 1
+        
+        execute_server_command "WARNING: You will be kicked and IP banned in 3 seconds for 60 seconds."
 
         sleep 3
 
@@ -122,7 +126,7 @@ handle_invalid_player_name() {
             print_warning "Banned invalid player name: '$player_name' (IP: $player_ip) for 30 seconds"
             
             (
-                sleep 30
+                sleep 60
                 execute_server_command "/unban $player_ip"
                 print_success "Unbanned IP: $player_ip"
             ) &
