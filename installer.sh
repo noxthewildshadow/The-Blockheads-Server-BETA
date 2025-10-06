@@ -1,7 +1,6 @@
 #!/bin/bash
 set -e
 
-# Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -43,23 +42,18 @@ print_progress() {
     echo -e "${MAGENTA}[PROGRESS]${NC} $1";
 }
 
-# Check if running as root
 [ "$EUID" -ne 0 ] && print_error "This script requires root privileges." && exit 1
 
 ORIGINAL_USER=${SUDO_USER:-$USER}
 USER_HOME=$(getent passwd "$ORIGINAL_USER" | cut -d: -f6)
 
-# URL for server download
 SERVER_URL="https://web.archive.org/web/20240309015235if_/https://majicdave.com/share/blockheads_server171.tar.gz"
 TEMP_FILE="/tmp/blockheads_server171.tar.gz"
 SERVER_BINARY="blockheads_server171"
 
-# URLs for scripts
 SERVER_MANAGER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/server_manager.sh"
 RANK_PATCHER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/rank_patcher.sh"
-SECURITY_FEATURES_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/security_features.sh"
 
-# Package lists for different distributions
 declare -a PACKAGES_DEBIAN=(
     'git' 'cmake' 'ninja-build' 'clang' 'patchelf' 'libgnustep-base-dev' 'libobjc4' 
     'libgnutls28-dev' 'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev' 'zlib1g' 
@@ -78,7 +72,6 @@ echo -e "${CYAN}Welcome to The Blockheads Server Installation!${NC}"
 echo -e "${YELLOW}This script will install and configure everything you need.${NC}"
 echo
 
-# Function to find library
 find_library() {
     SEARCH=$1
     LIBRARY=$(ldconfig -p | grep -F "$SEARCH" -m 1 | awk '{print $NF}' | head -1)
@@ -86,7 +79,6 @@ find_library() {
     printf '%s' "$LIBRARY"
 }
 
-# Function to install packages
 install_packages() {
     [ ! -f /etc/os-release ] && print_error "Could not detect the operating system" && return 1
     
@@ -122,7 +114,6 @@ install_packages() {
     return 0
 }
 
-# Function to download server manager, rank patcher, and security features
 download_server_files() {
     print_step "Downloading server manager..."
     if wget --timeout=30 --tries=3 -O "server_manager.sh" "$SERVER_MANAGER_URL" 2>/dev/null; then
@@ -139,15 +130,6 @@ download_server_files() {
         print_success "Rank patcher downloaded successfully"
     else
         print_error "Failed to download rank patcher"
-        return 1
-    fi
-    
-    print_step "Downloading security features..."
-    if wget --timeout=30 --tries=3 -O "security_features.sh" "$SECURITY_FEATURES_URL" 2>/dev/null; then
-        chmod +x "security_features.sh"
-        print_success "Security features downloaded successfully"
-    else
-        print_error "Failed to download security features"
         return 1
     fi
     
@@ -237,38 +219,27 @@ else
     print_warning "Server binary execution test failed - may need additional dependencies"
 fi
 
-print_step "[6/7] Downloading server manager, rank patcher, and security features..."
+print_step "[6/7] Downloading server manager and rank patcher..."
 if ! download_server_files; then
-    # Create basic files if download fails
-    print_warning "Creating basic server manager, rank patcher, and security features..."
+    print_warning "Creating basic server manager and rank patcher..."
     
-    # Basic server manager
     cat > server_manager.sh << 'EOF'
 #!/bin/bash
-# Basic Server Manager for Blockheads
 echo "Use: ./blockheads_server171 -n (to create world)"
 echo "Then: ./blockheads_server171 -o WORLD_NAME -p PORT"
 EOF
     chmod +x server_manager.sh
     
-    # Basic rank patcher
     cat > rank_patcher.sh << 'EOF'
 #!/bin/bash
 echo "Rank patcher placeholder - download failed"
 EOF
     chmod +x rank_patcher.sh
-    
-    # Basic security features
-    cat > security_features.sh << 'EOF'
-#!/bin/bash
-echo "Security features placeholder - download failed"
-EOF
-    chmod +x security_features.sh
 fi
 
 print_step "[7/7] Setting ownership and permissions..."
-chown "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" "security_features.sh" 2>/dev/null || true
-chmod 755 "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" "security_features.sh" 2>/dev/null || true
+chown "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" 2>/dev/null || true
+chmod 755 "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" 2>/dev/null || true
 
 rm -f "$TEMP_FILE"
 
@@ -298,32 +269,13 @@ echo -e "${CYAN}• Automated rank management (ADMIN, MOD, SUPER)${NC}"
 echo -e "${CYAN}• Real-time monitoring of player lists${NC}"
 echo ""
 
-print_header "SECURITY FEATURES"
-echo -e "${GREEN}The security features provide:${NC}"
-echo -e "${CYAN}• Player name validation (letters, numbers, underscores only)${NC}"
-echo -e "${CYAN}• Automatic detection and removal of invalid usernames${NC}"
-echo -e "${CYAN}• List integrity protection (adminlist.txt, modlist.txt)${NC}"
-echo -e "${CYAN}• Dangerous command detection (/stop, /clear-* commands)${NC}"
-echo -e "${CYAN}• Automatic banning of players using dangerous commands${NC}"
-echo -e "${CYAN}• Real-time monitoring and protection${NC}"
-echo ""
-
 print_header "MULTI-SERVER SUPPORT"
 echo -e "${GREEN}You can run multiple servers simultaneously:${NC}"
 echo -e "${CYAN}./server_manager.sh start WorldID1 12153${NC}"
 echo -e "${CYAN}./server_manager.sh start WorldID2 12154${NC}"
 echo -e "${CYAN}./server_manager.sh start WorldID3 12155${NC}"
 echo ""
-echo -e "${YELLOW}Each server runs in its own screen session with rank patcher and security features${NC}"
-
-print_header "SECURITY FEATURES USAGE"
-echo -e "${GREEN}To enable security features, run alongside your server:${NC}"
-echo -e "${CYAN}./security_features.sh PORT${NC}"
-echo -e "${YELLOW}Example: ./security_features.sh 12153${NC}"
-echo ""
-echo -e "${GREEN}For complete protection, run both:${NC}"
-echo -e "${CYAN}1. ./server_manager.sh start WorldID 12153${NC}"
-echo -e "${CYAN}2. ./security_features.sh 12153${NC}"
+echo -e "${YELLOW}Each server runs in its own screen session with rank patcher${NC}"
 
 print_header "INSTALLATION COMPLETE"
-echo -e "${GREEN}Your Blockheads server with rank management and security features is now ready!${NC}"
+echo -e "${GREEN}Your Blockheads server with rank management is now ready!${NC}"
