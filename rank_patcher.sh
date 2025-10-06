@@ -42,6 +42,119 @@ declare -A pending_ranks
 declare -A list_files_initialized
 declare -A disconnect_timers
 
+# =============================================================================
+# FUNCIÓN MEJORADA PARA DETECTAR NOMBRES INVÁLIDOS (MÍNIMO 3 CARACTERES)
+# =============================================================================
+
+is_valid_player_name() {
+    local name="$1"
+    
+    # Check for empty name or names with only spaces
+    if [[ -z "$name" ]] || [[ "$name" =~ ^[[:space:]]+$ ]]; then
+        return 1
+    fi
+    
+    # Check for null bytes or other control characters
+    if echo "$name" | grep -q -P "[\\x00-\\x1F\\x7F]"; then
+        return 1
+    fi
+    
+    # Check for spaces at beginning or end
+    if [[ "$name" =~ ^[[:space:]]+ ]] || [[ "$name" =~ [[:space:]]+$ ]]; then
+        return 1
+    fi
+    
+    # Check for internal spaces (nombres con espacios entre medio)
+    if [[ "$name" =~ [[:space:]] ]]; then
+        return 1
+    fi
+    
+    # Check for invalid characters (backslashes, slashes, and other problematic symbols)
+    if [[ "$name" =~ [\\\/\|\<\>\:\"\?\*] ]]; then
+        return 1
+    fi
+    
+    # Check for names that are too short (less than 3 characters after trimming)
+    local trimmed_name=$(echo "$name" | xargs)
+    if [ -z "$trimmed_name" ] || [ ${#trimmed_name} -lt 3 ]; then
+        return 1
+    fi
+    
+    # Check for names that are too long (more than 16 characters)
+    if [ ${#trimmed_name} -gt 16 ]; then
+        return 1
+    fi
+    
+    # Additional check: names should contain at least one non-space character
+    if ! [[ "$trimmed_name" =~ [^[:space:]] ]]; then
+        return 1
+    fi
+    
+    # Check for names that are only symbols or problematic patterns
+    if [[ "$trimmed_name" =~ ^[\\\/\|\<\>\:\"\?\*]+$ ]]; then
+        return 1
+    fi
+    
+    # Final check: only allow letters, numbers, and underscores
+    if ! [[ "$trimmed_name" =~ ^[a-zA-Z0-9_]+$ ]]; then
+        return 1
+    fi
+    
+    return 0
+}
+
+# Función para extraer el nombre real del formato del log
+extract_real_name() {
+    local name="$1"
+    # Remove any numeric prefix with bracket (e.g., "12345] ")
+    if [[ "$name" =~ ^[0-9]+\]\ (.+)$ ]]; then
+        echo "${BASH_REMATCH[1]}"
+    else
+        echo "$name"
+    fi
+}
+
+# Función para sanitizar nombres problemáticos para uso en comandos
+sanitize_name_for_command() {
+    local name="$1"
+    # Escape backslashes and other special characters
+    echo "$name" | sed 's/\\/\\\\/g; s/"/\\"/g; s/`/\\`/g; s/\$/\\$/g'
+}
+
+# Función para manejar nombres de jugadores inválidos
+handle_invalid_player_name() {
+    local player_name="$1" player_ip="$2" player_hash="${3:-unknown}"
+    
+    print_error "INVALID PLAYER NAME DETECTED: '$player_name' (IP: $player_ip, Hash: $player_hash)"
+    
+    # Sanitize the name for use in commands
+    local safe_name=$(sanitize_name_for_command "$player_name")
+    
+    # Send warning message
+    execute_server_command "WARNING: Invalid player name '$player_name'! Names must be 3-16 alphanumeric characters, no spaces/symbols. Banned for 10 seconds."
+    
+    # Ban and kick the player
+    if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
+        execute_server_command "/ban $player_ip"
+        execute_server_command "/kick \"$safe_name\""
+        print_warning "Banned invalid player name: '$player_name' (IP: $player_ip) for 10 seconds"
+        
+        # Schedule unban after 10 seconds
+        (
+            sleep 10
+            execute_server_command "/unban $player_ip"
+            print_success "Unbanned IP: $player_ip"
+        ) &
+    else
+        # Fallback: ban by name if IP is not available
+        execute_server_command "/ban \"$safe_name\""
+        execute_server_command "/kick \"$safe_name\""
+        print_warning "Banned invalid player name: '$player_name' (fallback to name ban)"
+    fi
+    
+    return 1
+}
+
 log_debug() {
     local message="$1"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
@@ -110,11 +223,6 @@ send_server_command() {
 
 screen_session_exists() {
     screen -list | grep -q "$1"
-}
-
-is_valid_player_name() {
-    local name="$1"
-    [[ "$name" =~ ^[a-zA-Z0-9_]{1,16}$ ]]
 }
 
 get_player_info() {
@@ -616,7 +724,7 @@ monitor_list_files() {
         fi
         
         if [ -f "$mod_list" ]; then
-            local current_mod_checksum=$(md5sum "$mod_list" 2>/dev/null | cut -d' ' -f1)
+            local current_mod_checksum=$(md5sum "$mod_list" 2>/dev/null | cut -d'|' -f1)
             if [ "$current_mod_checksum" != "$last_mod_checksum" ]; then
                 log_debug "Detected change in modlist.txt - forcing reload from players.log"
                 sleep 2
@@ -651,7 +759,7 @@ monitor_players_log() {
     
     while true; do
         if [ -f "$PLAYERS_LOG" ]; then
-            local current_checksum=$(md5sum "$PLAYERS_LOG" 2>/dev/null | cut -d' ' -f1)
+            local current_checksum=$(md5sum "$PLAYERS_LOG" 2>/dev/null | cut -d'|' -f1)
             
             if [ "$current_checksum" != "$last_checksum" ]; then
                 log_debug "Detected change in players.log - processing changes via server commands..."
@@ -999,76 +1107,85 @@ monitor_console_log() {
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
+            local player_hash="${BASH_REMATCH[3]}"
             
+            # Extraer y limpiar el nombre del jugador
+            player_name=$(extract_real_name "$player_name")
             player_name=$(echo "$player_name" | xargs)
             
-            if is_valid_player_name "$player_name" ]; then
-                cancel_disconnect_timer "$player_name"
-                cancel_super_disconnect_timer "$player_name"
+            # VERIFICAR NOMBRE INVÁLIDO - CAMBIO CLAVE
+            if ! is_valid_player_name "$player_name"; then
+                handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
+                continue  # Saltar el procesamiento adicional para este jugador
+            fi
+            
+            # Resto del procesamiento para nombres válidos...
+            cancel_disconnect_timer "$player_name"
+            cancel_super_disconnect_timer "$player_name"
+            
+            connected_players["$player_name"]=1
+            player_ip_map["$player_name"]="$player_ip"
+            
+            log_debug "Player connected: $player_name ($player_ip)"
+            
+            local player_info=$(get_player_info "$player_name")
+            if [ -z "$player_info" ]; then
+                log_debug "New player detected: $player_name, adding to players.log with IP: $player_ip"
+                update_player_info "$player_name" "$player_ip" "NONE" "NONE" "NO" "NO"
+                player_verification_status["$player_name"]="verified"
+                start_password_enforcement "$player_name"
+            else
+                local first_ip=$(echo "$player_info" | cut -d'|' -f1)
+                local password=$(echo "$player_info" | cut -d'|' -f2)
+                local rank=$(echo "$player_info" | cut -d'|' -f3)
+                local whitelisted=$(echo "$player_info" | cut -d'|' -f4)
                 
-                connected_players["$player_name"]=1
-                player_ip_map["$player_name"]="$player_ip"
+                log_debug "Existing player $player_name - First IP in DB: $first_ip, Current IP: $player_ip, Rank: $rank"
                 
-                log_debug "Player connected: $player_name ($player_ip)"
-                
-                local player_info=$(get_player_info "$player_name")
-                if [ -z "$player_info" ]; then
-                    log_debug "New player detected: $player_name, adding to players.log with IP: $player_ip"
-                    update_player_info "$player_name" "$player_ip" "NONE" "NONE" "NO" "NO"
+                if [ "$first_ip" = "UNKNOWN" ]; then
+                    log_debug "First real connection for $player_name, updating IP from UNKNOWN to $player_ip"
+                    update_player_info "$player_name" "$player_ip" "$password" "$rank" "$whitelisted" "NO"
                     player_verification_status["$player_name"]="verified"
-                    start_password_enforcement "$player_name"
+                elif [ "$first_ip" != "$player_ip" ]; then
+                    log_debug "IP changed for $player_name: $first_ip -> $player_ip, requiring verification - RANK WILL NOT BE APPLIED"
+                    player_verification_status["$player_name"]="pending"
+                    
+                    if [ "$rank" != "NONE" ]; then
+                        log_debug "Removing current rank $rank from $player_name until IP verification"
+                        apply_rank_changes "$player_name" "$rank" "NONE"
+                        pending_ranks["$player_name"]="$rank"
+                    fi
+                    
+                    start_ip_grace_timer "$player_name" "$player_ip"
                 else
-                    local first_ip=$(echo "$player_info" | cut -d'|' -f1)
-                    local password=$(echo "$player_info" | cut -d'|' -f2)
-                    local rank=$(echo "$player_info" | cut -d'|' -f3)
-                    local whitelisted=$(echo "$player_info" | cut -d'|' -f4)
-                    
-                    log_debug "Existing player $player_name - First IP in DB: $first_ip, Current IP: $player_ip, Rank: $rank"
-                    
-                    if [ "$first_ip" = "UNKNOWN" ]; then
-                        log_debug "First real connection for $player_name, updating IP from UNKNOWN to $player_ip"
-                        update_player_info "$player_name" "$player_ip" "$password" "$rank" "$whitelisted" "NO"
-                        player_verification_status["$player_name"]="verified"
-                    elif [ "$first_ip" != "$player_ip" ]; then
-                        log_debug "IP changed for $player_name: $first_ip -> $player_ip, requiring verification - RANK WILL NOT BE APPLIED"
-                        player_verification_status["$player_name"]="pending"
-                        
-                        if [ "$rank" != "NONE" ]; then
-                            log_debug "Removing current rank $rank from $player_name until IP verification"
-                            apply_rank_changes "$player_name" "$rank" "NONE"
-                            pending_ranks["$player_name"]="$rank"
-                        fi
-                        
-                        start_ip_grace_timer "$player_name" "$player_ip"
-                    else
-                        log_debug "IP matches for $player_name, marking as verified"
-                        player_verification_status["$player_name"]="verified"
-                    fi
-                    
-                    if [ "$password" = "NONE" ]; then
-                        log_debug "Existing player $player_name has no password, starting enforcement"
-                        start_password_enforcement "$player_name"
-                    fi
-                    
-                    if [ "${player_verification_status[$player_name]}" = "verified" ]; then
-                        log_debug "Starting 5-second rank application timer for verified player: $player_name"
-                        start_rank_application_timer "$player_name"
-                    else
-                        log_debug "Player $player_name not verified, rank application deferred"
-                    fi
+                    log_debug "IP matches for $player_name, marking as verified"
+                    player_verification_status["$player_name"]="verified"
                 fi
                 
-                log_debug "Forcing list reload due to player connection: $player_name"
-                sync_lists_from_players_log
+                if [ "$password" = "NONE" ]; then
+                    log_debug "Existing player $player_name has no password, starting enforcement"
+                    start_password_enforcement "$player_name"
+                fi
                 
+                if [ "${player_verification_status[$player_name]}" = "verified" ]; then
+                    log_debug "Starting 5-second rank application timer for verified player: $player_name"
+                    start_rank_application_timer "$player_name"
+                else
+                    log_debug "Player $player_name not verified, rank application deferred"
+                fi
             fi
+            
+            log_debug "Forcing list reload due to player connection: $player_name"
+            sync_lists_from_players_log
+            
         fi
         
         if [[ "$line" =~ Player\ Disconnected\ (.+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             player_name=$(echo "$player_name" | xargs)
             
-            if is_valid_player_name "$player_name" ]; then
+            # Verificar nombre válido antes de procesar desconexión
+            if is_valid_player_name "$player_name"; then
                 log_debug "Player disconnected: $player_name"
                 
                 cancel_player_timers "$player_name"
@@ -1093,7 +1210,8 @@ monitor_console_log() {
             
             player_name=$(echo "$player_name" | xargs)
             
-            if is_valid_player_name "$player_name" ]; then
+            # Verificar nombre válido antes de procesar mensajes
+            if is_valid_player_name "$player_name"; then
                 log_debug "IMMEDIATE: Chat command detected from $player_name: $message"
                 
                 case "$message" in
