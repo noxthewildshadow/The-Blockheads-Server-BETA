@@ -42,60 +42,46 @@ declare -A pending_ranks
 declare -A list_files_initialized
 declare -A disconnect_timers
 
-# =============================================================================
-# FUNCIÓN MEJORADA PARA DETECTAR NOMBRES INVÁLIDOS (MÍNIMO 3 CARACTERES)
-# =============================================================================
-
 is_valid_player_name() {
     local name="$1"
     
-    # Check for empty name or names with only spaces
     if [[ -z "$name" ]] || [[ "$name" =~ ^[[:space:]]+$ ]]; then
         return 1
     fi
     
-    # Check for null bytes or other control characters
     if echo "$name" | grep -q -P "[\\x00-\\x1F\\x7F]"; then
         return 1
     fi
     
-    # Check for spaces at beginning or end
     if [[ "$name" =~ ^[[:space:]]+ ]] || [[ "$name" =~ [[:space:]]+$ ]]; then
         return 1
     fi
     
-    # Check for internal spaces (nombres con espacios entre medio)
     if [[ "$name" =~ [[:space:]] ]]; then
         return 1
     fi
     
-    # Check for invalid characters (backslashes, slashes, and other problematic symbols)
     if [[ "$name" =~ [\\\/\|\<\>\:\"\?\*] ]]; then
         return 1
     fi
     
-    # Check for names that are too short (less than 3 characters after trimming)
     local trimmed_name=$(echo "$name" | xargs)
     if [ -z "$trimmed_name" ] || [ ${#trimmed_name} -lt 3 ]; then
         return 1
     fi
     
-    # Check for names that are too long (more than 16 characters)
     if [ ${#trimmed_name} -gt 16 ]; then
         return 1
     fi
     
-    # Additional check: names should contain at least one non-space character
     if ! [[ "$trimmed_name" =~ [^[:space:]] ]]; then
         return 1
     fi
     
-    # Check for names that are only symbols or problematic patterns
     if [[ "$trimmed_name" =~ ^[\\\/\|\<\>\:\"\?\*]+$ ]]; then
         return 1
     fi
     
-    # Final check: only allow letters, numbers, and underscores
     if ! [[ "$trimmed_name" =~ ^[a-zA-Z0-9_]+$ ]]; then
         return 1
     fi
@@ -103,10 +89,8 @@ is_valid_player_name() {
     return 0
 }
 
-# Función para extraer el nombre real del formato del log
 extract_real_name() {
     local name="$1"
-    # Remove any numeric prefix with bracket (e.g., "12345] ")
     if [[ "$name" =~ ^[0-9]+\]\ (.+)$ ]]; then
         echo "${BASH_REMATCH[1]}"
     else
@@ -114,43 +98,40 @@ extract_real_name() {
     fi
 }
 
-# Función para sanitizar nombres problemáticos para uso en comandos
 sanitize_name_for_command() {
     local name="$1"
-    # Escape backslashes and other special characters
     echo "$name" | sed 's/\\/\\\\/g; s/"/\\"/g; s/`/\\`/g; s/\$/\\$/g'
 }
 
-# Función para manejar nombres de jugadores inválidos
 handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="${3:-unknown}"
     
     print_error "INVALID PLAYER NAME DETECTED: '$player_name' (IP: $player_ip, Hash: $player_hash)"
     
-    # Sanitize the name for use in commands
     local safe_name=$(sanitize_name_for_command "$player_name")
     
-    # Send warning message
-    execute_server_command "WARNING: Invalid player name '$player_name'! Names must be 3-16 alphanumeric characters, no spaces/symbols. Banned for 10 seconds."
-    
-    # Ban and kick the player
-    if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
-        execute_server_command "/ban $player_ip"
-        execute_server_command "/kick \"$safe_name\""
-        print_warning "Banned invalid player name: '$player_name' (IP: $player_ip) for 10 seconds"
-        
-        # Schedule unban after 10 seconds
-        (
-            sleep 10
-            execute_server_command "/unban $player_ip"
-            print_success "Unbanned IP: $player_ip"
-        ) &
-    else
-        # Fallback: ban by name if IP is not available
-        execute_server_command "/ban \"$safe_name\""
-        execute_server_command "/kick \"$safe_name\""
-        print_warning "Banned invalid player name: '$player_name' (fallback to name ban)"
-    fi
+    (
+        sleep 3
+        execute_server_command "WARNING: Invalid player name '$player_name'! Names must be 3-16 alphanumeric characters, no spaces/symbols. You will be kicked in 3 seconds."
+
+        sleep 3
+
+        if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
+            execute_server_command "/ban $player_ip"
+            execute_server_command "/kick \"$safe_name\""
+            print_warning "Banned invalid player name: '$player_name' (IP: $player_ip) for 30 seconds"
+            
+            (
+                sleep 30
+                execute_server_command "/unban $player_ip"
+                print_success "Unbanned IP: $player_ip"
+            ) &
+        else
+            execute_server_command "/ban \"$safe_name\""
+            execute_server_command "/kick \"$safe_name\""
+            print_warning "Banned invalid player name: '$player_name' (fallback to name ban)"
+        fi
+    ) &
     
     return 1
 }
@@ -1109,17 +1090,14 @@ monitor_console_log() {
             local player_ip="${BASH_REMATCH[2]}"
             local player_hash="${BASH_REMATCH[3]}"
             
-            # Extraer y limpiar el nombre del jugador
             player_name=$(extract_real_name "$player_name")
             player_name=$(echo "$player_name" | xargs)
             
-            # VERIFICAR NOMBRE INVÁLIDO - CAMBIO CLAVE
             if ! is_valid_player_name "$player_name"; then
                 handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
-                continue  # Saltar el procesamiento adicional para este jugador
+                continue
             fi
             
-            # Resto del procesamiento para nombres válidos...
             cancel_disconnect_timer "$player_name"
             cancel_super_disconnect_timer "$player_name"
             
@@ -1184,7 +1162,6 @@ monitor_console_log() {
             local player_name="${BASH_REMATCH[1]}"
             player_name=$(echo "$player_name" | xargs)
             
-            # Verificar nombre válido antes de procesar desconexión
             if is_valid_player_name "$player_name"; then
                 log_debug "Player disconnected: $player_name"
                 
@@ -1210,7 +1187,6 @@ monitor_console_log() {
             
             player_name=$(echo "$player_name" | xargs)
             
-            # Verificar nombre válido antes de procesar mensajes
             if is_valid_player_name "$player_name"; then
                 log_debug "IMMEDIATE: Chat command detected from $player_name: $message"
                 
