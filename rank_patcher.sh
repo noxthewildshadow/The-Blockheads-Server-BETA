@@ -769,7 +769,7 @@ start_password_reminder_timer() {
                 local password=$(echo "$player_info" | cut -d'|' -f2)
                 if [ "$password" = "NONE" ]; then
                     log_debug "Sending password reminder to $player_name"
-                    execute_server_command "SECURITY: $player_name, please set your password with !psw PASSWORD CONFIRM_PASSWORD within 60 seconds or you will be kicked."
+                    execute_server_command "SECURITY: $player_name, set your password with !psw PASSWORD + CONFIRM_PASSWORD within 60 seconds."
                     player_password_reminder_sent["$player_name"]=1
                 fi
             fi
@@ -820,7 +820,7 @@ start_ip_grace_timer() {
                 local first_ip=$(echo "$player_info" | cut -d'|' -f1)
                 if [ "$first_ip" != "UNKNOWN" ] && [ "$first_ip" != "$current_ip" ]; then
                     log_debug "IP change detected for $player_name: $first_ip -> $current_ip"
-                    execute_server_command "SECURITY ALERT: $player_name, your IP has changed! Verify with !ip_change YOUR_PASSWORD within 25 seconds or you will be kicked and IP banned."
+                    execute_server_command "SECURITY ALERT: $player_name, your IP has changed! Verify with !ip_change + YOUR_PASSWORD within 25 seconds or you'll get a temporal ip ban for 30 seconds."
                     
                     sleep 25
                     if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" != "verified" ]; then
@@ -960,7 +960,7 @@ handle_ip_change() {
         cancel_player_timers "$player_name"
         
         log_debug "IP verification successful for $player_name - cancelling kick/ban IP cooldown"
-        execute_server_command "SECURITY: $player_name IP verification successful. Kick/ban IP cooldown cancelled."
+        execute_server_command "SECURITY: $player_name IP verification successful."
         
         log_debug "Applying pending ranks for $player_name after IP verification"
         apply_pending_ranks "$player_name"
@@ -969,7 +969,7 @@ handle_ip_change() {
         
         sync_lists_from_players_log
         
-        send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your IP has been verified and updated. All security restrictions lifted."
+        send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your IP has been verified and updated."
         return 0
     else
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, player not found in registry."
@@ -1106,7 +1106,7 @@ monitor_console_log() {
                             handle_password_creation "$player_name" "$password" "$confirm_password"
                         else
                             send_server_command "$SCREEN_SESSION" "/clear"
-                            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !psw PASSWORD CONFIRM_PASSWORD"
+                            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format! Use: !psw PASSWORD + CONFIRM_PASSWORD"
                         fi
                         ;;
                     "!change_psw "*)
@@ -1117,7 +1117,7 @@ monitor_console_log() {
                             handle_password_change "$player_name" "$old_password" "$new_password"
                         else
                             send_server_command "$SCREEN_SESSION" "/clear"
-                            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !change_psw OLD_PASSWORD NEW_PASSWORD"
+                            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format! Use: !change_psw OLD_PASSWORD NEW_PASSWORD"
                         fi
                         ;;
                     "!ip_change "*)
@@ -1127,7 +1127,7 @@ monitor_console_log() {
                             handle_ip_change "$player_name" "$password" "$current_ip"
                         else
                             send_server_command "$SCREEN_SESSION" "/clear"
-                            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format. Use: !ip_change YOUR_PASSWORD"
+                            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format! Use: !ip_change YOUR_PASSWORD"
                         fi
                         ;;
                 esac
