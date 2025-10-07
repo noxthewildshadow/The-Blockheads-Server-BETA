@@ -318,7 +318,7 @@ remove_player_rank() {
                 ;;
             "SUPER")
                 execute_server_command "/unadmin $player_name"
-                start_super_admin_cleanup_timer "$player_name"
+                handle_super_admin_disconnect "$player_name"
                 ;;
         esac
         
@@ -326,100 +326,75 @@ remove_player_rank() {
     fi
 }
 
-start_super_admin_cleanup_timer() {
+handle_super_admin_disconnect() {
     local player_name="$1"
     
-    log_debug "Starting 15-second SUPER admin cleanup timer for: $player_name"
+    log_debug "Handling SUPER admin disconnect for: $player_name"
     
     (
         sleep 15
-        log_debug "15-second SUPER admin cleanup timer completed for: $player_name"
-        remove_super_admin_from_cloud "$player_name"
-        unset super_admin_disconnect_timers["$player_name"]
-    ) &
-    
-    super_admin_disconnect_timers["$player_name"]=$!
-    log_debug "Started SUPER admin cleanup timer for $player_name (PID: ${super_admin_disconnect_timers[$player_name]})"
-}
-
-cancel_super_admin_cleanup_timer() {
-    local player_name="$1"
-    
-    if [ -n "${super_admin_disconnect_timers[$player_name]}" ]; then
-        local pid="${super_admin_disconnect_timers[$player_name]}"
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null
-            log_debug "Cancelled SUPER admin cleanup timer for $player_name (PID: $pid)"
-        fi
-        unset super_admin_disconnect_timers["$player_name"]
-    fi
-}
-
-remove_super_admin_from_cloud() {
-    local disconnected_player="$1"
-    local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
-    
-    if [ ! -f "$cloud_file" ]; then
-        log_debug "Cloud admin file not found, nothing to remove"
-        return
-    fi
-    
-    log_debug "Checking for other connected SUPER admins before removing $disconnected_player from cloud"
-    
-    local other_super_connected=0
-    for player in "${!connected_players[@]}"; do
-        if [ "$player" != "$disconnected_player" ]; then
-            local player_info=$(get_player_info "$player")
-            if [ -n "$player_info" ]; then
-                local rank=$(echo "$player_info" | cut -d'|' -f3)
-                if [ "$rank" = "SUPER" ]; then
-                    other_super_connected=1
-                    log_debug "Found other connected SUPER admin: $player"
-                    break
+        log_debug "15-second SUPER disconnect timer completed for: $player_name"
+        
+        local other_super_connected=0
+        for connected_player in "${!connected_players[@]}"; do
+            if [ "$connected_player" != "$player_name" ]; then
+                local player_info=$(get_player_info "$connected_player")
+                if [ -n "$player_info" ]; then
+                    local rank=$(echo "$player_info" | cut -d'|' -f3)
+                    if [ "$rank" = "SUPER" ]; then
+                        other_super_connected=1
+                        log_debug "Found other connected SUPER admin: $connected_player"
+                        break
+                    fi
                 fi
             fi
+        done
+        
+        if [ $other_super_connected -eq 1 ]; then
+            log_debug "Other SUPER admins connected, only removing $player_name from cloud admin"
+            remove_single_from_cloud_admin "$player_name"
+        else
+            log_debug "No other SUPER admins connected, removing cloud admin file"
+            remove_cloud_admin_file
         fi
-    done
-    
-    if [ $other_super_connected -eq 1 ]; then
-        log_debug "Other SUPER admins are connected, only removing $disconnected_player from cloud admin list"
-        remove_single_player_from_cloud "$disconnected_player"
-    else
-        log_debug "No other SUPER admins connected, removing entire cloud admin file"
-        remove_entire_cloud_file
-    fi
+    ) &
 }
 
-remove_single_player_from_cloud() {
+remove_single_from_cloud_admin() {
     local player_name="$1"
     local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
     
     if [ -f "$cloud_file" ]; then
         local temp_file=$(mktemp)
         
-        while IFS= read -r line; do
-            if [ "$line" != "$player_name" ]; then
-                echo "$line" >> "$temp_file"
+        if [ -s "$cloud_file" ]; then
+            local first_line=$(head -1 "$cloud_file")
+            [ -n "$first_line" ] && echo "$first_line" > "$temp_file"
+            
+            grep -v "^$player_name$" "$cloud_file" | tail -n +2 >> "$temp_file"
+            
+            if [ -s "$temp_file" ] && [ $(wc -l < "$temp_file") -gt 1 ]; then
+                mv "$temp_file" "$cloud_file"
+                log_debug "Removed $player_name from cloud admin list (other SUPER admins present)"
+            else
+                rm -f "$cloud_file"
+                log_debug "Removed cloud admin file (no SUPER admins left)"
             fi
-        done < "$cloud_file"
-        
-        if [ -s "$temp_file" ]; then
-            mv "$temp_file" "$cloud_file"
-            log_debug "Removed $player_name from cloud admin list, file preserved"
         else
             rm -f "$cloud_file"
-            rm -f "$temp_file"
-            log_debug "Cloud admin file removed (empty after removal)"
+            log_debug "Removed empty cloud admin file"
         fi
+        
+        rm -f "$temp_file"
     fi
 }
 
-remove_entire_cloud_file() {
+remove_cloud_admin_file() {
     local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
     
     if [ -f "$cloud_file" ]; then
         rm -f "$cloud_file"
-        log_debug "Removed entire cloud admin file"
+        log_debug "Removed cloud admin file (no connected SUPER admins)"
     fi
 }
 
@@ -494,6 +469,8 @@ force_reload_all_lists() {
         return
     fi
     
+    remove_cloud_admin_file
+    
     while IFS='|' read -r name first_ip password rank whitelisted blacklisted; do
         name=$(echo "$name" | xargs)
         first_ip=$(echo "$first_ip" | xargs)
@@ -502,30 +479,33 @@ force_reload_all_lists() {
         whitelisted=$(echo "$whitelisted" | xargs)
         blacklisted=$(echo "$blacklisted" | xargs)
         
-        if [ "$rank" != "NONE" ]; then
-            log_debug "Reloading player from players.log: $name (Rank: $rank)"
+        if [ -n "${connected_players[$name]}" ] && [ "${player_verification_status[$name]}" = "verified" ]; then
+            if [ "$rank" != "NONE" ]; then
+                log_debug "Reloading player from players.log: $name (Rank: $rank)"
+                
+                case "$rank" in
+                    "MOD")
+                        execute_server_command "/mod $name"
+                        ;;
+                    "ADMIN")
+                        execute_server_command "/admin $name"
+                        ;;
+                    "SUPER")
+                        execute_server_command "/admin $name"
+                        add_to_cloud_admin "$name"
+                        ;;
+                esac
+            fi
             
-            case "$rank" in
-                "MOD")
-                    execute_server_command "/mod $name"
-                    ;;
-                "ADMIN")
-                    execute_server_command "/admin $name"
-                    ;;
-                "SUPER")
-                    execute_server_command "/admin $name"
-                    ;;
-            esac
-        fi
-        
-        if [ "$whitelisted" = "YES" ] && [ "$first_ip" != "UNKNOWN" ]; then
-            execute_server_command "/whitelist $first_ip"
-        fi
-        
-        if [ "$blacklisted" = "YES" ]; then
-            execute_server_command "/ban $name"
-            if [ "$first_ip" != "UNKNOWN" ]; then
-                execute_server_command "/ban $first_ip"
+            if [ "$whitelisted" = "YES" ] && [ "$first_ip" != "UNKNOWN" ]; then
+                execute_server_command "/whitelist $first_ip"
+            fi
+            
+            if [ "$blacklisted" = "YES" ]; then
+                execute_server_command "/ban $name"
+                if [ "$first_ip" != "UNKNOWN" ]; then
+                    execute_server_command "/ban $first_ip"
+                fi
             fi
         fi
         
@@ -610,8 +590,8 @@ apply_pending_ranks() {
                 execute_server_command "/mod $player_name"
                 ;;
             "SUPER")
-                execute_server_command "/admin $player_name"
                 add_to_cloud_admin "$player_name"
+                execute_server_command "/admin $player_name"
                 ;;
         esac
         
@@ -651,7 +631,7 @@ apply_rank_changes() {
             ;;
         "SUPER")
             execute_server_command "/unadmin $player_name"
-            start_super_admin_cleanup_timer "$player_name"
+            handle_super_admin_disconnect "$player_name"
             ;;
     esac
     
@@ -664,8 +644,8 @@ apply_rank_changes() {
                 execute_server_command "/mod $player_name"
                 ;;
             "SUPER")
-                execute_server_command "/admin $player_name"
                 add_to_cloud_admin "$player_name"
+                execute_server_command "/admin $player_name"
                 ;;
         esac
     fi
@@ -678,6 +658,10 @@ add_to_cloud_admin() {
     local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
     
     [ ! -f "$cloud_file" ] && touch "$cloud_file"
+    
+    local first_line=$(head -1 "$cloud_file")
+    > "$cloud_file"
+    [ -n "$first_line" ] && echo "$first_line" >> "$cloud_file"
     
     if ! grep -q "^$player_name$" "$cloud_file" 2>/dev/null; then
         echo "$player_name" >> "$cloud_file"
@@ -705,7 +689,7 @@ handle_blacklist_change() {
                 "ADMIN"|"SUPER")
                     execute_server_command "/unadmin $player_name"
                     if [ "$rank" = "SUPER" ]; then
-                        start_super_admin_cleanup_timer "$player_name"
+                        handle_super_admin_disconnect "$player_name"
                     fi
                     ;;
             esac
@@ -887,7 +871,6 @@ cancel_player_timers() {
     fi
     
     cancel_disconnect_timer "$player_name"
-    cancel_super_admin_cleanup_timer "$player_name"
 }
 
 start_password_reminder_timer() {
@@ -1144,7 +1127,6 @@ monitor_console_log() {
             fi
             
             cancel_disconnect_timer "$player_name"
-            cancel_super_admin_cleanup_timer "$player_name"
             
             connected_players["$player_name"]=1
             player_ip_map["$player_name"]="$player_ip"
@@ -1296,22 +1278,8 @@ cleanup() {
         fi
     done
     
-    for player_name in "${!connect_timers[@]}"; do
-        local pid="${connect_timers[$player_name]}"
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null
-        fi
-    done
-    
     for player_name in "${!disconnect_timers[@]}"; do
         local pid="${disconnect_timers[$player_name]}"
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null
-        fi
-    done
-    
-    for player_name in "${!super_admin_disconnect_timers[@]}"; do
-        local pid="${super_admin_disconnect_timers[$player_name]}"
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
         fi
