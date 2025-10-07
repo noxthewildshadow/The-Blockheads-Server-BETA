@@ -42,6 +42,10 @@ declare -A pending_ranks
 declare -A list_files_initialized
 declare -A disconnect_timers
 
+# Contador para evitar comandos durante reinicios
+declare -A server_restart_cooldown
+SERVER_RESTART_COOLDOWN_TIME=10
+
 is_valid_player_name() {
     local name="$1"
     
@@ -182,16 +186,68 @@ setup_paths() {
     print_status "Screen session: $SCREEN_SESSION"
 }
 
+# Función mejorada para verificar si el servidor está listo
+is_server_ready() {
+    local screen_session="$1"
+    local max_attempts=30
+    local attempt=0
+    
+    while [ $attempt -lt $max_attempts ]; do
+        if screen -S "$screen_session" -X stuff "" 2>/dev/null; then
+            # Verificar si el servidor está en proceso de reinicio
+            if [ -n "${server_restart_cooldown[$screen_session]}" ]; then
+                local cooldown_end=${server_restart_cooldown[$screen_session]}
+                local current_time=$(date +%s)
+                if [ $current_time -lt $cooldown_end ]; then
+                    local remaining=$((cooldown_end - current_time))
+                    log_debug "Server $screen_session in cooldown, $remaining seconds remaining"
+                    sleep 1
+                    ((attempt++))
+                    continue
+                else
+                    unset server_restart_cooldown["$screen_session"]
+                fi
+            fi
+            return 0
+        fi
+        sleep 1
+        ((attempt++))
+    done
+    return 1
+}
+
+# Función mejorada para ejecutar comandos con protección contra reinicios
 execute_server_command() {
     local command="$1"
-    log_debug "Executing server command: $command"
-    send_server_command "$SCREEN_SESSION" "$command"
-    sleep 0.5
+    local max_retries=3
+    local retry=0
+    
+    while [ $retry -lt $max_retries ]; do
+        if is_server_ready "$SCREEN_SESSION"; then
+            log_debug "Executing server command: $command"
+            if send_server_command "$SCREEN_SESSION" "$command"; then
+                # Aumentar delay entre comandos para evitar saturación
+                sleep 3
+                return 0
+            else
+                log_debug "FAILED to send command (attempt $((retry+1))/$max_retries): $command"
+            fi
+        else
+            log_debug "Server not ready for command (attempt $((retry+1))/$max_retries): $command"
+        fi
+        
+        ((retry++))
+        sleep 2
+    done
+    
+    log_debug "Giving up on command after $max_retries attempts: $command"
+    return 1
 }
 
 send_server_command() {
     local screen_session="$1"
     local command="$2"
+    
     log_debug "Sending command to screen session $screen_session: $command"
     if screen -S "$screen_session" -p 0 -X stuff "$command$(printf \\r)" 2>/dev/null; then
         log_debug "Command sent successfully: $command"
@@ -883,6 +939,8 @@ start_password_kick_timer() {
                 local password=$(echo "$player_info" | cut -d'|' -f2)
                 if [ "$password" = "NONE" ]; then
                     log_debug "Kicking $player_name for not setting password within 60 seconds"
+                    # Añadir delay adicional antes del kick
+                    sleep 2
                     execute_server_command "/kick $player_name"
                 else
                     log_debug "Player $player_name set password, no kick needed"
@@ -1085,6 +1143,18 @@ monitor_console_log() {
     log_debug "Console log found, starting monitoring"
     
     tail -n 0 -F "$CONSOLE_LOG" | while read -r line; do
+        # Detectar reinicios del servidor y activar cooldown
+        if [[ "$line" =~ "Exiting due to exception" ]] || [[ "$line" =~ "Server closed normally" ]] || [[ "$line" =~ "Restarting in" ]]; then
+            log_debug "SERVER RESTART DETECTED - Activating command cooldown for $SERVER_RESTART_COOLDOWN_TIME seconds"
+            local cooldown_end=$(( $(date +%s) + $SERVER_RESTART_COOLDOWN_TIME ))
+            server_restart_cooldown["$SCREEN_SESSION"]=$cooldown_end
+        fi
+        
+        # Detectar que el servidor está listo después de reinicio
+        if [[ "$line" =~ "World load complete" ]] || [[ "$line" =~ "Server started" ]]; then
+            log_debug "Server ready detected, keeping cooldown for safety"
+        fi
+        
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
