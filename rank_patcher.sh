@@ -318,11 +318,40 @@ remove_player_rank() {
                 ;;
             "SUPER")
                 execute_server_command "/unadmin $player_name"
-                remove_super_admin_from_cloud "$player_name"
+                start_super_admin_cleanup_timer "$player_name"
                 ;;
         esac
         
         log_debug "Removed rank $rank for disconnected player: $player_name"
+    fi
+}
+
+start_super_admin_cleanup_timer() {
+    local player_name="$1"
+    
+    log_debug "Starting 15-second SUPER admin cleanup timer for: $player_name"
+    
+    (
+        sleep 15
+        log_debug "15-second SUPER admin cleanup timer completed for: $player_name"
+        remove_super_admin_from_cloud "$player_name"
+        unset super_admin_disconnect_timers["$player_name"]
+    ) &
+    
+    super_admin_disconnect_timers["$player_name"]=$!
+    log_debug "Started SUPER admin cleanup timer for $player_name (PID: ${super_admin_disconnect_timers[$player_name]})"
+}
+
+cancel_super_admin_cleanup_timer() {
+    local player_name="$1"
+    
+    if [ -n "${super_admin_disconnect_timers[$player_name]}" ]; then
+        local pid="${super_admin_disconnect_timers[$player_name]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            log_debug "Cancelled SUPER admin cleanup timer for $player_name (PID: $pid)"
+        fi
+        unset super_admin_disconnect_timers["$player_name"]
     fi
 }
 
@@ -485,7 +514,6 @@ force_reload_all_lists() {
                     ;;
                 "SUPER")
                     execute_server_command "/admin $name"
-                    add_to_cloud_admin "$name"
                     ;;
             esac
         fi
@@ -582,8 +610,8 @@ apply_pending_ranks() {
                 execute_server_command "/mod $player_name"
                 ;;
             "SUPER")
-                add_to_cloud_admin "$player_name"
                 execute_server_command "/admin $player_name"
+                add_to_cloud_admin "$player_name"
                 ;;
         esac
         
@@ -623,7 +651,7 @@ apply_rank_changes() {
             ;;
         "SUPER")
             execute_server_command "/unadmin $player_name"
-            remove_super_admin_from_cloud "$player_name"
+            start_super_admin_cleanup_timer "$player_name"
             ;;
     esac
     
@@ -636,42 +664,13 @@ apply_rank_changes() {
                 execute_server_command "/mod $player_name"
                 ;;
             "SUPER")
-                add_to_cloud_admin "$player_name"
                 execute_server_command "/admin $player_name"
+                add_to_cloud_admin "$player_name"
                 ;;
         esac
     fi
     
     execute_server_command "/load-lists"
-}
-
-start_super_disconnect_timer() {
-    local player_name="$1"
-    
-    log_debug "Starting 15-second SUPER disconnect timer for: $player_name"
-    
-    (
-        sleep 15
-        log_debug "15-second SUPER timer completed, removing from cloud admin: $player_name"
-        remove_super_admin_from_cloud "$player_name"
-        unset super_admin_disconnect_timers["$player_name"]
-    ) &
-    
-    super_admin_disconnect_timers["$player_name"]=$!
-    log_debug "Started SUPER disconnect timer for $player_name (PID: ${super_admin_disconnect_timers[$player_name]})"
-}
-
-cancel_super_disconnect_timer() {
-    local player_name="$1"
-    
-    if [ -n "${super_admin_disconnect_timers[$player_name]}" ]; then
-        local pid="${super_admin_disconnect_timers[$player_name]}"
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null
-            log_debug "Cancelled SUPER disconnect timer for $player_name (PID: $pid)"
-        fi
-        unset super_admin_disconnect_timers["$player_name"]
-    fi
 }
 
 add_to_cloud_admin() {
@@ -706,7 +705,7 @@ handle_blacklist_change() {
                 "ADMIN"|"SUPER")
                     execute_server_command "/unadmin $player_name"
                     if [ "$rank" = "SUPER" ]; then
-                        remove_super_admin_from_cloud "$player_name"
+                        start_super_admin_cleanup_timer "$player_name"
                     fi
                     ;;
             esac
@@ -888,7 +887,7 @@ cancel_player_timers() {
     fi
     
     cancel_disconnect_timer "$player_name"
-    cancel_super_disconnect_timer "$player_name"
+    cancel_super_admin_cleanup_timer "$player_name"
 }
 
 start_password_reminder_timer() {
@@ -1145,7 +1144,7 @@ monitor_console_log() {
             fi
             
             cancel_disconnect_timer "$player_name"
-            cancel_super_disconnect_timer "$player_name"
+            cancel_super_admin_cleanup_timer "$player_name"
             
             connected_players["$player_name"]=1
             player_ip_map["$player_name"]="$player_ip"
