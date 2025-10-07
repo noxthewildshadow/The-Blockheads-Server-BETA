@@ -41,7 +41,8 @@ declare -A super_admin_disconnect_timers
 declare -A pending_ranks
 declare -A list_files_initialized
 declare -A disconnect_timers
-declare -A last_command_timestamps
+declare -A last_command_time
+declare -A super_admins_connected
 
 is_valid_player_name() {
     local name="$1"
@@ -104,8 +105,25 @@ sanitize_name_for_command() {
     echo "$name" | sed 's/\\/\\\\/g; s/"/\\"/g; s/`/\\`/g; s/\$/\\$/g'
 }
 
+check_cooldown() {
+    local command_type="$1"
+    local current_time=$(date +%s)
+    local last_time=${last_command_time["$command_type"]:-0}
+    
+    if [ $((current_time - last_time)) -lt 3 ]; then
+        return 1
+    fi
+    
+    last_command_time["$command_type"]=$current_time
+    return 0
+}
+
 handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="${3:-unknown}"
+    
+    if ! check_cooldown "invalid_name"; then
+        return
+    fi
     
     print_error "INVALID PLAYER NAME DETECTED: '$player_name' (IP: $player_ip, Hash: $player_hash)"
     
@@ -187,29 +205,17 @@ setup_paths() {
     print_status "Screen session: $SCREEN_SESSION"
 }
 
-can_send_command() {
-    local command_type="$1"
-    local current_time=$(date +%s)
-    local last_time=${last_command_timestamps["$command_type"]:-0}
-    
-    if [ $((current_time - last_time)) -lt 3 ]; then
-        return 1
-    fi
-    
-    last_command_timestamps["$command_type"]=$current_time
-    return 0
-}
-
 execute_server_command() {
     local command="$1"
     
-    if ! can_send_command "generic"; then
-        log_debug "Command cooldown active, delaying: $command"
-        sleep 3
+    if ! check_cooldown "server_command"; then
+        log_debug "Command cooldown active, skipping: $command"
+        return
     fi
     
     log_debug "Executing server command: $command"
     send_server_command "$SCREEN_SESSION" "$command"
+    sleep 0.5
 }
 
 send_server_command() {
@@ -337,7 +343,7 @@ remove_player_rank() {
                 ;;
             "SUPER")
                 execute_server_command "/unadmin $player_name"
-                start_super_disconnect_timer "$player_name"
+                remove_super_admin_from_cloud "$player_name"
                 ;;
         esac
         
@@ -389,8 +395,9 @@ apply_rank_to_connected_player() {
             ;;
         "SUPER")
             execute_server_command "/admin $player_name"
-            add_to_cloud_admin "$player_name"
+            add_super_admin_to_cloud "$player_name"
             current_player_ranks["$player_name"]="$rank"
+            super_admins_connected["$player_name"]=1
             ;;
     esac
     
@@ -404,55 +411,6 @@ apply_rank_to_connected_player() {
             execute_server_command "/ban $current_ip"
         fi
     fi
-}
-
-force_reload_all_lists() {
-    log_debug "=== FORCING COMPLETE RELOAD OF ALL LISTS FROM PLAYERS.LOG ==="
-    
-    if [ ! -f "$PLAYERS_LOG" ]; then
-        log_debug "No players.log found, skipping reload"
-        return
-    fi
-    
-    while IFS='|' read -r name first_ip password rank whitelisted blacklisted; do
-        name=$(echo "$name" | xargs)
-        first_ip=$(echo "$first_ip" | xargs)
-        password=$(echo "$password" | xargs)
-        rank=$(echo "$rank" | xargs)
-        whitelisted=$(echo "$whitelisted" | xargs)
-        blacklisted=$(echo "$blacklisted" | xargs)
-        
-        if [ "$rank" != "NONE" ]; then
-            log_debug "Reloading player from players.log: $name (Rank: $rank)"
-            
-            case "$rank" in
-                "MOD")
-                    execute_server_command "/mod $name"
-                    ;;
-                "ADMIN")
-                    execute_server_command "/admin $name"
-                    ;;
-                "SUPER")
-                    execute_server_command "/admin $name"
-                    add_to_cloud_admin "$name"
-                    ;;
-            esac
-        fi
-        
-        if [ "$whitelisted" = "YES" ] && [ "$first_ip" != "UNKNOWN" ]; then
-            execute_server_command "/whitelist $first_ip"
-        fi
-        
-        if [ "$blacklisted" = "YES" ]; then
-            execute_server_command "/ban $name"
-            if [ "$first_ip" != "UNKNOWN" ]; then
-                execute_server_command "/ban $first_ip"
-            fi
-        fi
-        
-    done < "$PLAYERS_LOG"
-    
-    log_debug "=== COMPLETE RELOAD OF ALL LISTS FINISHED ==="
 }
 
 sync_lists_from_players_log() {
@@ -529,7 +487,7 @@ apply_pending_ranks() {
                 execute_server_command "/mod $player_name"
                 ;;
             "SUPER")
-                add_to_cloud_admin "$player_name"
+                add_super_admin_to_cloud "$player_name"
                 execute_server_command "/admin $player_name"
                 ;;
         esac
@@ -581,7 +539,7 @@ apply_rank_changes() {
                 execute_server_command "/mod $player_name"
                 ;;
             "SUPER")
-                add_to_cloud_admin "$player_name"
+                add_super_admin_to_cloud "$player_name"
                 execute_server_command "/admin $player_name"
                 ;;
         esac
@@ -595,31 +553,26 @@ start_super_disconnect_timer() {
     
     (
         sleep 10
-        log_debug "10-second SUPER timer completed, checking if should remove from cloud admin: $player_name"
+        log_debug "10-second SUPER timer completed, checking if other SUPER ADMINS are connected"
         
-        local should_remove=1
+        local other_super_connected=0
         for connected_player in "${!connected_players[@]}"; do
-            if [ "$connected_player" != "$player_name" ]; then
-                local player_info=$(get_player_info "$connected_player")
-                if [ -n "$player_info" ]; then
-                    local rank=$(echo "$player_info" | cut -d'|' -f3)
-                    if [ "$rank" = "SUPER" ]; then
-                        log_debug "Found another SUPER admin connected: $connected_player, keeping cloud file"
-                        should_remove=0
-                        break
-                    fi
-                fi
+            if [ "$connected_player" != "$player_name" ] && [ "${current_player_ranks[$connected_player]}" = "SUPER" ]; then
+                other_super_connected=1
+                break
             fi
         done
         
-        if [ $should_remove -eq 1 ]; then
-            log_debug "No other SUPER admins connected, removing from cloud admin: $player_name"
-            remove_from_cloud_admin "$player_name"
+        if [ $other_super_connected -eq 0 ]; then
+            log_debug "No other SUPER ADMINS connected, removing cloud admin file"
+            remove_cloud_admin_file
         else
-            log_debug "Other SUPER admins still connected, keeping cloud file"
+            log_debug "Other SUPER ADMINS are connected, only removing $player_name from cloud admin"
+            remove_super_admin_from_cloud "$player_name"
         fi
         
         unset super_admin_disconnect_timers["$player_name"]
+        unset super_admins_connected["$player_name"]
     ) &
     
     super_admin_disconnect_timers["$player_name"]=$!
@@ -639,15 +592,11 @@ cancel_super_disconnect_timer() {
     fi
 }
 
-add_to_cloud_admin() {
+add_super_admin_to_cloud() {
     local player_name="$1"
     local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
     
     [ ! -f "$cloud_file" ] && touch "$cloud_file"
-    
-    local first_line=$(head -1 "$cloud_file")
-    > "$cloud_file"
-    [ -n "$first_line" ] && echo "$first_line" >> "$cloud_file"
     
     if ! grep -q "^$player_name$" "$cloud_file" 2>/dev/null; then
         echo "$player_name" >> "$cloud_file"
@@ -655,25 +604,22 @@ add_to_cloud_admin() {
     fi
 }
 
-remove_from_cloud_admin() {
+remove_super_admin_from_cloud() {
     local player_name="$1"
     local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
     
     if [ -f "$cloud_file" ]; then
-        local first_line=$(head -1 "$cloud_file")
-        local temp_file=$(mktemp)
-        
-        [ -n "$first_line" ] && echo "$first_line" > "$temp_file"
-        grep -v "^$player_name$" "$cloud_file" | tail -n +2 >> "$temp_file"
-        
-        if [ $(wc -l < "$temp_file") -le 1 ] || [ $(wc -l < "$temp_file") -eq 1 -a -z "$first_line" ]; then
-            rm -f "$cloud_file"
-            log_debug "Removed cloud admin file (no super admins)"
-        else
-            mv "$temp_file" "$cloud_file"
-        fi
-        
+        grep -v "^$player_name$" "$cloud_file" > "${cloud_file}.tmp" && mv "${cloud_file}.tmp" "$cloud_file"
         log_debug "Removed $player_name from cloud admin list"
+    fi
+}
+
+remove_cloud_admin_file() {
+    local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
+    
+    if [ -f "$cloud_file" ]; then
+        rm -f "$cloud_file"
+        log_debug "Removed cloud admin file (no super admins connected)"
     fi
 }
 
@@ -697,7 +643,7 @@ handle_blacklist_change() {
                 "ADMIN"|"SUPER")
                     execute_server_command "/unadmin $player_name"
                     if [ "$rank" = "SUPER" ]; then
-                        start_super_disconnect_timer "$player_name"
+                        remove_super_admin_from_cloud "$player_name"
                     fi
                     ;;
             esac
@@ -716,6 +662,63 @@ handle_blacklist_change() {
             log_debug "Removed $player_name from blacklist via server commands"
         fi
     fi
+}
+
+force_reload_all_lists() {
+    log_debug "=== FORCING COMPLETE RELOAD OF ALL LISTS FROM PLAYERS.LOG (CONNECTED PLAYERS ONLY) ==="
+    
+    if [ ! -f "$PLAYERS_LOG" ]; then
+        log_debug "No players.log found, skipping reload"
+        return
+    fi
+    
+    while IFS='|' read -r name first_ip password rank whitelisted blacklisted; do
+        name=$(echo "$name" | xargs)
+        first_ip=$(echo "$first_ip" | xargs)
+        password=$(echo "$password" | xargs)
+        rank=$(echo "$rank" | xargs)
+        whitelisted=$(echo "$whitelisted" | xargs)
+        blacklisted=$(echo "$blacklisted" | xargs)
+        
+        if [ -z "${connected_players[$name]}" ]; then
+            continue
+        fi
+        
+        if [ "${player_verification_status[$name]}" != "verified" ]; then
+            continue
+        fi
+        
+        if [ "$rank" != "NONE" ]; then
+            log_debug "Reloading player from players.log: $name (Rank: $rank)"
+            
+            case "$rank" in
+                "MOD")
+                    execute_server_command "/mod $name"
+                    ;;
+                "ADMIN")
+                    execute_server_command "/admin $name"
+                    ;;
+                "SUPER")
+                    execute_server_command "/admin $name"
+                    add_super_admin_to_cloud "$name"
+                    ;;
+            esac
+        fi
+        
+        if [ "$whitelisted" = "YES" ] && [ "$first_ip" != "UNKNOWN" ]; then
+            execute_server_command "/whitelist $first_ip"
+        fi
+        
+        if [ "$blacklisted" = "YES" ]; then
+            execute_server_command "/ban $name"
+            if [ "$first_ip" != "UNKNOWN" ]; then
+                execute_server_command "/ban $first_ip"
+            fi
+        fi
+        
+    done < "$PLAYERS_LOG"
+    
+    log_debug "=== COMPLETE RELOAD OF ALL LISTS FINISHED (CONNECTED PLAYERS ONLY) ==="
 }
 
 monitor_list_files() {
@@ -980,6 +983,10 @@ start_password_enforcement() {
 handle_password_creation() {
     local player_name="$1" password="$2" confirm_password="$3"
     
+    if ! check_cooldown "password_create_$player_name"; then
+        return
+    fi
+    
     log_debug "IMMEDIATE: Password creation requested for $player_name"
     
     send_server_command "$SCREEN_SESSION" "/clear"
@@ -1026,6 +1033,10 @@ handle_password_creation() {
 handle_password_change() {
     local player_name="$1" old_password="$2" new_password="$3"
     
+    if ! check_cooldown "password_change_$player_name"; then
+        return
+    fi
+    
     log_debug "Password change requested for $player_name"
     
     send_server_command "$SCREEN_SESSION" "/clear"
@@ -1060,6 +1071,10 @@ handle_password_change() {
 
 handle_ip_change() {
     local player_name="$1" password="$2" current_ip="$3"
+    
+    if ! check_cooldown "ip_change_$player_name"; then
+        return
+    fi
     
     log_debug "IP change verification requested for $player_name"
     
