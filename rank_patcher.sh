@@ -318,11 +318,79 @@ remove_player_rank() {
                 ;;
             "SUPER")
                 execute_server_command "/unadmin $player_name"
-                remove_from_cloud_admin "$player_name"
+                remove_super_admin_from_cloud "$player_name"
                 ;;
         esac
         
         log_debug "Removed rank $rank for disconnected player: $player_name"
+    fi
+}
+
+remove_super_admin_from_cloud() {
+    local disconnected_player="$1"
+    local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
+    
+    if [ ! -f "$cloud_file" ]; then
+        log_debug "Cloud admin file not found, nothing to remove"
+        return
+    fi
+    
+    log_debug "Checking for other connected SUPER admins before removing $disconnected_player from cloud"
+    
+    local other_super_connected=0
+    for player in "${!connected_players[@]}"; do
+        if [ "$player" != "$disconnected_player" ]; then
+            local player_info=$(get_player_info "$player")
+            if [ -n "$player_info" ]; then
+                local rank=$(echo "$player_info" | cut -d'|' -f3)
+                if [ "$rank" = "SUPER" ]; then
+                    other_super_connected=1
+                    log_debug "Found other connected SUPER admin: $player"
+                    break
+                fi
+            fi
+        fi
+    done
+    
+    if [ $other_super_connected -eq 1 ]; then
+        log_debug "Other SUPER admins are connected, only removing $disconnected_player from cloud admin list"
+        remove_single_player_from_cloud "$disconnected_player"
+    else
+        log_debug "No other SUPER admins connected, removing entire cloud admin file"
+        remove_entire_cloud_file
+    fi
+}
+
+remove_single_player_from_cloud() {
+    local player_name="$1"
+    local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
+    
+    if [ -f "$cloud_file" ]; then
+        local temp_file=$(mktemp)
+        
+        while IFS= read -r line; do
+            if [ "$line" != "$player_name" ]; then
+                echo "$line" >> "$temp_file"
+            fi
+        done < "$cloud_file"
+        
+        if [ -s "$temp_file" ]; then
+            mv "$temp_file" "$cloud_file"
+            log_debug "Removed $player_name from cloud admin list, file preserved"
+        else
+            rm -f "$cloud_file"
+            rm -f "$temp_file"
+            log_debug "Cloud admin file removed (empty after removal)"
+        fi
+    fi
+}
+
+remove_entire_cloud_file() {
+    local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
+    
+    if [ -f "$cloud_file" ]; then
+        rm -f "$cloud_file"
+        log_debug "Removed entire cloud admin file"
     fi
 }
 
@@ -554,8 +622,8 @@ apply_rank_changes() {
             execute_server_command "/unmod $player_name"
             ;;
         "SUPER")
-            start_super_disconnect_timer "$player_name"
             execute_server_command "/unadmin $player_name"
+            remove_super_admin_from_cloud "$player_name"
             ;;
     esac
     
@@ -585,7 +653,7 @@ start_super_disconnect_timer() {
     (
         sleep 15
         log_debug "15-second SUPER timer completed, removing from cloud admin: $player_name"
-        remove_from_cloud_admin "$player_name"
+        remove_super_admin_from_cloud "$player_name"
         unset super_admin_disconnect_timers["$player_name"]
     ) &
     
@@ -612,35 +680,9 @@ add_to_cloud_admin() {
     
     [ ! -f "$cloud_file" ] && touch "$cloud_file"
     
-    local first_line=$(head -1 "$cloud_file")
-    > "$cloud_file"
-    [ -n "$first_line" ] && echo "$first_line" >> "$cloud_file"
-    
     if ! grep -q "^$player_name$" "$cloud_file" 2>/dev/null; then
         echo "$player_name" >> "$cloud_file"
         log_debug "Added $player_name to cloud admin list"
-    fi
-}
-
-remove_from_cloud_admin() {
-    local player_name="$1"
-    local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
-    
-    if [ -f "$cloud_file" ]; then
-        local first_line=$(head -1 "$cloud_file")
-        local temp_file=$(mktemp)
-        
-        [ -n "$first_line" ] && echo "$first_line" > "$temp_file"
-        grep -v "^$player_name$" "$cloud_file" | tail -n +2 >> "$temp_file"
-        
-        if [ $(wc -l < "$temp_file") -le 1 ] || [ $(wc -l < "$temp_file") -eq 1 -a -z "$first_line" ]; then
-            rm -f "$cloud_file"
-            log_debug "Removed cloud admin file (no super admins)"
-        else
-            mv "$temp_file" "$cloud_file"
-        fi
-        
-        log_debug "Removed $player_name from cloud admin list"
     fi
 }
 
@@ -664,7 +706,7 @@ handle_blacklist_change() {
                 "ADMIN"|"SUPER")
                     execute_server_command "/unadmin $player_name"
                     if [ "$rank" = "SUPER" ]; then
-                        remove_from_cloud_admin "$player_name"
+                        remove_super_admin_from_cloud "$player_name"
                     fi
                     ;;
             esac
