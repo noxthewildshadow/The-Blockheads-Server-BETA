@@ -41,10 +41,7 @@ declare -A super_admin_disconnect_timers
 declare -A pending_ranks
 declare -A list_files_initialized
 declare -A disconnect_timers
-
-# Contador para evitar comandos durante reinicios
-declare -A server_restart_cooldown
-SERVER_RESTART_COOLDOWN_TIME=10
+declare -A last_command_timestamps
 
 is_valid_player_name() {
     local name="$1"
@@ -116,7 +113,11 @@ handle_invalid_player_name() {
     
     (
         sleep 3
-        execute_server_command "WARNING: Invalid player name '$player_name'! Names must be 3-16 alphanumeric characters, no spaces/symbols. You will be kicked in 3 seconds."
+        execute_server_command "WARNING: Invalid player name '$player_name'! Names must be 3-16 alphanumeric characters, no spaces/symbols or nullbytes!"
+        
+        sleep 1
+        
+        execute_server_command "WARNING: You will be kicked and IP banned in 3 seconds for 60 seconds."
 
         sleep 3
 
@@ -126,7 +127,7 @@ handle_invalid_player_name() {
             print_warning "Banned invalid player name: '$player_name' (IP: $player_ip) for 30 seconds"
             
             (
-                sleep 30
+                sleep 60
                 execute_server_command "/unban $player_ip"
                 print_success "Unbanned IP: $player_ip"
             ) &
@@ -186,68 +187,34 @@ setup_paths() {
     print_status "Screen session: $SCREEN_SESSION"
 }
 
-# Función mejorada para verificar si el servidor está listo
-is_server_ready() {
-    local screen_session="$1"
-    local max_attempts=30
-    local attempt=0
+can_send_command() {
+    local command_type="$1"
+    local current_time=$(date +%s)
+    local last_time=${last_command_timestamps["$command_type"]:-0}
     
-    while [ $attempt -lt $max_attempts ]; do
-        if screen -S "$screen_session" -X stuff "" 2>/dev/null; then
-            # Verificar si el servidor está en proceso de reinicio
-            if [ -n "${server_restart_cooldown[$screen_session]}" ]; then
-                local cooldown_end=${server_restart_cooldown[$screen_session]}
-                local current_time=$(date +%s)
-                if [ $current_time -lt $cooldown_end ]; then
-                    local remaining=$((cooldown_end - current_time))
-                    log_debug "Server $screen_session in cooldown, $remaining seconds remaining"
-                    sleep 1
-                    ((attempt++))
-                    continue
-                else
-                    unset server_restart_cooldown["$screen_session"]
-                fi
-            fi
-            return 0
-        fi
-        sleep 1
-        ((attempt++))
-    done
-    return 1
+    if [ $((current_time - last_time)) -lt 3 ]; then
+        return 1
+    fi
+    
+    last_command_timestamps["$command_type"]=$current_time
+    return 0
 }
 
-# Función mejorada para ejecutar comandos con protección contra reinicios
 execute_server_command() {
     local command="$1"
-    local max_retries=3
-    local retry=0
     
-    while [ $retry -lt $max_retries ]; do
-        if is_server_ready "$SCREEN_SESSION"; then
-            log_debug "Executing server command: $command"
-            if send_server_command "$SCREEN_SESSION" "$command"; then
-                # Aumentar delay entre comandos para evitar saturación
-                sleep 3
-                return 0
-            else
-                log_debug "FAILED to send command (attempt $((retry+1))/$max_retries): $command"
-            fi
-        else
-            log_debug "Server not ready for command (attempt $((retry+1))/$max_retries): $command"
-        fi
-        
-        ((retry++))
-        sleep 2
-    done
+    if ! can_send_command "generic"; then
+        log_debug "Command cooldown active, delaying: $command"
+        sleep 3
+    fi
     
-    log_debug "Giving up on command after $max_retries attempts: $command"
-    return 1
+    log_debug "Executing server command: $command"
+    send_server_command "$SCREEN_SESSION" "$command"
 }
 
 send_server_command() {
     local screen_session="$1"
     local command="$2"
-    
     log_debug "Sending command to screen session $screen_session: $command"
     if screen -S "$screen_session" -p 0 -X stuff "$command$(printf \\r)" 2>/dev/null; then
         log_debug "Command sent successfully: $command"
@@ -370,7 +337,7 @@ remove_player_rank() {
                 ;;
             "SUPER")
                 execute_server_command "/unadmin $player_name"
-                remove_from_cloud_admin "$player_name"
+                start_super_disconnect_timer "$player_name"
                 ;;
         esac
         
@@ -437,8 +404,6 @@ apply_rank_to_connected_player() {
             execute_server_command "/ban $current_ip"
         fi
     fi
-    
-    execute_server_command "/load-lists"
 }
 
 force_reload_all_lists() {
@@ -486,8 +451,6 @@ force_reload_all_lists() {
         fi
         
     done < "$PLAYERS_LOG"
-    
-    execute_server_command "/load-lists"
     
     log_debug "=== COMPLETE RELOAD OF ALL LISTS FINISHED ==="
 }
@@ -574,8 +537,6 @@ apply_pending_ranks() {
         current_player_ranks["$player_name"]="$pending_rank"
         unset pending_ranks["$player_name"]
         log_debug "Successfully applied pending rank $pending_rank to $player_name"
-        
-        execute_server_command "/load-lists"
     fi
 }
 
@@ -625,19 +586,39 @@ apply_rank_changes() {
                 ;;
         esac
     fi
-    
-    execute_server_command "/load-lists"
 }
 
 start_super_disconnect_timer() {
     local player_name="$1"
     
-    log_debug "Starting 15-second SUPER disconnect timer for: $player_name"
+    log_debug "Starting 10-second SUPER disconnect timer for: $player_name"
     
     (
-        sleep 15
-        log_debug "15-second SUPER timer completed, removing from cloud admin: $player_name"
-        remove_from_cloud_admin "$player_name"
+        sleep 10
+        log_debug "10-second SUPER timer completed, checking if should remove from cloud admin: $player_name"
+        
+        local should_remove=1
+        for connected_player in "${!connected_players[@]}"; do
+            if [ "$connected_player" != "$player_name" ]; then
+                local player_info=$(get_player_info "$connected_player")
+                if [ -n "$player_info" ]; then
+                    local rank=$(echo "$player_info" | cut -d'|' -f3)
+                    if [ "$rank" = "SUPER" ]; then
+                        log_debug "Found another SUPER admin connected: $connected_player, keeping cloud file"
+                        should_remove=0
+                        break
+                    fi
+                fi
+            fi
+        done
+        
+        if [ $should_remove -eq 1 ]; then
+            log_debug "No other SUPER admins connected, removing from cloud admin: $player_name"
+            remove_from_cloud_admin "$player_name"
+        else
+            log_debug "Other SUPER admins still connected, keeping cloud file"
+        fi
+        
         unset super_admin_disconnect_timers["$player_name"]
     ) &
     
@@ -716,7 +697,7 @@ handle_blacklist_change() {
                 "ADMIN"|"SUPER")
                     execute_server_command "/unadmin $player_name"
                     if [ "$rank" = "SUPER" ]; then
-                        remove_from_cloud_admin "$player_name"
+                        start_super_disconnect_timer "$player_name"
                     fi
                     ;;
             esac
@@ -734,8 +715,6 @@ handle_blacklist_change() {
             fi
             log_debug "Removed $player_name from blacklist via server commands"
         fi
-        
-        execute_server_command "/load-lists"
     fi
 }
 
@@ -939,8 +918,6 @@ start_password_kick_timer() {
                 local password=$(echo "$player_info" | cut -d'|' -f2)
                 if [ "$password" = "NONE" ]; then
                     log_debug "Kicking $player_name for not setting password within 60 seconds"
-                    # Añadir delay adicional antes del kick
-                    sleep 2
                     execute_server_command "/kick $player_name"
                 else
                     log_debug "Player $player_name set password, no kick needed"
@@ -1143,18 +1120,6 @@ monitor_console_log() {
     log_debug "Console log found, starting monitoring"
     
     tail -n 0 -F "$CONSOLE_LOG" | while read -r line; do
-        # Detectar reinicios del servidor y activar cooldown
-        if [[ "$line" =~ "Exiting due to exception" ]] || [[ "$line" =~ "Server closed normally" ]] || [[ "$line" =~ "Restarting in" ]]; then
-            log_debug "SERVER RESTART DETECTED - Activating command cooldown for $SERVER_RESTART_COOLDOWN_TIME seconds"
-            local cooldown_end=$(( $(date +%s) + $SERVER_RESTART_COOLDOWN_TIME ))
-            server_restart_cooldown["$SCREEN_SESSION"]=$cooldown_end
-        fi
-        
-        # Detectar que el servidor está listo después de reinicio
-        if [[ "$line" =~ "World load complete" ]] || [[ "$line" =~ "Server started" ]]; then
-            log_debug "Server ready detected, keeping cooldown for safety"
-        fi
-        
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
