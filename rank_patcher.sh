@@ -441,6 +441,27 @@ cleanup_empty_lists_after_disconnect() {
         rm -f "$mod_list"
         log_debug "Removed modlist.txt (no verified mods connected)"
     fi
+    
+    # Para la lista cloud, usar la misma lógica que para adminlist
+    if [ $has_super_connected -eq 0 ]; then
+        remove_cloud_admin_file_if_empty
+    fi
+}
+
+remove_cloud_admin_file_if_empty() {
+    local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
+    
+    if [ -f "$cloud_file" ]; then
+        # Contar líneas válidas (excluyendo líneas vacías y la línea especial CREATE_LIST)
+        local valid_lines=$(grep -v -e '^$' -e '^CREATE_LIST$' "$cloud_file" | wc -l)
+        
+        if [ $valid_lines -eq 0 ]; then
+            rm -f "$cloud_file"
+            log_debug "Removed cloud admin file (no super admins left)"
+        else
+            log_debug "Cloud admin file still has $valid_lines valid super admin(s), keeping file"
+        fi
+    fi
 }
 
 cancel_disconnect_timer() {
@@ -462,7 +483,7 @@ remove_player_rank() {
     log_debug "Removing rank for disconnected player: $player_name"
     
     local player_info=$(get_player_info "$player_name")
-    if [ -n "$player_info" ]; then
+    if [ -n "$player_name" ]; then
         local rank=$(echo "$player_info" | cut -d'|' -f3)
         
         case "$rank" in
@@ -474,6 +495,9 @@ remove_player_rank() {
                 ;;
             "SUPER")
                 execute_server_command "/unadmin $player_name"
+                # Para SUPER, remover inmediatamente de la lista cloud
+                remove_from_cloud_admin "$player_name"
+                # Iniciar timer para verificar si hay otros SUPER admins
                 start_super_disconnect_timer "$player_name"
                 ;;
         esac
@@ -780,8 +804,8 @@ start_super_disconnect_timer() {
         done
         
         if [ $has_other_super_admins -eq 0 ]; then
-            log_debug "No other VERIFIED SUPER admins connected, removing from cloud admin: $player_name"
-            remove_from_cloud_admin "$player_name"
+            log_debug "No other VERIFIED SUPER admins connected, removing cloud admin file"
+            remove_cloud_admin_file_if_empty
         else
             log_debug "Other VERIFIED SUPER admins still connected, keeping cloud admin file"
         fi
@@ -812,10 +836,7 @@ add_to_cloud_admin() {
     
     [ ! -f "$cloud_file" ] && touch "$cloud_file"
     
-    local first_line=$(head -1 "$cloud_file")
-    > "$cloud_file"
-    [ -n "$first_line" ] && echo "$first_line" >> "$cloud_file"
-    
+    # Verificar si el jugador ya está en la lista
     if ! grep -q "^$player_name$" "$cloud_file" 2>/dev/null; then
         echo "$player_name" >> "$cloud_file"
         log_debug "Added $player_name to cloud admin list"
@@ -827,20 +848,20 @@ remove_from_cloud_admin() {
     local cloud_file="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/cloudWideOwnedAdminlist.txt"
     
     if [ -f "$cloud_file" ]; then
-        local first_line=$(head -1 "$cloud_file")
         local temp_file=$(mktemp)
         
-        [ -n "$first_line" ] && echo "$first_line" > "$temp_file"
-        grep -v "^$player_name$" "$cloud_file" | tail -n +2 >> "$temp_file"
+        # Filtrar el nombre del jugador, manteniendo todas las líneas excepto la del jugador específico
+        grep -v "^$player_name$" "$cloud_file" > "$temp_file"
         
-        if [ $(wc -l < "$temp_file") -le 1 ] || [ $(wc -l < "$temp_file") -eq 1 -a -z "$first_line" ]; then
-            rm -f "$cloud_file"
-            log_debug "Removed cloud admin file (no super admins)"
-        else
+        # Verificar si el archivo temporal tiene contenido
+        if [ -s "$temp_file" ]; then
             mv "$temp_file" "$cloud_file"
+            log_debug "Removed $player_name from cloud admin list"
+        else
+            rm -f "$cloud_file"
+            rm -f "$temp_file"
+            log_debug "Removed cloud admin file (no super admins left after removing $player_name)"
         fi
-        
-        log_debug "Removed $player_name from cloud admin list"
     fi
 }
 
