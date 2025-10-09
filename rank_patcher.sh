@@ -42,8 +42,12 @@ declare -A pending_ranks
 declare -A list_files_initialized
 declare -A disconnect_timers
 declare -A last_command_time
+declare -A list_cleanup_timers
+declare -A command_queue
+declare -A command_in_progress
 
-DEBUG_LOG_ENABLED=0  # Control para logs de debug
+DEBUG_LOG_ENABLED=0
+COMMAND_QUEUE_PROCESSING=0
 
 log_debug() {
     if [ $DEBUG_LOG_ENABLED -eq 1 ]; then
@@ -182,30 +186,57 @@ setup_paths() {
     print_status "Screen session: $SCREEN_SESSION"
 }
 
-execute_server_command() {
-    local command="$1"
-    local current_time=$(date +%s)
-    local last_time=${last_command_time["$SCREEN_SESSION"]:-0}
-    local time_diff=$((current_time - last_time))
-    
-    if [ $time_diff -lt 1 ]; then
-        local sleep_time=$((1 - time_diff))
-        sleep $sleep_time
-    fi
-    
-    log_debug "Executing server command: $command"
-    send_server_command "$SCREEN_SESSION" "$command"
-    last_command_time["$SCREEN_SESSION"]=$(date +%s)
-}
-
 send_server_command() {
     local screen_session="$1"
     local command="$2"
+    
     if screen -S "$screen_session" -p 0 -X stuff "$command$(printf \\r)" 2>/dev/null; then
         return 0
     else
+        print_error "Failed to send command to screen session: $screen_session"
         return 1
     fi
+}
+
+execute_server_command() {
+    local command="$1"
+    local max_retries=3
+    local retry_count=0
+    
+    while [ $retry_count -lt $max_retries ]; do
+        local current_time=$(date +%s)
+        local last_time=${last_command_time["$SCREEN_SESSION"]:-0}
+        local time_diff=$((current_time - last_time))
+        
+        if [ $time_diff -lt 1 ]; then
+            local sleep_time=$((1 - time_diff))
+            sleep $sleep_time
+        fi
+        
+        if send_server_command "$SCREEN_SESSION" "$command"; then
+            last_command_time["$SCREEN_SESSION"]=$(date +%s)
+            return 0
+        else
+            ((retry_count++))
+            if [ $retry_count -lt $max_retries ]; then
+                sleep 1
+            fi
+        fi
+    done
+    
+    print_error "Failed to execute server command after $max_retries attempts: $command"
+    return 1
+}
+
+safe_execute_command() {
+    local command="$1"
+    local description="$2"
+    
+    if ! execute_server_command "$command"; then
+        print_error "Failed to execute: $description - $command"
+        return 1
+    fi
+    return 0
 }
 
 screen_session_exists() {
@@ -257,6 +288,19 @@ start_rank_application_timer() {
     local player_name="$1"
     
     (
+        sleep 4
+        if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" = "verified" ]; then
+            local player_info=$(get_player_info "$player_name")
+            if [ -n "$player_info" ]; then
+                local rank=$(echo "$player_info" | cut -d'|' -f3)
+                if [ "$rank" != "NONE" ]; then
+                    create_list_if_needed "$rank"
+                fi
+            fi
+        fi
+    ) &
+    
+    (
         sleep 5
         if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" = "verified" ]; then
             apply_rank_to_connected_player "$player_name"
@@ -264,6 +308,36 @@ start_rank_application_timer() {
     ) &
     
     active_timers["rank_application_$player_name"]=$!
+}
+
+create_list_if_needed() {
+    local rank="$1"
+    
+    case "$rank" in
+        "MOD")
+            safe_execute_command "/mod CREATE_LIST" "Create MOD list with CREATE_LIST"
+            (
+                sleep 2
+                safe_execute_command "/unmod CREATE_LIST" "Remove CREATE_LIST from MOD list"
+            ) &
+            ;;
+        "ADMIN")
+            safe_execute_command "/admin CREATE_LIST" "Create ADMIN list with CREATE_LIST"
+            (
+                sleep 2
+                safe_execute_command "/unadmin CREATE_LIST" "Remove CREATE_LIST from ADMIN list"
+            ) &
+            ;;
+        "SUPER")
+            safe_execute_command "/admin CREATE_LIST" "Create ADMIN list with CREATE_LIST for SUPER"
+            add_to_cloud_admin "CREATE_LIST"
+            (
+                sleep 2
+                safe_execute_command "/unadmin CREATE_LIST" "Remove CREATE_LIST from ADMIN list for SUPER"
+                remove_from_cloud_admin "CREATE_LIST"
+            ) &
+            ;;
+    esac
 }
 
 start_disconnect_timer() {
@@ -299,13 +373,13 @@ remove_player_rank() {
         
         case "$rank" in
             "MOD")
-                execute_server_command "/unmod $player_name"
+                safe_execute_command "/unmod $player_name" "Remove MOD rank from $player_name"
                 ;;
             "ADMIN")
-                execute_server_command "/unadmin $player_name"
+                safe_execute_command "/unadmin $player_name" "Remove ADMIN rank from $player_name"
                 ;;
             "SUPER")
-                execute_server_command "/unadmin $player_name"
+                safe_execute_command "/unadmin $player_name" "Remove ADMIN rank from SUPER $player_name"
                 start_super_disconnect_timer "$player_name"
                 ;;
         esac
@@ -341,28 +415,28 @@ apply_rank_to_connected_player() {
     
     case "$rank" in
         "MOD")
-            execute_server_command "/mod $player_name"
+            safe_execute_command "/mod $player_name" "Apply MOD rank to $player_name"
             current_player_ranks["$player_name"]="$rank"
             ;;
         "ADMIN")
-            execute_server_command "/admin $player_name"
+            safe_execute_command "/admin $player_name" "Apply ADMIN rank to $player_name"
             current_player_ranks["$player_name"]="$rank"
             ;;
         "SUPER")
-            execute_server_command "/admin $player_name"
+            safe_execute_command "/admin $player_name" "Apply ADMIN rank to SUPER $player_name"
             add_to_cloud_admin "$player_name"
             current_player_ranks["$player_name"]="$rank"
             ;;
     esac
     
     if [ "$whitelisted" = "YES" ] && [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
-        execute_server_command "/whitelist $current_ip"
+        safe_execute_command "/whitelist $current_ip" "Whitelist IP $current_ip for $player_name"
     fi
     
     if [ "$blacklisted" = "YES" ]; then
-        execute_server_command "/ban $player_name"
+        safe_execute_command "/ban $player_name" "Ban blacklisted player $player_name"
         if [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
-            execute_server_command "/ban $current_ip"
+            safe_execute_command "/ban $current_ip" "Ban IP $current_ip for blacklisted player $player_name"
         fi
     fi
 }
@@ -415,7 +489,7 @@ sync_lists_from_players_log() {
         done < "$PLAYERS_LOG"
     fi
     
-    cleanup_empty_lists
+    schedule_list_cleanup
 }
 
 force_reload_all_lists() {
@@ -438,33 +512,33 @@ force_reload_all_lists() {
         if [ "$rank" != "NONE" ]; then
             case "$rank" in
                 "MOD")
-                    execute_server_command "/mod $name"
+                    safe_execute_command "/mod $name" "Force reload MOD rank for $name"
                     ;;
                 "ADMIN")
-                    execute_server_command "/admin $name"
+                    safe_execute_command "/admin $name" "Force reload ADMIN rank for $name"
                     ;;
                 "SUPER")
-                    execute_server_command "/admin $name"
+                    safe_execute_command "/admin $name" "Force reload ADMIN rank for SUPER $name"
                     add_to_cloud_admin "$name"
                     ;;
             esac
         fi
         
         if [ "$whitelisted" = "YES" ] && [ "$first_ip" != "UNKNOWN" ]; then
-            execute_server_command "/whitelist $first_ip"
+            safe_execute_command "/whitelist $first_ip" "Force whitelist IP $first_ip for $name"
         fi
         
         if [ "$blacklisted" = "YES" ]; then
-            execute_server_command "/ban $name"
+            safe_execute_command "/ban $name" "Force ban blacklisted player $name"
             if [ "$first_ip" != "UNKNOWN" ]; then
-                execute_server_command "/ban $first_ip"
+                safe_execute_command "/ban $first_ip" "Force ban IP $first_ip for blacklisted player $name"
             fi
         fi
         
     done < "$PLAYERS_LOG"
 }
 
-cleanup_empty_lists() {
+schedule_list_cleanup() {
     local world_dir="$BASE_SAVES_DIR/$WORLD_ID"
     local admin_list="$world_dir/adminlist.txt"
     local mod_list="$world_dir/modlist.txt"
@@ -487,15 +561,68 @@ cleanup_empty_lists() {
         fi
     done
     
+    if [ $has_admin_connected -eq 1 ]; then
+        cancel_list_cleanup_timer "admin"
+    fi
+    
+    if [ $has_mod_connected -eq 1 ]; then
+        cancel_list_cleanup_timer "mod"
+    fi
+    
     if [ $has_admin_connected -eq 0 ] && [ -f "$admin_list" ]; then
-        rm -f "$admin_list"
-        log_debug "Removed adminlist.txt (no admins connected)"
+        schedule_single_list_cleanup "admin" "$admin_list"
     fi
     
     if [ $has_mod_connected -eq 0 ] && [ -f "$mod_list" ]; then
-        rm -f "$mod_list"
-        log_debug "Removed modlist.txt (no mods connected)"
+        schedule_single_list_cleanup "mod" "$mod_list"
     fi
+}
+
+cancel_list_cleanup_timer() {
+    local list_type="$1"
+    
+    if [ -n "${list_cleanup_timers["$list_type"]}" ]; then
+        local pid="${list_cleanup_timers["$list_type"]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+        fi
+        unset list_cleanup_timers["$list_type"]
+    fi
+}
+
+schedule_single_list_cleanup() {
+    local list_type="$1"
+    local list_file="$2"
+    
+    if [ -n "${list_cleanup_timers["$list_type"]}" ]; then
+        return
+    fi
+    
+    (
+        sleep 10
+        local has_rank_connected=0
+        for player in "${!connected_players[@]}"; do
+            local player_info=$(get_player_info "$player")
+            if [ -n "$player_info" ]; then
+                local rank=$(echo "$player_info" | cut -d'|' -f3)
+                if [ "$list_type" = "admin" ] && { [ "$rank" = "ADMIN" ] || [ "$rank" = "SUPER" ]; }; then
+                    has_rank_connected=1
+                    break
+                elif [ "$list_type" = "mod" ] && [ "$rank" = "MOD" ]; then
+                    has_rank_connected=1
+                    break
+                fi
+            fi
+        done
+        
+        if [ $has_rank_connected -eq 0 ] && [ -f "$list_file" ]; then
+            rm -f "$list_file"
+        fi
+        
+        unset list_cleanup_timers["$list_type"]
+    ) &
+    
+    list_cleanup_timers["$list_type"]=$!
 }
 
 apply_pending_ranks() {
@@ -506,14 +633,14 @@ apply_pending_ranks() {
         
         case "$pending_rank" in
             "ADMIN")
-                execute_server_command "/admin $player_name"
+                safe_execute_command "/admin $player_name" "Apply pending ADMIN rank to $player_name"
                 ;;
             "MOD")
-                execute_server_command "/mod $player_name"
+                safe_execute_command "/mod $player_name" "Apply pending MOD rank to $player_name"
                 ;;
             "SUPER")
                 add_to_cloud_admin "$player_name"
-                execute_server_command "/admin $player_name"
+                safe_execute_command "/admin $player_name" "Apply pending ADMIN rank to SUPER $player_name"
                 ;;
         esac
         
@@ -526,9 +653,9 @@ handle_whitelist_change() {
     local player_name="$1" whitelisted="$2" current_ip="$3"
     
     if [ "$whitelisted" = "YES" ] && [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
-        execute_server_command "/whitelist $current_ip"
+        safe_execute_command "/whitelist $current_ip" "Whitelist IP $current_ip for $player_name"
     elif [ "$whitelisted" = "NO" ] && [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
-        execute_server_command "/unwhitelist $current_ip"
+        safe_execute_command "/unwhitelist $current_ip" "Remove IP $current_ip from whitelist for $player_name"
     fi
 }
 
@@ -537,28 +664,30 @@ apply_rank_changes() {
     
     case "$old_rank" in
         "ADMIN")
-            execute_server_command "/unadmin $player_name"
+            safe_execute_command "/unadmin $player_name" "Remove ADMIN rank from $player_name"
             ;;
         "MOD")
-            execute_server_command "/unmod $player_name"
+            safe_execute_command "/unmod $player_name" "Remove MOD rank from $player_name"
             ;;
         "SUPER")
             start_super_disconnect_timer "$player_name"
-            execute_server_command "/unadmin $player_name"
+            safe_execute_command "/unadmin $player_name" "Remove ADMIN rank from SUPER $player_name"
             ;;
     esac
+    
+    sleep 1
     
     if [ "$new_rank" != "NONE" ]; then
         case "$new_rank" in
             "ADMIN")
-                execute_server_command "/admin $player_name"
+                safe_execute_command "/admin $player_name" "Apply ADMIN rank to $player_name"
                 ;;
             "MOD")
-                execute_server_command "/mod $player_name"
+                safe_execute_command "/mod $player_name" "Apply MOD rank to $player_name"
                 ;;
             "SUPER")
                 add_to_cloud_admin "$player_name"
-                execute_server_command "/admin $player_name"
+                safe_execute_command "/admin $player_name" "Apply ADMIN rank to SUPER $player_name"
                 ;;
         esac
     fi
@@ -653,24 +782,24 @@ handle_blacklist_change() {
         if [ "$blacklisted" = "YES" ]; then
             case "$rank" in
                 "MOD")
-                    execute_server_command "/unmod $player_name"
+                    safe_execute_command "/unmod $player_name" "Remove MOD rank from blacklisted $player_name"
                     ;;
                 "ADMIN"|"SUPER")
-                    execute_server_command "/unadmin $player_name"
+                    safe_execute_command "/unadmin $player_name" "Remove ADMIN rank from blacklisted $player_name"
                     if [ "$rank" = "SUPER" ]; then
                         remove_from_cloud_admin "$player_name"
                     fi
                     ;;
             esac
             
-            execute_server_command "/ban $player_name"
+            safe_execute_command "/ban $player_name" "Ban blacklisted player $player_name"
             if [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
-                execute_server_command "/ban $current_ip"
+                safe_execute_command "/ban $current_ip" "Ban IP $current_ip for blacklisted player $player_name"
             fi
         else
-            execute_server_command "/unban $player_name"
+            safe_execute_command "/unban $player_name" "Unban player $player_name"
             if [ -n "$current_ip" ] && [ "$current_ip" != "UNKNOWN" ]; then
-                execute_server_command "/unban $current_ip"
+                safe_execute_command "/unban $current_ip" "Unban IP $current_ip for $player_name"
             fi
         fi
     fi
@@ -860,7 +989,7 @@ start_password_kick_timer() {
             if [ -n "$player_info" ]; then
                 local password=$(echo "$player_info" | cut -d'|' -f2)
                 if [ "$password" = "NONE" ]; then
-                    execute_server_command "/kick $player_name"
+                    safe_execute_command "/kick $player_name" "Kick $player_name for not setting password"
                 fi
             fi
         fi
@@ -886,12 +1015,12 @@ start_ip_grace_timer() {
                     execute_server_command "Else you'll get kicked and a temporal ip ban for 30 seconds."
                     sleep 25
                     if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" != "verified" ]; then
-                        execute_server_command "/kick $player_name"
-                        execute_server_command "/ban $current_ip"
+                        safe_execute_command "/kick $player_name" "Kick $player_name for failed IP verification"
+                        safe_execute_command "/ban $current_ip" "Temporarily ban IP $current_ip for failed verification"
                         
                         (
                             sleep 30
-                            execute_server_command "/unban $current_ip"
+                            safe_execute_command "/unban $current_ip" "Unban IP $current_ip after temporary ban"
                         ) &
                     fi
                 fi
@@ -912,7 +1041,7 @@ start_password_enforcement() {
 handle_password_creation() {
     local player_name="$1" password="$2" confirm_password="$3"
     
-    send_server_command "$SCREEN_SESSION" "/clear"
+    safe_execute_command "/clear" "Clear chat for password creation"
     
     if [ ${#password} -lt 7 ] || [ ${#password} -gt 16 ]; then
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, password must be between 7 and 16 characters."
@@ -947,7 +1076,7 @@ handle_password_creation() {
 handle_password_change() {
     local player_name="$1" old_password="$2" new_password="$3"
     
-    send_server_command "$SCREEN_SESSION" "/clear"
+    safe_execute_command "/clear" "Clear chat for password change"
     
     if [ ${#new_password} -lt 7 ] || [ ${#new_password} -gt 16 ]; then
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, new password must be between 7 and 16 characters."
@@ -980,7 +1109,7 @@ handle_password_change() {
 handle_ip_change() {
     local player_name="$1" password="$2" current_ip="$3"
     
-    send_server_command "$SCREEN_SESSION" "/clear"
+    safe_execute_command "/clear" "Clear chat for IP change verification"
     
     local player_info=$(get_player_info "$player_name")
     if [ -n "$player_info" ]; then
@@ -1026,6 +1155,7 @@ monitor_console_log() {
     done
     
     if [ ! -f "$CONSOLE_LOG" ]; then
+        print_error "Console log not found after 30 seconds: $CONSOLE_LOG"
         return 1
     fi
     
@@ -1123,7 +1253,7 @@ monitor_console_log() {
                             local confirm_password="${BASH_REMATCH[2]}"
                             handle_password_creation "$player_name" "$password" "$confirm_password"
                         else
-                            send_server_command "$SCREEN_SESSION" "/clear"
+                            safe_execute_command "/clear" "Clear chat for invalid password format"
                             send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format! Example of use: !psw Mypassword123 Mypassword123"
                         fi
                         ;;
@@ -1133,7 +1263,7 @@ monitor_console_log() {
                             local new_password="${BASH_REMATCH[2]}"
                             handle_password_change "$player_name" "$old_password" "$new_password"
                         else
-                            send_server_command "$SCREEN_SESSION" "/clear"
+                            safe_execute_command "/clear" "Clear chat for invalid password change format"
                             send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format! Use: !change_psw YOUR_OLD_PSW YOUR_NEW_PSW"
                         fi
                         ;;
@@ -1142,7 +1272,7 @@ monitor_console_log() {
                             local password="${BASH_REMATCH[1]}"
                             handle_ip_change "$player_name" "$password" "$current_ip"
                         else
-                            send_server_command "$SCREEN_SESSION" "/clear"
+                            safe_execute_command "/clear" "Clear chat for invalid IP change format"
                             send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format! Use: !ip_change YOUR_PASSWORD"
                         fi
                         ;;
@@ -1170,13 +1300,6 @@ cleanup() {
         fi
     done
     
-    for player_name in "${!connect_timers[@]}"; do
-        local pid="${connect_timers[$player_name]}"
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null
-        fi
-    done
-    
     for player_name in "${!disconnect_timers[@]}"; do
         local pid="${disconnect_timers[$player_name]}"
         if kill -0 "$pid" 2>/dev/null; then
@@ -1186,6 +1309,13 @@ cleanup() {
     
     for player_name in "${!super_admin_disconnect_timers[@]}"; do
         local pid="${super_admin_disconnect_timers[$player_name]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+        fi
+    done
+    
+    for list_type in "${!list_cleanup_timers[@]}"; do
+        local pid="${list_cleanup_timers[$list_type]}"
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
         fi
