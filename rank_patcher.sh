@@ -308,6 +308,27 @@ create_list_if_needed() {
     
     log_debug "Creating list for rank: $rank"
     
+    # Verificar si hay al menos un jugador VERIFICADO con este rango antes de crear la lista
+    local has_verified_player_with_rank=0
+    for player in "${!connected_players[@]}"; do
+        if [ "${player_verification_status[$player]}" = "verified" ]; then
+            local player_info=$(get_player_info "$player")
+            if [ -n "$player_info" ]; then
+                local player_rank=$(echo "$player_info" | cut -d'|' -f3)
+                if [ "$player_rank" = "$rank" ]; then
+                    has_verified_player_with_rank=1
+                    log_debug "Found verified player $player with rank $rank - will create list"
+                    break
+                fi
+            fi
+        fi
+    done
+    
+    if [ $has_verified_player_with_rank -eq 0 ]; then
+        log_debug "NO verified players with rank $rank connected - skipping list creation"
+        return
+    fi
+    
     case "$rank" in
         "MOD")
             local mod_list="$world_dir/modlist.txt"
@@ -377,10 +398,16 @@ cleanup_empty_lists_after_disconnect() {
     
     local has_admin_connected=0
     local has_mod_connected=0
+    local has_super_connected=0
     
-    # Verificar si hay otros jugadores conectados con los rangos
+    # Verificar si hay otros jugadores VERIFICADOS conectados con los rangos
     for player in "${!connected_players[@]}"; do
         if [ "$player" = "$disconnected_player" ]; then
+            continue
+        fi
+        
+        # Solo contar jugadores VERIFICADOS
+        if [ "${player_verification_status[$player]}" != "verified" ]; then
             continue
         fi
         
@@ -388,27 +415,31 @@ cleanup_empty_lists_after_disconnect() {
         if [ -n "$player_info" ]; then
             local rank=$(echo "$player_info" | cut -d'|' -f3)
             case "$rank" in
-                "ADMIN"|"SUPER")
+                "ADMIN")
                     has_admin_connected=1
                     ;;
                 "MOD")
                     has_mod_connected=1
                     ;;
+                "SUPER")
+                    has_admin_connected=1
+                    has_super_connected=1
+                    ;;
             esac
         fi
     done
     
-    log_debug "List cleanup check - Admin connected: $has_admin_connected, Mod connected: $has_mod_connected"
+    log_debug "List cleanup check - Admin connected: $has_admin_connected, Mod connected: $has_mod_connected, Super connected: $has_super_connected"
     
-    # Eliminar listas solo si no hay jugadores con ese rango conectados
+    # Eliminar listas solo si no hay jugadores VERIFICADOS con ese rango conectados
     if [ $has_admin_connected -eq 0 ] && [ -f "$admin_list" ]; then
         rm -f "$admin_list"
-        log_debug "Removed adminlist.txt (no admins connected)"
+        log_debug "Removed adminlist.txt (no verified admins connected)"
     fi
     
     if [ $has_mod_connected -eq 0 ] && [ -f "$mod_list" ]; then
         rm -f "$mod_list"
-        log_debug "Removed modlist.txt (no mods connected)"
+        log_debug "Removed modlist.txt (no verified mods connected)"
     fi
 }
 
@@ -726,17 +757,22 @@ start_super_disconnect_timer() {
     
     (
         sleep 10
-        log_debug "10-second SUPER timer completed, checking if other SUPER admins are connected"
+        log_debug "10-second SUPER timer completed, checking if other VERIFIED SUPER admins are connected"
         
         local has_other_super_admins=0
         for connected_player in "${!connected_players[@]}"; do
             if [ "$connected_player" != "$player_name" ]; then
+                # Solo contar jugadores VERIFICADOS
+                if [ "${player_verification_status[$connected_player]}" != "verified" ]; then
+                    continue
+                fi
+                
                 local player_info=$(get_player_info "$connected_player")
                 if [ -n "$player_info" ]; then
                     local rank=$(echo "$player_info" | cut -d'|' -f3)
                     if [ "$rank" = "SUPER" ]; then
                         has_other_super_admins=1
-                        log_debug "Found other SUPER admin connected: $connected_player"
+                        log_debug "Found other VERIFIED SUPER admin connected: $connected_player"
                         break
                     fi
                 fi
@@ -744,10 +780,10 @@ start_super_disconnect_timer() {
         done
         
         if [ $has_other_super_admins -eq 0 ]; then
-            log_debug "No other SUPER admins connected, removing from cloud admin: $player_name"
+            log_debug "No other VERIFIED SUPER admins connected, removing from cloud admin: $player_name"
             remove_from_cloud_admin "$player_name"
         else
-            log_debug "Other SUPER admins still connected, keeping cloud admin file"
+            log_debug "Other VERIFIED SUPER admins still connected, keeping cloud admin file"
         fi
         
         unset super_admin_disconnect_timers["$player_name"]
