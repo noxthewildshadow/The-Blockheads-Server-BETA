@@ -43,6 +43,7 @@ declare -A last_command_time
 declare -A list_cleanup_timers
 declare -A unverified_rank_players
 declare -A ip_verification_timers
+declare -A temp_banned_players
 
 DEBUG_LOG_ENABLED=1
 
@@ -306,13 +307,21 @@ start_ip_verification_timeout() {
         fi
         
         log_debug "IP verification timeout reached for $player_name, kicking and banning"
+        
+        # Marcar como baneado temporalmente para evitar creación de listas
+        temp_banned_players["$player_name"]=1
+        
         execute_server_command "/kick \"$player_name\""
         execute_server_command "/ban $current_ip"
+        
+        # Limpiar listas inmediatamente para el jugador no verificado
+        cleanup_lists_for_unverified_player "$player_name"
         
         # Programar desbaneo automático después de 30 segundos
         (
             sleep 30
             execute_server_command "/unban $current_ip"
+            unset temp_banned_players["$player_name"]
             log_debug "Auto-unbanned IP: $current_ip"
         ) &
         
@@ -416,6 +425,40 @@ write_cloud_adminlist() {
 # VERIFICACIÓN Y LIMPIEZA DE LISTAS PARA JUGADORES NO VERIFICADOS
 # =============================================================================
 
+cleanup_lists_for_unverified_player() {
+    local player_name="$1"
+    
+    log_debug "Cleaning up lists for unverified/banned player: $player_name"
+    
+    local player_info=$(get_player_info "$player_name")
+    if [ -z "$player_info" ]; then
+        log_debug "No player info found for $player_name, skipping list cleanup"
+        return
+    fi
+    
+    local rank=$(echo "$player_info" | cut -d'|' -f3)
+    
+    if [ "$rank" = "NONE" ]; then
+        log_debug "Player $player_name has no rank, skipping list cleanup"
+        return
+    fi
+    
+    log_debug "Cleaning up lists for unverified player: $player_name (Rank: $rank)"
+    
+    case "$rank" in
+        "MOD")
+            cleanup_modlist_if_no_verified_players "$player_name"
+            ;;
+        "ADMIN")
+            cleanup_adminlist_if_no_verified_players "$player_name"
+            ;;
+        "SUPER")
+            cleanup_adminlist_if_no_verified_players "$player_name"
+            cleanup_cloud_adminlist_if_no_verified_players "$player_name"
+            ;;
+    esac
+}
+
 check_and_cleanup_unverified_lists() {
     local player_name="$1"
     
@@ -448,18 +491,7 @@ check_and_cleanup_unverified_lists() {
         
         log_debug "Proceeding with list cleanup check for unverified player: $player_name (Rank: $rank)"
         
-        case "$rank" in
-            "MOD")
-                cleanup_modlist_if_no_verified_players "$player_name"
-                ;;
-            "ADMIN")
-                cleanup_adminlist_if_no_verified_players "$player_name"
-                ;;
-            "SUPER")
-                cleanup_adminlist_if_no_verified_players "$player_name"
-                cleanup_cloud_adminlist_if_no_verified_players "$player_name"
-                ;;
-        esac
+        cleanup_lists_for_unverified_player "$player_name"
     ) &
 }
 
@@ -664,6 +696,12 @@ apply_rank_to_connected_player() {
         return
     fi
     
+    # No aplicar rangos a jugadores baneados temporalmente
+    if [ -n "${temp_banned_players[$player_name]}" ]; then
+        log_debug "Player $player_name is temporarily banned, skipping rank application"
+        return
+    fi
+    
     local player_info=$(get_player_info "$player_name")
     if [ -z "$player_info" ]; then
         log_debug "No player info found for $player_name"
@@ -774,6 +812,12 @@ start_rank_application_timer() {
     log_debug "Starting rank application timer for: $player_name (Verification: ${player_verification_status[$player_name]})"
     
     if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" = "verified" ]; then
+        # No iniciar temporizador para jugadores baneados temporalmente
+        if [ -n "${temp_banned_players[$player_name]}" ]; then
+            log_debug "Player $player_name is temporarily banned, skipping rank application timer"
+            return
+        fi
+        
         local player_info=$(get_player_info "$player_name")
         if [ -n "$player_info" ]; then
             local rank=$(echo "$player_info" | cut -d'|' -f3)
@@ -784,6 +828,11 @@ start_rank_application_timer() {
                 (
                     sleep 5
                     if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" = "verified" ]; then
+                        # Verificar nuevamente si no está baneado temporalmente
+                        if [ -n "${temp_banned_players[$player_name]}" ]; then
+                            log_debug "Player $player_name is temporarily banned, cancelling rank application"
+                            return
+                        fi
                         log_debug "5-second timer completed, applying rank to verified player: $player_name"
                         apply_rank_to_connected_player "$player_name"
                     else
@@ -1262,7 +1311,7 @@ monitor_console_log() {
             local player_name="${BASH_REMATCH[1]}"
             player_name=$(echo "$player_name" | xargs)
             
-            if is_valid_player_name "$player_name"; then
+            if is_valid_player_name "$player_name" && [ -z "${temp_banned_players[$player_name]}" ]; then
                 log_debug "Player disconnected: $player_name"
                 
                 cancel_player_timers "$player_name"
@@ -1270,6 +1319,13 @@ monitor_console_log() {
                 log_debug "Starting disconnect timer for: $player_name"
                 start_disconnect_timer "$player_name"
                 
+                unset connected_players["$player_name"]
+                unset player_ip_map["$player_name"]
+                unset player_verification_status["$player_name"]
+                unset player_password_reminder_sent["$player_name"]
+                unset pending_ranks["$player_name"]
+            elif [ -n "${temp_banned_players[$player_name]}" ]; then
+                log_debug "Player $player_name disconnected due to temp ban, skipping disconnect timer"
                 unset connected_players["$player_name"]
                 unset player_ip_map["$player_name"]
                 unset player_verification_status["$player_name"]
