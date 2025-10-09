@@ -272,7 +272,7 @@ start_rank_application_timer() {
     
     log_debug "Starting rank application timer for: $player_name (Verification: ${player_verification_status[$player_name]})"
     
-    # Solo crear lista si el jugador está verificado
+    # SOLO crear lista y aplicar rango si el jugador está VERIFICADO
     if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" = "verified" ]; then
         local player_info=$(get_player_info "$player_name")
         if [ -n "$player_info" ]; then
@@ -280,26 +280,26 @@ start_rank_application_timer() {
             if [ "$rank" != "NONE" ]; then
                 log_debug "Player $player_name is verified with rank $rank, creating list if needed"
                 create_list_if_needed "$rank"
+                
+                # Paso 2: Esperar 5 segundos y aplicar el rango solo si está verificado
+                (
+                    sleep 5
+                    if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" = "verified" ]; then
+                        log_debug "5-second timer completed, applying rank to verified player: $player_name"
+                        apply_rank_to_connected_player "$player_name"
+                    else
+                        log_debug "5-second timer completed but player $player_name not verified or disconnected"
+                    fi
+                ) &
+                
+                active_timers["rank_application_$player_name"]=$!
             else
-                log_debug "Player $player_name is verified but has no rank, skipping list creation"
+                log_debug "Player $player_name is verified but has no rank, skipping rank application"
             fi
         fi
     else
-        log_debug "Player $player_name not verified or disconnected, skipping list creation"
+        log_debug "Player $player_name not verified or disconnected, skipping list creation AND rank application"
     fi
-    
-    # Paso 2: Esperar 5 segundos y aplicar el rango solo si está verificado
-    (
-        sleep 5
-        if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" = "verified" ]; then
-            log_debug "5-second timer completed, applying rank to verified player: $player_name"
-            apply_rank_to_connected_player "$player_name"
-        else
-            log_debug "5-second timer completed but player $player_name not verified or disconnected"
-        fi
-    ) &
-    
-    active_timers["rank_application_$player_name"]=$!
 }
 
 create_list_if_needed() {
@@ -533,6 +533,7 @@ sync_lists_from_players_log() {
                 continue
             fi
             
+            # IMPORTANTE: Solo aplicar rangos si el jugador está VERIFICADO
             if [ "${player_verification_status[$name]}" != "verified" ]; then
                 log_debug "SKIPPING rank application for $name - IP not verified (Status: ${player_verification_status[$name]})"
                 if [ "$rank" != "NONE" ]; then
@@ -591,6 +592,12 @@ force_reload_all_lists() {
             continue
         fi
         
+        # SOLO recargar rangos para jugadores VERIFICADOS
+        if [ "${player_verification_status[$name]}" != "verified" ]; then
+            log_debug "SKIPPING force reload for $name - not verified"
+            continue
+        fi
+        
         if [ "$rank" != "NONE" ]; then
             log_debug "Reloading player from players.log: $name (Rank: $rank)"
             
@@ -630,6 +637,12 @@ apply_pending_ranks() {
     if [ -n "${pending_ranks[$player_name]}" ]; then
         local pending_rank="${pending_ranks[$player_name]}"
         log_debug "Applying pending rank for $player_name: $pending_rank"
+        
+        # Solo aplicar rangos pendientes si el jugador está VERIFICADO
+        if [ "${player_verification_status[$player_name]}" != "verified" ]; then
+            log_debug "Cannot apply pending rank for $player_name - not verified"
+            return
+        fi
         
         case "$pending_rank" in
             "ADMIN")
@@ -685,6 +698,12 @@ apply_rank_changes() {
     sleep 1
     
     if [ "$new_rank" != "NONE" ]; then
+        # Solo aplicar nuevo rango si el jugador está VERIFICADO
+        if [ "${player_verification_status[$player_name]}" != "verified" ]; then
+            log_debug "Cannot apply new rank to $player_name - not verified"
+            return
+        fi
+        
         case "$new_rank" in
             "ADMIN")
                 execute_server_command "/admin $player_name"
@@ -1206,6 +1225,7 @@ handle_ip_change() {
         log_debug "Applying pending ranks for $player_name after IP verification"
         apply_pending_ranks "$player_name"
         
+        # Ahora iniciar el temporizador de aplicación de rango para el jugador verificado
         start_rank_application_timer "$player_name"
         
         sync_lists_from_players_log
@@ -1277,7 +1297,7 @@ monitor_console_log() {
                     update_player_info "$player_name" "$player_ip" "$password" "$rank" "$whitelisted" "NO"
                     player_verification_status["$player_name"]="verified"
                 elif [ "$first_ip" != "$player_ip" ]; then
-                    log_debug "IP changed for $player_name: $first_ip -> $player_ip, requiring verification - RANK WILL NOT BE APPLIED"
+                    log_debug "IP changed for $player_name: $first_ip -> $player_ip, requiring verification - NO SE APLICARÁ RANGO"
                     player_verification_status["$player_name"]="pending"
                     
                     if [ "$rank" != "NONE" ]; then
@@ -1297,11 +1317,12 @@ monitor_console_log() {
                     start_password_enforcement "$player_name"
                 fi
                 
+                # SOLO iniciar temporizador de rango si el jugador está VERIFICADO
                 if [ "${player_verification_status[$player_name]}" = "verified" ]; then
                     log_debug "Starting rank application timer for verified player: $player_name"
                     start_rank_application_timer "$player_name"
                 else
-                    log_debug "Player $player_name not verified, rank application deferred"
+                    log_debug "Player $player_name not verified, NO se iniciará temporizador de rango"
                 fi
             fi
             
