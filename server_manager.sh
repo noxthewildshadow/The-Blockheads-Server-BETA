@@ -62,6 +62,32 @@ free_port() {
     ! is_port_in_use "$port"
 }
 
+cleanup_server_lists() {
+    local world_id="$1"
+    local port="$2"
+    
+    print_step "Scheduled cleanup of adminlist.txt and modlist.txt in 5 seconds..."
+    
+    (
+        sleep 5
+        local world_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/$world_id"
+        local admin_list="$world_dir/adminlist.txt"
+        local mod_list="$world_dir/modlist.txt"
+        
+        if [ -f "$admin_list" ]; then
+            rm -f "$admin_list"
+            print_success "Cleaned up adminlist.txt for world $world_id"
+        fi
+        
+        if [ -f "$mod_list" ]; then
+            rm -f "$mod_list"
+            print_success "Cleaned up modlist.txt for world $world_id"
+        fi
+        
+        print_success "Server list cleanup completed for port $port"
+    ) &
+}
+
 start_server() {
     local world_id="$1"
     local port="${2:-$DEFAULT_PORT}"
@@ -134,6 +160,9 @@ EOF
         rm -f /tmp/start_server_$$.sh
         return 1
     fi
+    
+    # Programar limpieza de listas después de 5 segundos
+    cleanup_server_lists "$world_id" "$port"
     
     print_step "Waiting for server to start..."
     
