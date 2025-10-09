@@ -42,6 +42,7 @@ declare -A disconnect_timers
 declare -A last_command_time
 declare -A list_cleanup_timers
 declare -A unverified_rank_players
+declare -A ip_verification_timers
 
 DEBUG_LOG_ENABLED=1
 
@@ -261,31 +262,63 @@ verify_player_ip() {
     return 1
 }
 
-handle_ip_verification_required() {
+start_ip_verification_warning() {
     local player_name="$1" current_ip="$2"
     
-    log_debug "Starting IP verification process for $player_name"
-    
-    execute_server_command "SECURITY ALERT: $player_name, your IP has changed!"
-    sleep 1
-    execute_server_command "Verify with !ip_change YOUR_PASSWORD within 25 seconds!"
-    sleep 1
-    execute_server_command "Else you'll get kicked and temporary IP ban for 30 seconds."
+    log_debug "Starting IP verification warning timer for $player_name"
     
     (
-        sleep 25
-        if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" != "verified" ]; then
-            log_debug "IP verification failed for $player_name, kicking and banning"
-            execute_server_command "/kick \"$player_name\""
-            execute_server_command "/ban $current_ip"
-            
-            (
-                sleep 30
-                execute_server_command "/unban $current_ip"
-                log_debug "Auto-unbanned IP: $current_ip"
-            ) &
+        sleep 5  # Esperar 5 segundos antes de mostrar la advertencia
+        
+        # Verificar si el jugador sigue conectado y no verificado
+        if [ -z "${connected_players[$player_name]}" ] || [ "${player_verification_status[$player_name]}" = "verified" ]; then
+            log_debug "Player $player_name verified or disconnected, skipping IP verification warning"
+            return
         fi
+        
+        log_debug "Sending IP verification warning to $player_name"
+        execute_server_command "SECURITY ALERT: $player_name, your IP has changed!"
+        sleep 1
+        execute_server_command "Verify with !ip_change YOUR_PASSWORD within 25 seconds!"
+        sleep 1
+        execute_server_command "Else you'll get kicked and temporary IP ban for 30 seconds."
+        
+        # Iniciar temporizador de expiración de verificación (25 segundos)
+        start_ip_verification_timeout "$player_name" "$current_ip"
+        
     ) &
+    
+    ip_verification_timers["warning_$player_name"]=$!
+}
+
+start_ip_verification_timeout() {
+    local player_name="$1" current_ip="$2"
+    
+    log_debug "Starting IP verification timeout for $player_name (25 seconds)"
+    
+    (
+        sleep 25  # 25 segundos para verificar
+        
+        # Verificar si el jugador sigue conectado y no verificado
+        if [ -z "${connected_players[$player_name]}" ] || [ "${player_verification_status[$player_name]}" = "verified" ]; then
+            log_debug "Player $player_name verified or disconnected, skipping IP verification timeout"
+            return
+        fi
+        
+        log_debug "IP verification timeout reached for $player_name, kicking and banning"
+        execute_server_command "/kick \"$player_name\""
+        execute_server_command "/ban $current_ip"
+        
+        # Programar desbaneo automático después de 30 segundos
+        (
+            sleep 30
+            execute_server_command "/unban $current_ip"
+            log_debug "Auto-unbanned IP: $current_ip"
+        ) &
+        
+    ) &
+    
+    ip_verification_timers["timeout_$player_name"]=$!
 }
 
 # =============================================================================
@@ -439,9 +472,6 @@ cleanup_modlist_if_no_verified_players() {
         log_debug "modlist.txt doesn't exist, nothing to clean up"
         return
     fi
-    
-    # Leer la lista actual de mods
-    local current_mods=$(read_modlist)
     
     # Verificar si hay otros jugadores VERIFICADOS con rango MOD conectados
     local has_other_verified_mod=0
@@ -826,6 +856,18 @@ cancel_player_timers() {
         fi
     done
     
+    # Cancelar temporizadores de verificación de IP
+    for timer_key in "${!ip_verification_timers[@]}"; do
+        if [[ "$timer_key" == *"$player_name"* ]]; then
+            local pid="${ip_verification_timers[$timer_key]}"
+            if kill -0 "$pid" 2>/dev/null; then
+                kill "$pid" 2>/dev/null
+                log_debug "Cancelled IP verification timer $timer_key for $player_name (PID: $pid)"
+            fi
+            unset ip_verification_timers["$timer_key"]
+        fi
+    done
+    
     cancel_disconnect_timer "$player_name"
 }
 
@@ -1199,7 +1241,8 @@ monitor_console_log() {
                         check_and_cleanup_unverified_lists "$player_name"
                     fi
                     
-                    handle_ip_verification_required "$player_name" "$player_ip"
+                    # Iniciar advertencia de verificación de IP después de 5 segundos
+                    start_ip_verification_warning "$player_name" "$player_ip"
                 fi
                 
                 if [ "$password" = "NONE" ]; then
@@ -1291,6 +1334,13 @@ cleanup() {
     
     for player_name in "${!disconnect_timers[@]}"; do
         local pid="${disconnect_timers[$player_name]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+        fi
+    done
+    
+    for timer_key in "${!ip_verification_timers[@]}"; do
+        local pid="${ip_verification_timers[$timer_key]}"
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
         fi
