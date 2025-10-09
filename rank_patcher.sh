@@ -43,11 +43,10 @@ declare -A list_files_initialized
 declare -A disconnect_timers
 declare -A last_command_time
 declare -A list_cleanup_timers
-declare -A command_queue
-declare -A command_in_progress
+declare -A admin_players
+declare -A mod_players
 
 DEBUG_LOG_ENABLED=0
-COMMAND_QUEUE_PROCESSING=0
 
 log_debug() {
     if [ $DEBUG_LOG_ENABLED -eq 1 ]; then
@@ -186,18 +185,6 @@ setup_paths() {
     print_status "Screen session: $SCREEN_SESSION"
 }
 
-send_server_command() {
-    local screen_session="$1"
-    local command="$2"
-    
-    if screen -S "$screen_session" -p 0 -X stuff "$command$(printf \\r)" 2>/dev/null; then
-        return 0
-    else
-        print_error "Failed to send command to screen session: $screen_session"
-        return 1
-    fi
-}
-
 execute_server_command() {
     local command="$1"
     local max_retries=3
@@ -226,6 +213,18 @@ execute_server_command() {
     
     print_error "Failed to execute server command after $max_retries attempts: $command"
     return 1
+}
+
+send_server_command() {
+    local screen_session="$1"
+    local command="$2"
+    
+    if screen -S "$screen_session" -p 0 -X stuff "$command$(printf \\r)" 2>/dev/null; then
+        return 0
+    else
+        print_error "Failed to send command to screen session: $screen_session"
+        return 1
+    fi
 }
 
 safe_execute_command() {
@@ -284,6 +283,34 @@ update_player_info() {
     fi
 }
 
+create_list_if_needed() {
+    local rank="$1"
+    local world_dir="$BASE_SAVES_DIR/$WORLD_ID"
+    
+    case "$rank" in
+        "MOD")
+            local mod_list="$world_dir/modlist.txt"
+            if [ ! -f "$mod_list" ] || [ ! -s "$mod_list" ]; then
+                safe_execute_command "/mod CREATE_LIST" "Create MOD list with CREATE_LIST"
+                (
+                    sleep 2
+                    safe_execute_command "/unmod CREATE_LIST" "Remove CREATE_LIST from MOD list"
+                ) &
+            fi
+            ;;
+        "ADMIN"|"SUPER")
+            local admin_list="$world_dir/adminlist.txt"
+            if [ ! -f "$admin_list" ] || [ ! -s "$admin_list" ]; then
+                safe_execute_command "/admin CREATE_LIST" "Create ADMIN list with CREATE_LIST"
+                (
+                    sleep 2
+                    safe_execute_command "/unadmin CREATE_LIST" "Remove CREATE_LIST from ADMIN list"
+                ) &
+            fi
+            ;;
+    esac
+}
+
 start_rank_application_timer() {
     local player_name="$1"
     
@@ -310,42 +337,16 @@ start_rank_application_timer() {
     active_timers["rank_application_$player_name"]=$!
 }
 
-create_list_if_needed() {
-    local rank="$1"
-    
-    case "$rank" in
-        "MOD")
-            safe_execute_command "/mod CREATE_LIST" "Create MOD list with CREATE_LIST"
-            (
-                sleep 2
-                safe_execute_command "/unmod CREATE_LIST" "Remove CREATE_LIST from MOD list"
-            ) &
-            ;;
-        "ADMIN")
-            safe_execute_command "/admin CREATE_LIST" "Create ADMIN list with CREATE_LIST"
-            (
-                sleep 2
-                safe_execute_command "/unadmin CREATE_LIST" "Remove CREATE_LIST from ADMIN list"
-            ) &
-            ;;
-        "SUPER")
-            safe_execute_command "/admin CREATE_LIST" "Create ADMIN list with CREATE_LIST for SUPER"
-            add_to_cloud_admin "CREATE_LIST"
-            (
-                sleep 2
-                safe_execute_command "/unadmin CREATE_LIST" "Remove CREATE_LIST from ADMIN list for SUPER"
-                remove_from_cloud_admin "CREATE_LIST"
-            ) &
-            ;;
-    esac
-}
-
 start_disconnect_timer() {
     local player_name="$1"
     
     (
-        sleep 15
+        sleep 8
         remove_player_rank "$player_name"
+        
+        sleep 2
+        cleanup_empty_lists
+        
         unset disconnect_timers["$player_name"]
     ) &
     
@@ -374,15 +375,64 @@ remove_player_rank() {
         case "$rank" in
             "MOD")
                 safe_execute_command "/unmod $player_name" "Remove MOD rank from $player_name"
+                unset mod_players["$player_name"]
                 ;;
             "ADMIN")
                 safe_execute_command "/unadmin $player_name" "Remove ADMIN rank from $player_name"
+                unset admin_players["$player_name"]
                 ;;
             "SUPER")
                 safe_execute_command "/unadmin $player_name" "Remove ADMIN rank from SUPER $player_name"
+                unset admin_players["$player_name"]
                 start_super_disconnect_timer "$player_name"
                 ;;
         esac
+    fi
+}
+
+cleanup_empty_lists() {
+    local world_dir="$BASE_SAVES_DIR/$WORLD_ID"
+    local admin_list="$world_dir/adminlist.txt"
+    local mod_list="$world_dir/modlist.txt"
+    
+    # Solo eliminar adminlist.txt si no hay jugadores ADMIN/SUPER conectados
+    if [ ${#admin_players[@]} -eq 0 ] && [ -f "$admin_list" ]; then
+        # Verificar una vez más que no hay administradores conectados
+        local has_admin_connected=0
+        for player in "${!connected_players[@]}"; do
+            local player_info=$(get_player_info "$player")
+            if [ -n "$player_info" ]; then
+                local rank=$(echo "$player_info" | cut -d'|' -f3)
+                if [ "$rank" = "ADMIN" ] || [ "$rank" = "SUPER" ]; then
+                    has_admin_connected=1
+                    break
+                fi
+            fi
+        done
+        
+        if [ $has_admin_connected -eq 0 ]; then
+            rm -f "$admin_list"
+        fi
+    fi
+    
+    # Solo eliminar modlist.txt si no hay jugadores MOD conectados
+    if [ ${#mod_players[@]} -eq 0 ] && [ -f "$mod_list" ]; then
+        # Verificar una vez más que no hay moderadores conectados
+        local has_mod_connected=0
+        for player in "${!connected_players[@]}"; do
+            local player_info=$(get_player_info "$player")
+            if [ -n "$player_info" ]; then
+                local rank=$(echo "$player_info" | cut -d'|' -f3)
+                if [ "$rank" = "MOD" ]; then
+                    has_mod_connected=1
+                    break
+                fi
+            fi
+        done
+        
+        if [ $has_mod_connected -eq 0 ]; then
+            rm -f "$mod_list"
+        fi
     fi
 }
 
@@ -417,15 +467,18 @@ apply_rank_to_connected_player() {
         "MOD")
             safe_execute_command "/mod $player_name" "Apply MOD rank to $player_name"
             current_player_ranks["$player_name"]="$rank"
+            mod_players["$player_name"]=1
             ;;
         "ADMIN")
             safe_execute_command "/admin $player_name" "Apply ADMIN rank to $player_name"
             current_player_ranks["$player_name"]="$rank"
+            admin_players["$player_name"]=1
             ;;
         "SUPER")
             safe_execute_command "/admin $player_name" "Apply ADMIN rank to SUPER $player_name"
             add_to_cloud_admin "$player_name"
             current_player_ranks["$player_name"]="$rank"
+            admin_players["$player_name"]=1
             ;;
     esac
     
@@ -488,8 +541,6 @@ sync_lists_from_players_log() {
             
         done < "$PLAYERS_LOG"
     fi
-    
-    schedule_list_cleanup
 }
 
 force_reload_all_lists() {
@@ -513,13 +564,16 @@ force_reload_all_lists() {
             case "$rank" in
                 "MOD")
                     safe_execute_command "/mod $name" "Force reload MOD rank for $name"
+                    mod_players["$name"]=1
                     ;;
                 "ADMIN")
                     safe_execute_command "/admin $name" "Force reload ADMIN rank for $name"
+                    admin_players["$name"]=1
                     ;;
                 "SUPER")
                     safe_execute_command "/admin $name" "Force reload ADMIN rank for SUPER $name"
                     add_to_cloud_admin "$name"
+                    admin_players["$name"]=1
                     ;;
             esac
         fi
@@ -538,93 +592,6 @@ force_reload_all_lists() {
     done < "$PLAYERS_LOG"
 }
 
-schedule_list_cleanup() {
-    local world_dir="$BASE_SAVES_DIR/$WORLD_ID"
-    local admin_list="$world_dir/adminlist.txt"
-    local mod_list="$world_dir/modlist.txt"
-    
-    local has_admin_connected=0
-    local has_mod_connected=0
-    
-    for player in "${!connected_players[@]}"; do
-        local player_info=$(get_player_info "$player")
-        if [ -n "$player_info" ]; then
-            local rank=$(echo "$player_info" | cut -d'|' -f3)
-            case "$rank" in
-                "ADMIN"|"SUPER")
-                    has_admin_connected=1
-                    ;;
-                "MOD")
-                    has_mod_connected=1
-                    ;;
-            esac
-        fi
-    done
-    
-    if [ $has_admin_connected -eq 1 ]; then
-        cancel_list_cleanup_timer "admin"
-    fi
-    
-    if [ $has_mod_connected -eq 1 ]; then
-        cancel_list_cleanup_timer "mod"
-    fi
-    
-    if [ $has_admin_connected -eq 0 ] && [ -f "$admin_list" ]; then
-        schedule_single_list_cleanup "admin" "$admin_list"
-    fi
-    
-    if [ $has_mod_connected -eq 0 ] && [ -f "$mod_list" ]; then
-        schedule_single_list_cleanup "mod" "$mod_list"
-    fi
-}
-
-cancel_list_cleanup_timer() {
-    local list_type="$1"
-    
-    if [ -n "${list_cleanup_timers["$list_type"]}" ]; then
-        local pid="${list_cleanup_timers["$list_type"]}"
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null
-        fi
-        unset list_cleanup_timers["$list_type"]
-    fi
-}
-
-schedule_single_list_cleanup() {
-    local list_type="$1"
-    local list_file="$2"
-    
-    if [ -n "${list_cleanup_timers["$list_type"]}" ]; then
-        return
-    fi
-    
-    (
-        sleep 10
-        local has_rank_connected=0
-        for player in "${!connected_players[@]}"; do
-            local player_info=$(get_player_info "$player")
-            if [ -n "$player_info" ]; then
-                local rank=$(echo "$player_info" | cut -d'|' -f3)
-                if [ "$list_type" = "admin" ] && { [ "$rank" = "ADMIN" ] || [ "$rank" = "SUPER" ]; }; then
-                    has_rank_connected=1
-                    break
-                elif [ "$list_type" = "mod" ] && [ "$rank" = "MOD" ]; then
-                    has_rank_connected=1
-                    break
-                fi
-            fi
-        done
-        
-        if [ $has_rank_connected -eq 0 ] && [ -f "$list_file" ]; then
-            rm -f "$list_file"
-        fi
-        
-        unset list_cleanup_timers["$list_type"]
-    ) &
-    
-    list_cleanup_timers["$list_type"]=$!
-}
-
 apply_pending_ranks() {
     local player_name="$1"
     
@@ -634,13 +601,16 @@ apply_pending_ranks() {
         case "$pending_rank" in
             "ADMIN")
                 safe_execute_command "/admin $player_name" "Apply pending ADMIN rank to $player_name"
+                admin_players["$player_name"]=1
                 ;;
             "MOD")
                 safe_execute_command "/mod $player_name" "Apply pending MOD rank to $player_name"
+                mod_players["$player_name"]=1
                 ;;
             "SUPER")
                 add_to_cloud_admin "$player_name"
                 safe_execute_command "/admin $player_name" "Apply pending ADMIN rank to SUPER $player_name"
+                admin_players["$player_name"]=1
                 ;;
         esac
         
@@ -665,13 +635,16 @@ apply_rank_changes() {
     case "$old_rank" in
         "ADMIN")
             safe_execute_command "/unadmin $player_name" "Remove ADMIN rank from $player_name"
+            unset admin_players["$player_name"]
             ;;
         "MOD")
             safe_execute_command "/unmod $player_name" "Remove MOD rank from $player_name"
+            unset mod_players["$player_name"]
             ;;
         "SUPER")
             start_super_disconnect_timer "$player_name"
             safe_execute_command "/unadmin $player_name" "Remove ADMIN rank from SUPER $player_name"
+            unset admin_players["$player_name"]
             ;;
     esac
     
@@ -681,13 +654,16 @@ apply_rank_changes() {
         case "$new_rank" in
             "ADMIN")
                 safe_execute_command "/admin $player_name" "Apply ADMIN rank to $player_name"
+                admin_players["$player_name"]=1
                 ;;
             "MOD")
                 safe_execute_command "/mod $player_name" "Apply MOD rank to $player_name"
+                mod_players["$player_name"]=1
                 ;;
             "SUPER")
                 add_to_cloud_admin "$player_name"
                 safe_execute_command "/admin $player_name" "Apply ADMIN rank to SUPER $player_name"
+                admin_players["$player_name"]=1
                 ;;
         esac
     fi
@@ -783,9 +759,11 @@ handle_blacklist_change() {
             case "$rank" in
                 "MOD")
                     safe_execute_command "/unmod $player_name" "Remove MOD rank from blacklisted $player_name"
+                    unset mod_players["$player_name"]
                     ;;
                 "ADMIN"|"SUPER")
                     safe_execute_command "/unadmin $player_name" "Remove ADMIN rank from blacklisted $player_name"
+                    unset admin_players["$player_name"]
                     if [ "$rank" = "SUPER" ]; then
                         remove_from_cloud_admin "$player_name"
                     fi
