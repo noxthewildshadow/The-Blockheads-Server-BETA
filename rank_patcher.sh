@@ -54,6 +54,7 @@ declare -A list_files_initialized
 declare -A disconnect_timers
 declare -A last_command_time
 declare -A list_cleanup_timers
+declare -A rank_already_applied
 
 # Configuration
 DEBUG_LOG_ENABLED=1
@@ -74,38 +75,31 @@ log_debug() {
 is_valid_player_name() {
     local name="$1"
     
-    # Basic validation
     if [[ -z "$name" ]] || [[ "$name" =~ ^[[:space:]]+$ ]]; then
         return 1
     fi
     
-    # Check for control characters or null bytes
     if echo "$name" | grep -q -P "[\\x00-\\x1F\\x7F]"; then
         return 1
     fi
     
-    # Check for leading/trailing spaces
     if [[ "$name" =~ ^[[:space:]]+ ]] || [[ "$name" =~ [[:space:]]+$ ]]; then
         return 1
     fi
     
-    # Check for internal spaces
     if [[ "$name" =~ [[:space:]] ]]; then
         return 1
     fi
     
-    # Check for invalid characters
     if [[ "$name" =~ [\\\/\|\<\>\:\"\?\*] ]]; then
         return 1
     fi
     
-    # Length validation
     local trimmed_name=$(echo "$name" | xargs)
     if [ -z "$trimmed_name" ] || [ ${#trimmed_name} -lt 3 ] || [ ${#trimmed_name} -gt 16 ]; then
         return 1
     fi
     
-    # Alphanumeric and underscore validation
     if ! [[ "$trimmed_name" =~ ^[a-zA-Z0-9_]+$ ]]; then
         return 1
     fi
@@ -137,7 +131,6 @@ execute_server_command() {
     local last_time=${last_command_time["$SCREEN_SESSION"]:-0}
     local time_diff=$((current_time - last_time))
     
-    # Rate limiting
     if [ $time_diff -lt 1 ]; then
         local sleep_time=$((1 - time_diff))
         sleep $sleep_time
@@ -186,21 +179,18 @@ get_player_info() {
 update_player_info() {
     local player_name="$1" first_ip="$2" password="$3" rank="$4" whitelisted="${5:-NO}" blacklisted="${6:-NO}"
     
-    # Normalize inputs
     player_name=$(echo "$player_name" | tr '[:lower:]' '[:upper:]')
     first_ip=$(echo "$first_ip" | tr '[:lower:]' '[:upper:]')
     rank=$(echo "$rank" | tr '[:lower:]' '[:upper:]')
     whitelisted=$(echo "$whitelisted" | tr '[:lower:]' '[:upper:]')
     blacklisted=$(echo "$blacklisted" | tr '[:lower:]' '[:upper:]')
     
-    # Set defaults
     [ -z "$first_ip" ] && first_ip="UNKNOWN"
     [ -z "$password" ] && password="NONE"
     [ -z "$rank" ] && rank="NONE"
     [ -z "$whitelisted" ] && whitelisted="NO"
     [ -z "$blacklisted" ] && blacklisted="NO"
     
-    # Update players.log
     if [ -f "$PLAYERS_LOG" ]; then
         sed -i "/^$player_name|/Id" "$PLAYERS_LOG"
         echo "$player_name|$first_ip|$password|$rank|$whitelisted|$blacklisted" >> "$PLAYERS_LOG"
@@ -218,7 +208,6 @@ create_list_if_needed() {
     
     log_debug "Checking if list creation needed for rank: $rank"
     
-    # Check if there are any VERIFIED players with this rank
     local has_verified_player_with_rank=0
     for player in "${!connected_players[@]}"; do
         if [ "${player_verification_status[$player]}" = "verified" ]; then
@@ -250,6 +239,8 @@ create_list_if_needed() {
                     execute_server_command "/unmod CREATE_LIST"
                     log_debug "Removed CREATE_LIST from modlist"
                 ) &
+            else
+                log_debug "modlist.txt already exists"
             fi
             ;;
         "ADMIN"|"SUPER")
@@ -268,6 +259,8 @@ create_list_if_needed() {
                     fi
                     log_debug "Removed CREATE_LIST from adminlist"
                 ) &
+            else
+                log_debug "adminlist.txt already exists"
             fi
             ;;
     esac
@@ -320,7 +313,7 @@ remove_cloud_admin_file_if_empty() {
 }
 
 # =============================================================================
-# RANK APPLICATION LOGIC
+# RANK APPLICATION LOGIC - CORREGIDO
 # =============================================================================
 
 start_rank_application_timer() {
@@ -328,7 +321,7 @@ start_rank_application_timer() {
     
     log_debug "Starting rank application timer for: $player_name (Verification: ${player_verification_status[$player_name]})"
     
-    # Only create lists and apply ranks if player is VERIFIED
+    # Solo crear listas y aplicar rangos si el jugador está VERIFICADO
     if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" = "verified" ]; then
         local player_info=$(get_player_info "$player_name")
         if [ -n "$player_info" ]; then
@@ -337,7 +330,7 @@ start_rank_application_timer() {
                 log_debug "Player $player_name is verified with rank $rank, creating list if needed"
                 create_list_if_needed "$rank"
                 
-                # Step 2: Wait 1 second and apply rank only if verified
+                # Aplicar rango después de 1 segundo solo si está verificado
                 (
                     sleep 1
                     if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" = "verified" ]; then
@@ -383,21 +376,30 @@ apply_rank_to_connected_player() {
         return
     fi
     
+    # PREVENIR DOBLE APLICACIÓN - Verificar si el rango ya fue aplicado
+    if [ -n "${rank_already_applied[$player_name]}" ] && [ "${rank_already_applied[$player_name]}" = "$rank" ]; then
+        log_debug "Rank $rank already applied to $player_name, skipping duplicate application"
+        return
+    fi
+    
     log_debug "Applying rank to connected player: $player_name (Rank: $rank)"
     
     case "$rank" in
         "MOD")
             execute_server_command "/mod $player_name"
             current_player_ranks["$player_name"]="$rank"
+            rank_already_applied["$player_name"]="$rank"
             ;;
         "ADMIN")
             execute_server_command "/admin $player_name"
             current_player_ranks["$player_name"]="$rank"
+            rank_already_applied["$player_name"]="$rank"
             ;;
         "SUPER")
             execute_server_command "/admin $player_name"
             add_to_cloud_admin "$player_name"
             current_player_ranks["$player_name"]="$rank"
+            rank_already_applied["$player_name"]="$rank"
             ;;
     esac
     
@@ -405,7 +407,7 @@ apply_rank_to_connected_player() {
 }
 
 # =============================================================================
-# DISCONNECTION HANDLING
+# DISCONNECTION HANDLING - CORREGIDO
 # =============================================================================
 
 start_disconnect_timer() {
@@ -413,7 +415,7 @@ start_disconnect_timer() {
     
     log_debug "Starting disconnect timer for: $player_name (Verified: ${player_verification_status[$player_name]})"
     
-    # If player is NOT verified, cleanup lists immediately after 1 second
+    # Si el jugador NO está verificado, limpiar inmediatamente después de 1 segundo
     if [ "${player_verification_status[$player_name]}" != "verified" ]; then
         (
             sleep 1
@@ -424,7 +426,7 @@ start_disconnect_timer() {
         ) &
         disconnect_timers["$player_name"]=$!
     else
-        # For verified players, use the normal 15-second cooldown
+        # Para jugadores verificados, usar el cooldown normal de 15 segundos
         (
             sleep 10
             log_debug "10-second disconnect timer completed, removing rank for: $player_name"
@@ -462,6 +464,8 @@ remove_player_rank() {
                 ;;
         esac
         
+        # Limpiar estado de aplicación de rango
+        unset rank_already_applied["$player_name"]
         log_debug "Removed rank $rank for disconnected player: $player_name"
     fi
 }
@@ -476,13 +480,13 @@ cleanup_empty_lists_after_disconnect() {
     local has_mod_connected=0
     local has_super_connected=0
     
-    # Check if there are other VERIFIED connected players with ranks
+    # Verificar si hay otros jugadores VERIFICADOS conectados con rangos
     for player in "${!connected_players[@]}"; do
         if [ "$player" = "$disconnected_player" ]; then
             continue
         fi
         
-        # Only count VERIFIED players
+        # Solo contar jugadores VERIFICADOS
         if [ "${player_verification_status[$player]}" != "verified" ]; then
             continue
         fi
@@ -507,7 +511,7 @@ cleanup_empty_lists_after_disconnect() {
     
     log_debug "List cleanup check - Admin connected: $has_admin_connected, Mod connected: $has_mod_connected, Super connected: $has_super_connected"
     
-    # Remove lists only if no VERIFIED players with that rank are connected
+    # Eliminar listas solo si no hay jugadores VERIFICADOS con ese rango conectados
     if [ $has_admin_connected -eq 0 ] && [ -f "$admin_list" ]; then
         rm -f "$admin_list"
         log_debug "Removed adminlist.txt (no verified admins connected)"
@@ -537,7 +541,7 @@ cancel_disconnect_timer() {
 }
 
 # =============================================================================
-# PLAYER VERIFICATION AND PASSWORD MANAGEMENT
+# PLAYER VERIFICATION AND PASSWORD MANAGEMENT - CORREGIDO
 # =============================================================================
 
 apply_pending_ranks() {
@@ -547,7 +551,7 @@ apply_pending_ranks() {
         local pending_rank="${pending_ranks[$player_name]}"
         log_debug "Applying pending rank for $player_name: $pending_rank"
         
-        # Only apply pending ranks if player is VERIFIED
+        # Solo aplicar rangos pendientes si el jugador está VERIFICADO
         if [ "${player_verification_status[$player_name]}" != "verified" ]; then
             log_debug "Cannot apply pending rank for $player_name - not verified"
             return
@@ -567,6 +571,7 @@ apply_pending_ranks() {
         esac
         
         current_player_ranks["$player_name"]="$pending_rank"
+        rank_already_applied["$player_name"]="$pending_rank"
         unset pending_ranks["$player_name"]
         log_debug "Successfully applied pending rank $pending_rank to $player_name"
     fi
@@ -624,6 +629,7 @@ start_ip_grace_timer() {
             local player_info=$(get_player_info "$player_name")
             if [ -n "$player_info" ]; then
                 local first_ip=$(echo "$player_info" | cut -d'|' -f1)
+                # CORRECCIÓN: Comparación case-sensitive de IPs
                 if [ "$first_ip" != "UNKNOWN" ] && [ "$first_ip" != "$current_ip" ]; then
                     log_debug "IP change detected for $player_name: $first_ip -> $current_ip"
                     execute_server_command "SECURITY ALERT: $player_name, your IP has changed!"
@@ -643,6 +649,8 @@ start_ip_grace_timer() {
                             log_debug "Auto-unbanned IP: $current_ip"
                         ) &
                     fi
+                else
+                    log_debug "IP verification not needed for $player_name - IP matches or is UNKNOWN"
                 fi
             fi
         fi
@@ -667,7 +675,7 @@ handle_password_creation() {
     
     execute_server_command "/clear"
     
-    # Check if player already has a password
+    # Verificar si el jugador ya tiene una contraseña
     local player_info=$(get_player_info "$player_name")
     if [ -n "$player_info" ]; then
         local current_password=$(echo "$player_info" | cut -d'|' -f2)
@@ -678,7 +686,7 @@ handle_password_creation() {
         fi
     fi
     
-    # Password validation
+    # Validación de contraseña
     if [ ${#password} -lt 7 ] || [ ${#password} -gt 16 ]; then
         log_debug "Password validation failed: length invalid (${#password} chars)"
         send_server_command "$SCREEN_SESSION" "ERROR: $player_name, password must be between 7 and 16 characters."
@@ -779,9 +787,10 @@ handle_ip_change() {
         log_debug "Applying pending ranks for $player_name after IP verification"
         apply_pending_ranks "$player_name"
         
-        # Start rank application timer for verified player
+        # Iniciar temporizador de aplicación de rango para jugador verificado
         start_rank_application_timer "$player_name"
         
+        # SOLO sincronizar listas, no forzar recarga completa
         sync_lists_from_players_log
         
         send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your IP has been verified and updated."
@@ -801,7 +810,6 @@ cancel_player_timers() {
     
     log_debug "Cancelling all timers for player: $player_name"
     
-    # Cancel all types of timers
     local timer_types=("password_reminder" "password_kick" "ip_grace" "rank_application")
     
     for timer_type in "${timer_types[@]}"; do
@@ -820,18 +828,21 @@ cancel_player_timers() {
 }
 
 # =============================================================================
-# LIST SYNC AND MANAGEMENT
+# LIST SYNC AND MANAGEMENT - CORREGIDO
 # =============================================================================
 
 sync_lists_from_players_log() {
     log_debug "Syncing lists from players.log"
     
+    # EVITAR RE-SINCRONIZACIÓN EXCESIVA - Solo forzar recarga completa la primera vez
     if [ -z "${list_files_initialized["$WORLD_ID"]}" ]; then
         log_debug "First sync for world $WORLD_ID, forcing complete reload"
         force_reload_all_lists
         list_files_initialized["$WORLD_ID"]=1
+        return
     fi
     
+    # Para sincronizaciones posteriores, solo procesar cambios
     if [ -f "$PLAYERS_LOG" ]; then
         while IFS='|' read -r name first_ip password rank whitelisted blacklisted; do
             name=$(echo "$name" | xargs)
@@ -841,7 +852,7 @@ sync_lists_from_players_log() {
                 continue
             fi
             
-            # Only apply ranks if player is VERIFIED
+            # Solo aplicar rangos si el jugador está VERIFICADO
             if [ "${player_verification_status[$name]}" != "verified" ]; then
                 if [ "$rank" != "NONE" ]; then
                     pending_ranks["$name"]="$rank"
@@ -876,7 +887,7 @@ force_reload_all_lists() {
             continue
         fi
         
-        # Only reload ranks for VERIFIED players
+        # Solo recargar rangos para jugadores VERIFICADOS
         if [ "${player_verification_status[$name]}" != "verified" ]; then
             continue
         fi
@@ -884,18 +895,8 @@ force_reload_all_lists() {
         if [ "$rank" != "NONE" ]; then
             log_debug "Reloading player from players.log: $name (Rank: $rank)"
             
-            case "$rank" in
-                "MOD")
-                    execute_server_command "/mod $name"
-                    ;;
-                "ADMIN")
-                    execute_server_command "/admin $name"
-                    ;;
-                "SUPER")
-                    execute_server_command "/admin $name"
-                    add_to_cloud_admin "$name"
-                    ;;
-            esac
+            # Usar la función de aplicación de rango que previene duplicados
+            apply_rank_to_connected_player "$name"
         fi
         
     done < "$PLAYERS_LOG"
@@ -906,7 +907,7 @@ apply_rank_changes() {
     
     log_debug "Applying rank change: $player_name from $old_rank to $new_rank"
     
-    # Remove old rank
+    # Remover rango antiguo
     case "$old_rank" in
         "ADMIN")
             execute_server_command "/unadmin $player_name"
@@ -922,18 +923,27 @@ apply_rank_changes() {
     
     sleep 1
     
-    # Apply new rank if player is verified
+    # Aplicar nuevo rango si el jugador está verificado
     if [ "$new_rank" != "NONE" ] && [ "${player_verification_status[$player_name]}" = "verified" ]; then
+        # Limpiar estado de aplicación previa
+        unset rank_already_applied["$player_name"]
+        
         case "$new_rank" in
             "ADMIN")
                 execute_server_command "/admin $player_name"
+                current_player_ranks["$player_name"]="$new_rank"
+                rank_already_applied["$player_name"]="$new_rank"
                 ;;
             "MOD")
                 execute_server_command "/mod $player_name"
+                current_player_ranks["$player_name"]="$new_rank"
+                rank_already_applied["$player_name"]="$new_rank"
                 ;;
             "SUPER")
                 add_to_cloud_admin "$player_name"
                 execute_server_command "/admin $player_name"
+                current_player_ranks["$player_name"]="$new_rank"
+                rank_already_applied["$player_name"]="$new_rank"
                 ;;
         esac
     fi
@@ -979,7 +989,7 @@ handle_invalid_player_name() {
 }
 
 # =============================================================================
-# MONITORING FUNCTIONS
+# MONITORING FUNCTIONS - CORREGIDO
 # =============================================================================
 
 monitor_players_log() {
@@ -1078,7 +1088,6 @@ monitor_console_log() {
     print_header "STARTING CONSOLE LOG MONITOR"
     log_debug "Starting console log monitor"
     
-    # Wait for console.log to be created
     local wait_time=0
     while [ ! -f "$CONSOLE_LOG" ] && [ $wait_time -lt 30 ]; do
         sleep 1
@@ -1094,7 +1103,7 @@ monitor_console_log() {
     log_debug "Console log found, starting monitoring"
     
     tail -n 0 -F "$CONSOLE_LOG" | while read -r line; do
-        # Player connection handling
+        # Manejo de conexión de jugadores
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
@@ -1120,6 +1129,9 @@ monitor_console_log() {
                 log_debug "New player detected: $player_name, adding to players.log with IP: $player_ip"
                 update_player_info "$player_name" "$player_ip" "NONE" "NONE" "NO" "NO"
                 player_verification_status["$player_name"]="verified"
+                # Inicializar estado de rango
+                current_player_ranks["$player_name"]="NONE"
+                rank_already_applied["$player_name"]="NONE"
                 start_password_enforcement "$player_name"
             else
                 local first_ip=$(echo "$player_info" | cut -d'|' -f1)
@@ -1128,6 +1140,10 @@ monitor_console_log() {
                 
                 log_debug "Existing player $player_name - First IP in DB: $first_ip, Current IP: $player_ip, Rank: $rank"
                 
+                # CORRECCIÓN: Inicializar estado de rango actual
+                current_player_ranks["$player_name"]="$rank"
+                
+                # CORRECCIÓN: Mejor verificación de IP - manejar caso UNKNOWN
                 if [ "$first_ip" = "UNKNOWN" ]; then
                     log_debug "First real connection for $player_name, updating IP from UNKNOWN to $player_ip"
                     update_player_info "$player_name" "$player_ip" "$password" "$rank" "NO" "NO"
@@ -1153,7 +1169,7 @@ monitor_console_log() {
                     start_password_enforcement "$player_name"
                 fi
                 
-                # Only start rank application timer if player is verified
+                # Solo iniciar temporizador de rango si el jugador está verificado
                 if [ "${player_verification_status[$player_name]}" = "verified" ]; then
                     log_debug "Starting rank application timer for verified player: $player_name"
                     start_rank_application_timer "$player_name"
@@ -1162,10 +1178,11 @@ monitor_console_log() {
                 fi
             fi
             
+            # Sincronizar listas sin forzar recarga completa
             sync_lists_from_players_log
         fi
         
-        # Player disconnection handling
+        # Manejo de desconexión de jugadores
         if [[ "$line" =~ Player\ Disconnected\ (.+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             player_name=$(echo "$player_name" | xargs)
@@ -1178,17 +1195,19 @@ monitor_console_log() {
                 log_debug "Starting disconnect timer for: $player_name"
                 start_disconnect_timer "$player_name"
                 
+                # Limpiar todos los estados del jugador
                 unset connected_players["$player_name"]
                 unset player_ip_map["$player_name"]
                 unset player_verification_status["$player_name"]
                 unset player_password_reminder_sent["$player_name"]
                 unset pending_ranks["$player_name"]
+                unset rank_already_applied["$player_name"]
                 
                 sync_lists_from_players_log
             fi
         fi
         
-        # Chat command handling
+        # Manejo de comandos de chat
         if [[ "$line" =~ ([a-zA-Z0-9_]+):\ (.+)$ ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local message="${BASH_REMATCH[2]}"
@@ -1236,7 +1255,7 @@ monitor_console_log() {
             fi
         fi
         
-        # List clearance detection
+        # Detección de limpieza de listas
         if [[ "$line" =~ cleared\ (.+)\ list ]]; then
             log_debug "Detected list clearance: $line"
             sleep 2
