@@ -22,6 +22,189 @@ print_header() {
 SERVER_BINARY="./blockheads_server171"
 DEFAULT_PORT=12153
 
+install_dependencies() {
+    print_header "INSTALLING REQUIRED DEPENDENCIES"
+    
+    if ! command -v ldd &> /dev/null; then
+        print_step "Installing ldd utility..."
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y binutils
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y binutils
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y binutils
+        elif command -v pacman &> /dev/null; then
+            sudo pacman -Sy --noconfirm binutils
+        else
+            print_warning "Cannot automatically install ldd. Please install binutils package manually."
+        fi
+    fi
+    
+    print_step "Checking for missing libraries..."
+    local missing_libs=$(ldd "$SERVER_BINARY" 2>/dev/null | grep "not found" | awk '{print $1}' | tr '\n' ' ')
+    
+    if [ -n "$missing_libs" ]; then
+        print_warning "Missing libraries detected: $missing_libs"
+        
+        if command -v apt-get &> /dev/null; then
+            print_step "Installing dependencies on Debian/Ubuntu..."
+            sudo apt-get update
+            for lib in $missing_libs; do
+                case "$lib" in
+                    libdispatch.so.0)
+                        print_step "Installing libdispatch..."
+                        sudo apt-get install -y libdispatch-dev || sudo apt-get install -y libdispatch0
+                        ;;
+                    libobjc.so.4)
+                        print_step "Installing libobjc4..."
+                        sudo apt-get install -y libobjc4
+                        ;;
+                    libgnustep-base.so.1.28)
+                        print_step "Installing gnustep-base..."
+                        sudo apt-get install -y gnustep-base-runtime
+                        ;;
+                    libpthread.so.0|libc.so.6|libm.so.6|libdl.so.2)
+                        print_step "Installing basic libraries..."
+                        sudo apt-get install -y libc6
+                        ;;
+                    *)
+                        print_warning "Unknown library: $lib - attempting to find package..."
+                        sudo apt-get install -y "lib${lib%.*}" || sudo apt-get install -y "${lib%.*}"
+                        ;;
+                esac
+            done
+        elif command -v yum &> /dev/null; then
+            print_step "Installing dependencies on RHEL/CentOS..."
+            sudo yum install -y epel-release
+            for lib in $missing_libs; do
+                case "$lib" in
+                    libdispatch.so.0)
+                        print_step "Installing libdispatch..."
+                        sudo yum install -y libdispatch || sudo yum install -y libdispatch-devel
+                        ;;
+                    libobjc.so.4)
+                        print_step "Installing libobjc..."
+                        sudo yum install -y libobjc
+                        ;;
+                    *)
+                        print_warning "Unknown library: $lib"
+                        ;;
+                esac
+            done
+        elif command -v dnf &> /dev/null; then
+            print_step "Installing dependencies on Fedora..."
+            sudo dnf install -y epel-release
+            for lib in $missing_libs; do
+                case "$lib" in
+                    libdispatch.so.0)
+                        print_step "Installing libdispatch..."
+                        sudo dnf install -y libdispatch || sudo dnf install -y libdispatch-devel
+                        ;;
+                    libobjc.so.4)
+                        print_step "Installing libobjc..."
+                        sudo dnf install -y libobjc
+                        ;;
+                    *)
+                        print_warning "Unknown library: $lib"
+                        ;;
+                esac
+            done
+        elif command -v pacman &> /dev/null; then
+            print_step "Installing dependencies on Arch Linux..."
+            for lib in $missing_libs; do
+                case "$lib" in
+                    libdispatch.so.0)
+                        print_step "Installing libdispatch..."
+                        sudo pacman -Sy --noconfirm libdispatch
+                        ;;
+                    libobjc.so.4)
+                        print_step "Installing libobjc..."
+                        sudo pacman -Sy --noconfirm libobjc
+                        ;;
+                    *)
+                        print_warning "Unknown library: $lib"
+                        ;;
+                esac
+            done
+        else
+            print_error "Cannot automatically install dependencies on this system."
+            print_status "Please install the following libraries manually: $missing_libs"
+            return 1
+        fi
+        
+        print_step "Verifying library installation..."
+        local still_missing=$(ldd "$SERVER_BINARY" 2>/dev/null | grep "not found" | awk '{print $1}' | tr '\n' ' ')
+        if [ -n "$still_missing" ]; then
+            print_error "Still missing libraries: $still_missing"
+            print_status "You may need to install these manually or use LD_LIBRARY_PATH"
+            return 1
+        else
+            print_success "All dependencies installed successfully!"
+        fi
+    else
+        print_success "No missing libraries detected."
+    fi
+    
+    return 0
+}
+
+check_and_fix_libraries() {
+    print_header "CHECKING SYSTEM LIBRARIES"
+    
+    if [ ! -f "$SERVER_BINARY" ]; then
+        print_error "Server binary not found: $SERVER_BINARY"
+        return 1
+    fi
+    
+    if ! command -v ldd &> /dev/null; then
+        print_error "ldd command not found. Please install binutils."
+        return 1
+    fi
+    
+    print_step "Checking library dependencies for $SERVER_BINARY..."
+    
+    local lib_error=$(ldd "$SERVER_BINARY" 2>&1 | grep -i "error\|not found\|cannot")
+    
+    if [ -n "$lib_error" ]; then
+        print_warning "Library issues detected:"
+        echo "$lib_error"
+        echo ""
+        
+        print_step "Attempting to install missing dependencies..."
+        if ! install_dependencies; then
+            print_warning "Falling back to LD_LIBRARY_PATH workaround..."
+            
+            local lib_paths=""
+            if [ -d "/usr/lib/x86_64-linux-gnu" ]; then
+                lib_paths="/usr/lib/x86_64-linux-gnu:$lib_paths"
+            fi
+            if [ -d "/usr/lib64" ]; then
+                lib_paths="/usr/lib64:$lib_paths"
+            fi
+            if [ -d "/usr/lib" ]; then
+                lib_paths="/usr/lib:$lib_paths"
+            fi
+            if [ -d "/lib/x86_64-linux-gnu" ]; then
+                lib_paths="/lib/x86_64-linux-gnu:$lib_paths"
+            fi
+            
+            export LD_LIBRARY_PATH="$lib_paths:$LD_LIBRARY_PATH"
+            print_status "Set LD_LIBRARY_PATH to: $LD_LIBRARY_PATH"
+        fi
+        
+        print_step "Re-checking library dependencies..."
+        ldd "$SERVER_BINARY" 2>/dev/null || {
+            print_error "Library issues persist. The server may not start correctly."
+            print_status "You may need to manually install the required libraries."
+            return 1
+        }
+    else
+        print_success "All libraries are available."
+    fi
+    
+    return 0
+}
+
 screen_session_exists() {
     screen -list | grep -q "$1"
 }
@@ -100,6 +283,10 @@ start_server() {
         return 1
     }
     
+    if ! check_and_fix_libraries; then
+        print_warning "Proceeding with library issues - server may fail to start"
+    fi
+    
     check_world_exists "$world_id" || return 1
     
     is_port_in_use "$port" && {
@@ -126,6 +313,7 @@ start_server() {
     cat > /tmp/start_server_$$.sh << EOF
 #!/bin/bash
 cd '$PWD'
+export LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
 while true; do
     echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting server..."
     if ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'; then
@@ -161,7 +349,6 @@ EOF
         return 1
     fi
     
-    # Programar limpieza de listas después de 5 segundos
     cleanup_server_lists "$world_id" "$port"
     
     print_step "Waiting for server to start..."
@@ -351,6 +538,34 @@ show_status() {
     print_header "END OF STATUS"
 }
 
+install_system_dependencies() {
+    print_header "INSTALLING SYSTEM DEPENDENCIES"
+    
+    if command -v apt-get &> /dev/null; then
+        print_step "Installing dependencies on Debian/Ubuntu..."
+        sudo apt-get update
+        sudo apt-get install -y screen binutils libdispatch-dev libobjc4 gnustep-base-runtime libc6
+    elif command -v yum &> /dev/null; then
+        print_step "Installing dependencies on RHEL/CentOS..."
+        sudo yum install -y epel-release
+        sudo yum install -y screen binutils libdispatch libobjc
+    elif command -v dnf &> /dev/null; then
+        print_step "Installing dependencies on Fedora..."
+        sudo dnf install -y epel-release
+        sudo dnf install -y screen binutils libdispatch libobjc
+    elif command -v pacman &> /dev/null; then
+        print_step "Installing dependencies on Arch Linux..."
+        sudo pacman -Sy --noconfirm screen binutils libdispatch libobjc
+    else
+        print_error "Cannot automatically install dependencies on this system."
+        print_status "Please install manually: screen, binutils, libdispatch, libobjc"
+        return 1
+    fi
+    
+    print_success "System dependencies installed successfully!"
+    return 0
+}
+
 show_usage() {
     print_header "THE BLOCKHEADS SERVER MANAGER"
     print_status "Usage: $0 [command]"
@@ -360,6 +575,7 @@ show_usage() {
     echo -e " ${RED}stop${NC} [PORT] - Stop server and rank patcher"
     echo -e " ${CYAN}status${NC} [PORT] - Show server status"
     echo -e " ${YELLOW}list${NC} - List all running servers"
+    echo -e " ${MAGENTA}install-deps${NC} - Install system dependencies"
     echo -e " ${YELLOW}help${NC} - Show this help"
     echo ""
     print_status "Examples:"
@@ -370,6 +586,7 @@ show_usage() {
     echo -e " ${CYAN}$0 status${NC} (shows status of all servers)"
     echo -e " ${CYAN}$0 status 12153${NC} (shows status of server on port 12153)"
     echo -e " ${YELLOW}$0 list${NC} (lists all running servers)"
+    echo -e " ${MAGENTA}$0 install-deps${NC} (installs system dependencies)"
     echo ""
     print_warning "First create a world: ./blockheads_server171 -n"
     print_warning "After creating the world, press CTRL+C to exit"
@@ -388,6 +605,9 @@ case "$1" in
         ;;
     list)
         list_servers
+        ;;
+    install-deps)
+        install_system_dependencies
         ;;
     help|--help|-h|*)
         show_usage
