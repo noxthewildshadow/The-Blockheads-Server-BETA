@@ -160,13 +160,13 @@ check_world_exists() {
     local world_id="$1"
     local saves_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
     
-    [ -d "$saves_dir/$world_id" ] || {
+    if [ ! -d "$saves_dir/$world_id" ]; then
         print_error "World '$world_id' does not exist in: $saves_dir/"
         echo ""
         print_warning "To create a world: ${GREEN}./blockheads_server171 -n${NC}"
         print_warning "After creating the world, press ${YELLOW}CTRL+C${NC} to exit"
         return 1
-    }
+    fi
     
     return 0
 }
@@ -176,16 +176,27 @@ free_port() {
     print_warning "Freeing port $port..."
     
     local pids=$(lsof -ti ":$port")
-    [ -n "$pids" ] && kill -9 $pids 2>/dev/null
+    if [ -n "$pids" ]; then
+        kill -9 $pids 2>/dev/null
+    fi
     
     local screen_server="blockheads_server_$port"
     local screen_patcher="blockheads_patcher_$port"
     
-    screen_session_exists "$screen_server" && screen -S "$screen_server" -X quit 2>/dev/null
-    screen_session_exists "$screen_patcher" && screen -S "$screen_patcher" -X quit 2>/dev/null
+    if screen_session_exists "$screen_server"; then
+        screen -S "$screen_server" -X quit 2>/dev/null
+    fi
+    
+    if screen_session_exists "$screen_patcher"; then
+        screen -S "$screen_patcher" -X quit 2>/dev/null
+    fi
     
     sleep 2
-    ! is_port_in_use "$port"
+    if is_port_in_use "$port"; then
+        return 1
+    else
+        return 0
+    fi
 }
 
 cleanup_server_lists() {
@@ -215,26 +226,34 @@ start_server() {
     local SCREEN_SERVER="blockheads_server_$port"
     local SCREEN_PATCHER="blockheads_patcher_$port"
     
-    [ ! -f "$SERVER_BINARY" ] && {
+    if [ ! -f "$SERVER_BINARY" ]; then
         print_error "Server binary not found: $SERVER_BINARY"
         return 1
-    }
+    fi
     
     if ! check_and_fix_libraries; then
         print_warning "Proceeding with library issues - server may fail to start"
     fi
     
-    check_world_exists "$world_id" || return 1
+    if ! check_world_exists "$world_id"; then
+        return 1
+    fi
     
-    is_port_in_use "$port" && {
+    if is_port_in_use "$port"; then
+        print_warning "Port $port is in use."
         if ! free_port "$port"; then
             print_error "Could not free port $port"
             return 1
         fi
-    }
+    fi
     
-    screen_session_exists "$SCREEN_SERVER" && screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
-    screen_session_exists "$SCREEN_PATCHER" && screen -S "$SCREEN_PATCHER" -X quit 2>/dev/null
+    if screen_session_exists "$SCREEN_SERVER"; then
+        screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
+    fi
+    
+    if screen_session_exists "$SCREEN_PATCHER"; then
+        screen -S "$SCREEN_PATCHER" -X quit 2>/dev/null
+    fi
     
     sleep 1
     
@@ -295,7 +314,7 @@ EOF
         ((wait_time++))
     done
     
-    [ ! -f "$log_file" ] && {
+    if [ ! -f "$log_file" ]; then
         print_error "Could not create log file. Server may not have started."
         return 1
     fi
@@ -309,12 +328,14 @@ EOF
         sleep 1
     done
     
-    [ "$server_ready" = false ] && {
+    if [ "$server_ready" = false ]; then
         if ! screen_session_exists "$SCREEN_SERVER"; then
             print_error "Server screen session not found"
             return 1
         fi
-    } || print_success "Server started successfully!"
+    else
+        print_success "Server started successfully!"
+    fi
     
     print_step "Starting rank patcher..."
     if screen -dmS "$SCREEN_PATCHER" bash -c "cd '$PWD' && ./rank_patcher.sh '$port'"; then
@@ -326,8 +347,13 @@ EOF
     local server_started=0
     local patcher_started=0
     
-    screen_session_exists "$SCREEN_SERVER" && server_started=1
-    screen_session_exists "$SCREEN_PATCHER" && patcher_started=1
+    if screen_session_exists "$SCREEN_SERVER"; then
+        server_started=1
+    fi
+    
+    if screen_session_exists "$SCREEN_PATCHER"; then
+        patcher_started=1
+    fi
     
     if [ "$server_started" -eq 1 ] && [ "$patcher_started" -eq 1 ]; then
         print_header "SERVER AND RANK PATCHER STARTED SUCCESSFULLY!"
@@ -518,7 +544,11 @@ show_usage() {
 
 case "$1" in
     start)
-        [ -z "$2" ] && print_error "You must specify a WORLD_NAME" && show_usage && exit 1
+        if [ -z "$2" ]; then
+            print_error "You must specify a WORLD_NAME"
+            show_usage
+            exit 1
+        fi
         start_server "$2" "$3"
         ;;
     stop)
