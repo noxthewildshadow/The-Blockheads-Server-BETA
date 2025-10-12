@@ -35,8 +35,6 @@ install_dependencies() {
             sudo dnf install -y binutils
         elif command -v pacman &> /dev/null; then
             sudo pacman -Sy --noconfirm binutils
-        else
-            print_warning "Cannot automatically install ldd. Please install binutils package manually."
         fi
     fi
     
@@ -44,31 +42,24 @@ install_dependencies() {
     local missing_libs=$(ldd "$SERVER_BINARY" 2>/dev/null | grep "not found" | awk '{print $1}' | tr '\n' ' ')
     
     if [ -n "$missing_libs" ]; then
-        print_warning "Missing libraries detected: $missing_libs"
-        
         if command -v apt-get &> /dev/null; then
             print_step "Installing dependencies on Debian/Ubuntu..."
             sudo apt-get update
             for lib in $missing_libs; do
                 case "$lib" in
                     libdispatch.so.0)
-                        print_step "Installing libdispatch..."
                         sudo apt-get install -y libdispatch-dev || sudo apt-get install -y libdispatch0
                         ;;
                     libobjc.so.4)
-                        print_step "Installing libobjc4..."
                         sudo apt-get install -y libobjc4
                         ;;
                     libgnustep-base.so.1.28)
-                        print_step "Installing gnustep-base..."
                         sudo apt-get install -y gnustep-base-runtime
                         ;;
                     libpthread.so.0|libc.so.6|libm.so.6|libdl.so.2)
-                        print_step "Installing basic libraries..."
                         sudo apt-get install -y libc6
                         ;;
                     *)
-                        print_warning "Unknown library: $lib - attempting to find package..."
                         sudo apt-get install -y "lib${lib%.*}" || sudo apt-get install -y "${lib%.*}"
                         ;;
                 esac
@@ -79,15 +70,10 @@ install_dependencies() {
             for lib in $missing_libs; do
                 case "$lib" in
                     libdispatch.so.0)
-                        print_step "Installing libdispatch..."
                         sudo yum install -y libdispatch || sudo yum install -y libdispatch-devel
                         ;;
                     libobjc.so.4)
-                        print_step "Installing libobjc..."
                         sudo yum install -y libobjc
-                        ;;
-                    *)
-                        print_warning "Unknown library: $lib"
                         ;;
                 esac
             done
@@ -97,15 +83,10 @@ install_dependencies() {
             for lib in $missing_libs; do
                 case "$lib" in
                     libdispatch.so.0)
-                        print_step "Installing libdispatch..."
                         sudo dnf install -y libdispatch || sudo dnf install -y libdispatch-devel
                         ;;
                     libobjc.so.4)
-                        print_step "Installing libobjc..."
                         sudo dnf install -y libobjc
-                        ;;
-                    *)
-                        print_warning "Unknown library: $lib"
                         ;;
                 esac
             done
@@ -114,35 +95,14 @@ install_dependencies() {
             for lib in $missing_libs; do
                 case "$lib" in
                     libdispatch.so.0)
-                        print_step "Installing libdispatch..."
                         sudo pacman -Sy --noconfirm libdispatch
                         ;;
                     libobjc.so.4)
-                        print_step "Installing libobjc..."
                         sudo pacman -Sy --noconfirm libobjc
-                        ;;
-                    *)
-                        print_warning "Unknown library: $lib"
                         ;;
                 esac
             done
-        else
-            print_error "Cannot automatically install dependencies on this system."
-            print_status "Please install the following libraries manually: $missing_libs"
-            return 1
         fi
-        
-        print_step "Verifying library installation..."
-        local still_missing=$(ldd "$SERVER_BINARY" 2>/dev/null | grep "not found" | awk '{print $1}' | tr '\n' ' ')
-        if [ -n "$still_missing" ]; then
-            print_error "Still missing libraries: $still_missing"
-            print_status "You may need to install these manually or use LD_LIBRARY_PATH"
-            return 1
-        else
-            print_success "All dependencies installed successfully!"
-        fi
-    else
-        print_success "No missing libraries detected."
     fi
     
     return 0
@@ -166,14 +126,7 @@ check_and_fix_libraries() {
     local lib_error=$(ldd "$SERVER_BINARY" 2>&1 | grep -i "error\|not found\|cannot")
     
     if [ -n "$lib_error" ]; then
-        print_warning "Library issues detected:"
-        echo "$lib_error"
-        echo ""
-        
-        print_step "Attempting to install missing dependencies..."
         if ! install_dependencies; then
-            print_warning "Falling back to LD_LIBRARY_PATH workaround..."
-            
             local lib_paths=""
             if [ -d "/usr/lib/x86_64-linux-gnu" ]; then
                 lib_paths="/usr/lib/x86_64-linux-gnu:$lib_paths"
@@ -189,17 +142,7 @@ check_and_fix_libraries() {
             fi
             
             export LD_LIBRARY_PATH="$lib_paths:$LD_LIBRARY_PATH"
-            print_status "Set LD_LIBRARY_PATH to: $LD_LIBRARY_PATH"
         fi
-        
-        print_step "Re-checking library dependencies..."
-        ldd "$SERVER_BINARY" 2>/dev/null || {
-            print_error "Library issues persist. The server may not start correctly."
-            print_status "You may need to manually install the required libraries."
-            return 1
-        }
-    else
-        print_success "All libraries are available."
     fi
     
     return 0
@@ -249,8 +192,6 @@ cleanup_server_lists() {
     local world_id="$1"
     local port="$2"
     
-    print_step "Scheduled cleanup of adminlist.txt and modlist.txt in 5 seconds..."
-    
     (
         sleep 5
         local world_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/$world_id"
@@ -259,15 +200,11 @@ cleanup_server_lists() {
         
         if [ -f "$admin_list" ]; then
             rm -f "$admin_list"
-            print_success "Cleaned up adminlist.txt for world $world_id"
         fi
         
         if [ -f "$mod_list" ]; then
             rm -f "$mod_list"
-            print_success "Cleaned up modlist.txt for world $world_id"
         fi
-        
-        print_success "Server list cleanup completed for port $port"
     ) &
 }
 
@@ -290,7 +227,6 @@ start_server() {
     check_world_exists "$world_id" || return 1
     
     is_port_in_use "$port" && {
-        print_warning "Port $port is in use."
         if ! free_port "$port"; then
             print_error "Could not free port $port"
             return 1
@@ -362,7 +298,7 @@ EOF
     [ ! -f "$log_file" ] && {
         print_error "Could not create log file. Server may not have started."
         return 1
-    }
+    fi
     
     local server_ready=false
     for i in {1..30}; do
@@ -374,7 +310,6 @@ EOF
     done
     
     [ "$server_ready" = false ] && {
-        print_warning "Server did not show complete startup messages"
         if ! screen_session_exists "$SCREEN_SERVER"; then
             print_error "Server screen session not found"
             return 1
@@ -382,7 +317,7 @@ EOF
     } || print_success "Server started successfully!"
     
     print_step "Starting rank patcher..."
-    if screen -dmS "$SCREEN_PATCHER" bash -c "cd '$PWD' && echo 'Starting rank patcher for port $port...' && ./rank_patcher.sh '$port'"; then
+    if screen -dmS "$SCREEN_PATCHER" bash -c "cd '$PWD' && ./rank_patcher.sh '$port'"; then
         print_success "Rank patcher screen session created: $SCREEN_PATCHER"
     else
         print_warning "Failed to create rank patcher screen session"
@@ -403,8 +338,6 @@ EOF
         print_status "To view rank patcher: ${CYAN}screen -r $SCREEN_PATCHER${NC}"
         echo ""
         print_warning "To exit console without stopping server: ${YELLOW}CTRL+A, D${NC}"
-    else
-        print_warning "Could not verify all screen sessions"
     fi
 }
 
@@ -413,7 +346,6 @@ stop_server() {
     
     if [ -z "$port" ]; then
         print_header "STOPPING ALL SERVERS"
-        print_step "Stopping all servers and rank patchers..."
         
         for server_session in $(screen -list | grep "blockheads_server_" | awk -F. '{print $1}'); do
             screen -S "$server_session" -X quit 2>/dev/null
@@ -432,7 +364,6 @@ stop_server() {
         print_success "All servers and rank patchers stopped."
     else
         print_header "STOPPING SERVER ON PORT $port"
-        print_step "Stopping server and rank patcher on port $port..."
         
         local screen_server="blockheads_server_$port"
         local screen_patcher="blockheads_patcher_$port"
@@ -454,8 +385,6 @@ stop_server() {
         pkill -f "$SERVER_BINARY.*$port" 2>/dev/null || true
         
         rm -f "world_id_$port.txt" 2>/dev/null || true
-        
-        print_success "Server cleanup completed for port $port."
     fi
 }
 
@@ -472,8 +401,6 @@ list_servers() {
             print_status " $server"
         done <<< "$servers"
     fi
-    
-    print_header "END OF LIST"
 }
 
 show_status() {
@@ -534,8 +461,6 @@ show_status() {
             print_warning "World: Not configured for port $port"
         fi
     fi
-    
-    print_header "END OF STATUS"
 }
 
 install_system_dependencies() {
@@ -558,7 +483,6 @@ install_system_dependencies() {
         sudo pacman -Sy --noconfirm screen binutils libdispatch libobjc
     else
         print_error "Cannot automatically install dependencies on this system."
-        print_status "Please install manually: screen, binutils, libdispatch, libobjc"
         return 1
     fi
     
