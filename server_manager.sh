@@ -265,7 +265,15 @@ start_server() {
     
     echo "$world_id" > "world_id_$port.txt"
     
-    cat > /tmp/start_server_$$.sh << EOF
+    print_step "Starting server in screen session: $SCREEN_SERVER"
+    
+    if ! command -v screen >/dev/null 2>&1; then
+        print_error "Screen command not found. Please install screen."
+        return 1
+    fi
+    
+    local start_script=$(mktemp)
+    cat > "$start_script" << EOF
 #!/bin/bash
 cd '$PWD'
 export LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
@@ -286,21 +294,14 @@ while true; do
 done
 EOF
     
-    chmod +x /tmp/start_server_$$.sh
+    chmod +x "$start_script"
     
-    print_step "Starting server in screen session: $SCREEN_SERVER"
-    if command -v screen >/dev/null 2>&1; then
-        if screen -dmS "$SCREEN_SERVER" /tmp/start_server_$$.sh; then
-            print_success "Server screen session created successfully"
-            (sleep 10; rm -f /tmp/start_server_$$.sh) &
-        else
-            print_error "Failed to create screen session for server"
-            rm -f /tmp/start_server_$$.sh
-            return 1
-        fi
+    if screen -dmS "$SCREEN_SERVER" bash -c "exec $start_script"; then
+        print_success "Server screen session created successfully"
+        (sleep 10; rm -f "$start_script") &
     else
-        print_error "Screen command not found. Please install screen."
-        rm -f /tmp/start_server_$$.sh
+        print_error "Failed to create screen session for server"
+        rm -f "$start_script"
         return 1
     fi
     
