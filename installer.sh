@@ -73,7 +73,7 @@ declare -a PACKAGES_ARCH=(
 
 print_header "THE BLOCKHEADS LINUX SERVER INSTALLER (AUTOMATED)"
 echo -e "${CYAN}Welcome! This script will install the server, dependencies, and${NC}"
-echo -e "${CYAN}the custom server manager with packet sniffer.${NC}"
+echo -e "${CYAN}the custom server manager with an INTERACTIVE packet sniffer.${NC}"
 echo
 
 # --- Funciones de Instalación ---
@@ -134,7 +134,7 @@ create_and_download_scripts() {
         return 1
     fi
     
-    print_step "Creating custom server_manager.sh with sniffer..."
+    print_step "Creating custom server_manager.sh (interactive sniffer)..."
     
     # --- INICIO: server_manager.sh EMBEBIDO ---
     cat > "server_manager.sh" << 'EOF_MANAGER'
@@ -429,7 +429,7 @@ start_server() {
     [ -z "$ORIGINAL_USER_HOME" ] && ORIGINAL_USER_HOME="/home/${SUDO_USER:-$USER}"
     local log_dir="$ORIGINAL_USER_HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/$world_id"
     local log_file="$log_dir/console.log"
-    local packet_log_file="$log_dir/packet_dump.log" # <-- AÑADIDO
+    # --- packet_log_file ya no es necesario ---
     mkdir -p "$log_dir"
     # Asegurarse de que el usuario original sea el propietario
     chown -R "${SUDO_USER:-$USER}:${SUDO_USER:-$USER}" "$ORIGINAL_USER_HOME/GNUstep" 2>/dev/null || true
@@ -522,24 +522,23 @@ EOF
         print_warning "Failed to create rank patcher screen session"
     fi
 
-    # --- INICIO: BLOQUE AÑADIDO PARA SNIFFER ---
-    print_step "Starting packet sniffer..."
+    # --- INICIO: BLOQUE MODIFICADO PARA SNIFFER INTERACTIVO ---
+    print_step "Starting packet sniffer (interactive)..."
     if ! command -v ngrep >/dev/null 2>&1; then
         print_error "ngrep command not found. Cannot start sniffer."
         print_warning "Run '${YELLOW}$0 install-deps${NC}' to install ngrep."
     else
-        # Inicia ngrep con sudo (ya somos root, pero el 'sudo' no hace daño y usa la regla de sudoers)
-        # Guardará el log como root, pero será legible por todos
-        if screen -dmS "$SCREEN_SNIFFER" bash -c "sudo ngrep -d any -q -W byline port $port > '$packet_log_file' 2>&1"; then
+        # Inicia ngrep interactivamente dentro de la screen. No se usará -q (quiet)
+        # No se redirige a un archivo.
+        if screen -dmS "$SCREEN_SNIFFER" bash -c "sudo ngrep -d any -W byline port $port"; then
             print_success "Packet sniffer screen session created: $SCREEN_SNIFFER"
-            print_status "Packet log: ${CYAN}$packet_log_file${NC}"
-            chmod 644 "$packet_log_file" 2>/dev/null || true # Hacer log legible
+            print_status "Packets will be visible in: ${CYAN}screen -r $SCREEN_SNIFFER${NC}"
         else
             print_error "Failed to create packet sniffer screen session."
             print_warning "This script should have configured passwordless sudo, but it might have failed."
         fi
     fi
-    # --- FIN: BLOQUE AÑADIDO ---
+    # --- FIN: BLOQUE MODIFICADO ---
     
     local server_started=0
     local patcher_started=0
@@ -964,7 +963,7 @@ echo -e "${GREEN}1. Create a world: ${CYAN}./blockheads_server171 -n${NC}"
 print_warning "After creating the world, press CTRL+C to exit the creation process"
 echo -e "${GREEN}2. See world list: ${CYAN}./blockheads_server171 -l${NC}"
 echo -e "${GREEN}3. Start server: ${CYAN}./server_manager.sh start WORLD_ID YOUR_PORT${NC}"
-echo -e "   (This will now also start a packet sniffer automatically)"
+echo -e "   (This will now also start an INTERACTIVE packet sniffer)"
 echo -e "${GREEN}4. Stop server: ${CYAN}./server_manager.sh stop${NC}"
 echo -e "${GREEN}5. Check status: ${CYAN}./server_manager.sh status${NC}"
 echo ""
