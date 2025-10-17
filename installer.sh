@@ -55,15 +55,15 @@ SERVER_MANAGER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Block
 RANK_PATCHER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/rank_patcher.sh"
 
 declare -a PACKAGES_DEBIAN=(
-    'git' 'cmake' 'ninja-build' 'clang' 'patchelf' 'libgnustep-base-dev' 'libobjc4'
-    'libgnutls28-dev' 'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev' 'zlib1g'
+    'git' 'cmake' 'ninja-build' 'clang' 'patchelf' 'libgnustep-base-dev' 'libobjc4' 
+    'libgnutls28-dev' 'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev' 'zlib1g' 
     'libicu-dev' 'libstdc++6' 'libgcc-s1' 'wget' 'curl' 'tar' 'grep' 'screen' 'lsof'
     'inotify-tools'
 )
 
 declare -a PACKAGES_ARCH=(
-    'base-devel' 'git' 'cmake' 'ninja' 'clang' 'patchelf' 'gnustep-base' 'gcc-libs'
-    'gnutls' 'libgcrypt' 'libxml2' 'libffi' 'libnsl' 'zlib' 'icu' 'libdispatch'
+    'base-devel' 'git' 'cmake' 'ninja' 'clang' 'patchelf' 'gnustep-base' 'gcc-libs' 
+    'gnutls' 'libgcrypt' 'libxml2' 'libffi' 'libnsl' 'zlib' 'icu' 'libdispatch' 
     'wget' 'curl' 'tar' 'grep' 'screen' 'lsof' 'inotify-tools'
 )
 
@@ -81,9 +81,9 @@ find_library() {
 
 install_packages() {
     [ ! -f /etc/os-release ] && print_error "Could not detect the operating system" && return 1
-
+    
     source /etc/os-release
-
+    
     case $ID in
         debian|ubuntu|pop)
             print_step "Installing packages for Debian/Ubuntu..."
@@ -91,7 +91,7 @@ install_packages() {
                 print_error "Failed to update package list"
                 return 1
             fi
-
+            
             for package in "${PACKAGES_DEBIAN[@]}"; do
                 if ! apt-get install -y "$package" >/dev/null 2>&1; then
                     print_warning "Failed to install $package"
@@ -110,7 +110,7 @@ install_packages() {
             return 1
             ;;
     esac
-
+    
     return 0
 }
 
@@ -123,7 +123,7 @@ download_server_files() {
         print_error "Failed to download server manager"
         return 1
     fi
-
+    
     print_step "Downloading rank patcher..."
     if wget --timeout=30 --tries=3 -O "rank_patcher.sh" "$RANK_PATCHER_URL" 2>/dev/null; then
         chmod +x "rank_patcher.sh"
@@ -132,7 +132,7 @@ download_server_files() {
         print_error "Failed to download rank patcher"
         return 1
     fi
-
+    
     return 0
 }
 
@@ -143,7 +143,7 @@ if ! install_packages; then
         print_error "Failed to update package list"
         exit 1
     fi
-
+    
     if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget curl tar screen lsof inotify-tools >/dev/null 2>&1; then
         print_error "Failed to install essential packages"
         exit 1
@@ -204,7 +204,7 @@ COUNT=0
 for LIB in "${!LIBS[@]}"; do
     [ -z "${LIBS[$LIB]}" ] && continue
     COUNT=$((COUNT+1))
-
+    
     if ! patchelf --replace-needed "$LIB" "${LIBS[$LIB]}" "$SERVER_BINARY" >/dev/null 2>&1; then
         print_warning "Failed to patch $LIB"
     fi
@@ -222,14 +222,14 @@ fi
 print_step "[6/7] Downloading server manager and rank patcher..."
 if ! download_server_files; then
     print_warning "Creating basic server manager and rank patcher..."
-
+    
     cat > server_manager.sh << 'EOF'
 #!/bin/bash
 echo "Use: ./blockheads_server171 -n (to create world)"
 echo "Then: ./blockheads_server171 -o WORLD_NAME -p PORT"
 EOF
     chmod +x server_manager.sh
-
+    
     cat > rank_patcher.sh << 'EOF'
 #!/bin/bash
 echo "Rank patcher placeholder - download failed"
