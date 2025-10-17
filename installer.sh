@@ -39,8 +39,10 @@ SERVER_URL="https://web.archive.org/web/20240309015235if_/https://majicdave.com/
 TEMP_FILE="/tmp/blockheads_server171.tar.gz"
 SERVER_BINARY="blockheads_server171"
 
-# !!! VERIFICA Y CORRIGE ESTAS URLs SI ES NECESARIO !!!
-SERVER_MANAGER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/server_manager.sh" # URL al server_manager.sh CON log de paquetes únicos
+# !!! ============================================================= !!!
+# !!! ASEGÚRATE DE QUE ESTAS DOS URLs SEAN CORRECTAS EN TU ARCHIVO !!!
+# !!! ============================================================= !!!
+SERVER_MANAGER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/server_manager.sh"
 RANK_PATCHER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/rank_patcher.sh"
 
 # --- Listas de Paquetes (Restauradas y con adiciones) ---
@@ -172,11 +174,28 @@ download_files() {
 
     print_step "[4/8] Downloading Manager and Patcher scripts..."
     print_progress "Downloading server_manager.sh from $SERVER_MANAGER_URL ..."
-    if ! wget --timeout=30 --tries=3 -O "server_manager.sh" "$SERVER_MANAGER_URL"; then # Mostrar errores
-        print_error "Failed to download server_manager.sh from your repo!"
-        print_warning "Please check the URL: $SERVER_MANAGER_URL"
+    # --- Cambio Clave: Verificar URL antes de descargar ---
+    if [ -z "$SERVER_MANAGER_URL" ]; then
+        print_error "SERVER_MANAGER_URL variable is empty in the script!"
         print_warning "Creating a basic placeholder script instead."
-        # Crear placeholder si falla la descarga
+        dl_manager_failed=1
+    elif ! wget --spider --timeout=10 "$SERVER_MANAGER_URL" 2>/dev/null; then
+        print_error "Cannot reach SERVER_MANAGER_URL: $SERVER_MANAGER_URL"
+        print_warning "Please double-check the URL in the installer script."
+        print_warning "Creating a basic placeholder script instead."
+        dl_manager_failed=1
+    elif ! wget --timeout=30 --tries=3 -O "server_manager.sh" "$SERVER_MANAGER_URL"; then # Mostrar errores
+        print_error "Failed to download server_manager.sh from your repo!"
+        print_warning "URL was reachable but download failed. Check permissions or network."
+        print_warning "Creating a basic placeholder script instead."
+        dl_manager_failed=1
+    else
+        print_success "Server manager downloaded."
+        dl_manager_failed=0
+    fi
+
+    # Crear placeholder si la descarga falló
+    if [ "$dl_manager_failed" -eq 1 ]; then
         cat > server_manager.sh << 'EOF_PLACEHOLDER'
 #!/bin/bash
 echo "[ERROR] server_manager.sh failed to download during installation."
@@ -186,26 +205,37 @@ echo "Create world: ./blockheads_server171 -n"
 echo "Start world: ./blockheads_server171 -o WORLD_ID -p PORT"
 EOF_PLACEHOLDER
         chmod +x server_manager.sh
-        # No salimos, permitimos continuar con el placeholder
-    else
-        print_success "Server manager downloaded."
     fi
 
-    print_progress "Downloading rank_patcher.sh from $PATCHER_URL ..."
-    if ! wget --timeout=30 --tries=3 -O "rank_patcher.sh" "$PATCHER_URL"; then # Mostrar errores
-        print_error "Failed to download rank_patcher.sh from your repo!"
-        print_warning "Please check the URL: $PATCHER_URL"
+    print_progress "Downloading rank_patcher.sh from $RANK_PATCHER_URL ..."
+     # --- Cambio Clave: Verificar URL antes de descargar ---
+    if [ -z "$RANK_PATCHER_URL" ]; then
+        print_error "RANK_PATCHER_URL variable is empty in the script!"
         print_warning "Creating a basic placeholder script instead."
-        # Crear placeholder si falla la descarga
+        dl_patcher_failed=1
+    elif ! wget --spider --timeout=10 "$RANK_PATCHER_URL" 2>/dev/null; then
+        print_error "Cannot reach RANK_PATCHER_URL: $RANK_PATCHER_URL"
+        print_warning "Please double-check the URL in the installer script."
+        print_warning "Creating a basic placeholder script instead."
+        dl_patcher_failed=1
+    elif ! wget --timeout=30 --tries=3 -O "rank_patcher.sh" "$RANK_PATCHER_URL"; then # Mostrar errores
+        print_error "Failed to download rank_patcher.sh from your repo!"
+        print_warning "URL was reachable but download failed. Check permissions or network."
+        print_warning "Creating a basic placeholder script instead."
+        dl_patcher_failed=1
+    else
+        print_success "Rank patcher downloaded."
+        dl_patcher_failed=0
+    fi
+
+    # Crear placeholder si la descarga falló
+    if [ "$dl_patcher_failed" -eq 1 ]; then
         cat > rank_patcher.sh << 'EOF_PLACEHOLDER2'
 #!/bin/bash
 echo "[ERROR] rank_patcher.sh failed to download during installation."
 echo "Functionality will be limited."
 EOF_PLACEHOLDER2
         chmod +x rank_patcher.sh
-         # No salimos, permitimos continuar con el placeholder
-    else
-        print_success "Rank patcher downloaded."
     fi
 
     # Hacer ejecutables los scripts descargados (o placeholders)
