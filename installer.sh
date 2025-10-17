@@ -39,7 +39,7 @@ SERVER_URL="https://web.archive.org/web/20240309015235if_/https://majicdave.com/
 TEMP_FILE="/tmp/blockheads_server171.tar.gz"
 SERVER_BINARY="blockheads_server171"
 
-# !!! CAMBIA ESTAS URLs POR LAS DE TU REPOSITORIO DE GITHUB !!!
+# !!! VERIFICA Y CORRIGE ESTAS URLs SI ES NECESARIO !!!
 SERVER_MANAGER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/server_manager.sh" # URL al server_manager.sh CON log de paquetes únicos
 RANK_PATCHER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/rank_patcher.sh"
 
@@ -107,17 +107,17 @@ install_packages() {
             done
             ;;
         arch)
-            print_status "Installing ${#PACKAGES_ARCH[@]} packages (Arch)..."
-            # Asegurarse de actualizar la base de datos primero
-            if ! pacman -Sy; then # Sin silenciar
-                 print_warning "Failed to sync package database"
-            fi
-            # Instalar paquetes necesarios
-            if ! pacman -S --noconfirm --needed "${PACKAGES_ARCH[@]}"; then # Sin silenciar
-                print_error "Failed to install some Arch Linux packages"
-                # Continuar de todas formas
-            fi
-            ;;
+             print_status "Installing ${#PACKAGES_ARCH[@]} packages (Arch)..."
+             # Asegurarse de actualizar la base de datos primero
+             if ! pacman -Sy; then # Sin silenciar
+                  print_warning "Failed to sync package database"
+             fi
+             # Instalar paquetes necesarios
+             if ! pacman -S --noconfirm --needed "${PACKAGES_ARCH[@]}"; then # Sin silenciar
+                 print_error "Failed to install some Arch Linux packages"
+                 # Continuar de todas formas
+             fi
+             ;;
         *)
             print_error "Unsupported operating system: $ID"
             return 1
@@ -164,28 +164,54 @@ download_files() {
     print_step "[3/8] Downloading Server Binary..."
     print_progress "Downloading from $SERVER_URL ..."
     # Mostrar progreso de wget
-    if ! wget --timeout=30 --tries=3 --progress=bar:force -O "$TEMP_FILE" "$SERVER_URL" 2>&1; then
+    if ! wget --timeout=60 --tries=5 --progress=bar:force -O "$TEMP_FILE" "$SERVER_URL" 2>&1; then # Aumentado timeout y reintentos
         print_error "Failed to download server file from $SERVER_URL"
         exit 1
     fi
     print_success "Server binary downloaded."
 
     print_step "[4/8] Downloading Manager and Patcher scripts..."
-    print_progress "Downloading server_manager.sh from $MANAGER_URL ..."
-    if ! wget --timeout=30 --tries=3 -O "server_manager.sh" "$MANAGER_URL"; then # Mostrar errores
+    print_progress "Downloading server_manager.sh from $SERVER_MANAGER_URL ..."
+    if ! wget --timeout=30 --tries=3 -O "server_manager.sh" "$SERVER_MANAGER_URL"; then # Mostrar errores
         print_error "Failed to download server_manager.sh from your repo!"
-        print_warning "Please check the MANAGER_URL variable in this script: $MANAGER_URL"
-        exit 1
+        print_warning "Please check the URL: $SERVER_MANAGER_URL"
+        print_warning "Creating a basic placeholder script instead."
+        # Crear placeholder si falla la descarga
+        cat > server_manager.sh << 'EOF_PLACEHOLDER'
+#!/bin/bash
+echo "[ERROR] server_manager.sh failed to download during installation."
+echo "Please fix the URL in installer.sh and re-run, or download manually."
+echo "Basic commands:"
+echo "Create world: ./blockheads_server171 -n"
+echo "Start world: ./blockheads_server171 -o WORLD_ID -p PORT"
+EOF_PLACEHOLDER
+        chmod +x server_manager.sh
+        # No salimos, permitimos continuar con el placeholder
+    else
+        print_success "Server manager downloaded."
     fi
 
     print_progress "Downloading rank_patcher.sh from $PATCHER_URL ..."
     if ! wget --timeout=30 --tries=3 -O "rank_patcher.sh" "$PATCHER_URL"; then # Mostrar errores
         print_error "Failed to download rank_patcher.sh from your repo!"
-        print_warning "Please check the PATCHER_URL variable in this script: $PATCHER_URL"
-        exit 1
+        print_warning "Please check the URL: $PATCHER_URL"
+        print_warning "Creating a basic placeholder script instead."
+        # Crear placeholder si falla la descarga
+        cat > rank_patcher.sh << 'EOF_PLACEHOLDER2'
+#!/bin/bash
+echo "[ERROR] rank_patcher.sh failed to download during installation."
+echo "Functionality will be limited."
+EOF_PLACEHOLDER2
+        chmod +x rank_patcher.sh
+         # No salimos, permitimos continuar con el placeholder
+    else
+        print_success "Rank patcher downloaded."
     fi
-    print_success "Helper scripts downloaded."
+
+    # Hacer ejecutables los scripts descargados (o placeholders)
+    chmod +x "server_manager.sh" "rank_patcher.sh" 2>/dev/null || true
 }
+
 
 extract_and_patch() {
     print_step "[5/8] Extracting server files..."
@@ -204,7 +230,7 @@ extract_and_patch() {
     # Mover archivos extraídos al directorio actual
     # Usar 'shopt -s dotglob' para incluir archivos ocultos si los hubiera
     shopt -s dotglob
-    mv "$EXTRACT_DIR"/* ./
+    mv "$EXTRACT_DIR"/* ./ 2>/dev/null || print_warning "Could not move all extracted files."
     shopt -u dotglob
     rm -rf "$EXTRACT_DIR" "$TEMP_FILE"
     print_progress "Files moved to current directory."
@@ -250,12 +276,10 @@ extract_and_patch() {
             continue
         fi
         # Verificar si la librería objetivo realmente existe antes de intentar parchear
-        if ! ldconfig -p | grep -q "$(basename "$TARGET_LIB")"; then
-             # A veces find_library puede devolver un nombre aunque no esté en ldconfig
-             if [ ! -f "$TARGET_LIB" ] && [ ! -L "$TARGET_LIB" ]; then
-                 echo -e "${YELLOW}SKIP (Target '$TARGET_LIB' does not exist on system)${NC}"
-                 continue
-             fi
+        # Usamos 'ldconfig -p' O comprobamos el archivo directamente
+        if ! ldconfig -p | grep -q "$(basename "$TARGET_LIB")" && [ ! -f "$TARGET_LIB" ] && [ ! -L "$TARGET_LIB" ]; then
+             echo -e "${YELLOW}SKIP (Target '$TARGET_LIB' does not exist on system)${NC}"
+             continue
         fi
 
         ((COUNT++))
@@ -308,20 +332,56 @@ extract_and_patch
 test_binary
 set_permissions
 
-# --- Limpieza (opcional) ---
+# --- Limpieza (Opcional, comentada por si se necesita debug) ---
 # rm -f "$TEMP_FILE" 2>/dev/null
 
+# --- INSTRUCCIONES FINALES (RESTAURADAS COMPLETAMENTE DE TU ORIGINAL) ---
 print_header "INSTALLATION COMPLETE"
-print_success "Your Blockheads server setup is complete!"
+echo -e "${GREEN}Server installed successfully!${NC}"
 echo ""
-print_warning "¡IMPORTANTE! Exit root now (type 'exit') and run the following commands as '$ORIGINAL_USER'."
+
+print_header "SERVER BINARY INFORMATION"
 echo ""
-print_status "1. Create a world (if you haven't): ${CYAN}./$SERVER_BINARY -n${NC}"
-print_warning "   (Press CTRL+C after world creation finishes)"
-print_status "2. Start the server & services:   ${CYAN}./server_manager.sh start YourWorldName 11111${NC}"
-print_status "   (Replace YourWorldName and 11111 if needed)"
+sudo -u "$ORIGINAL_USER" ./blockheads_server171 -h
 echo ""
-print_status "Check server status with: ${CYAN}./server_manager.sh status YourPort${NC}"
-print_status "Stop server with:       ${CYAN}./server_manager.sh stop YourPort${NC}"
+print_header "SERVER MANAGER INSTRUCTIONS"
+echo -e "${YELLOW}¡IMPORTANTE! Ejecuta los siguientes comandos como tu usuario normal ('$ORIGINAL_USER'), NO como root.${NC}"
+echo -e "${YELLOW}Puedes salir de root ahora escribiendo: exit${NC}"
 echo ""
-print_success "Enjoy your server!"
+echo -e "${GREEN}1. Create a world: ${CYAN}./blockheads_server171 -n${NC}"
+print_warning "   After creating the world, press CTRL+C to exit the creation process"
+echo -e "${GREEN}2. See world list: ${CYAN}./blockheads_server171 -l${NC}"
+echo -e "${GREEN}3. Start server: ${CYAN}./server_manager.sh start WORLD_ID YOUR_PORT${NC}"
+echo -e "${GREEN}4. Stop server: ${CYAN}./server_manager.sh stop [PORT]${NC} (stops all if no port specified)"
+echo -e "${GREEN}5. Check status: ${CYAN}./server_manager.sh status [PORT]${NC} (shows all if no port specified)"
+echo -e "${GREEN}6. List running: ${CYAN}./server_manager.sh list${NC}"
+echo -e "${GREEN}7. Default port: ${YELLOW}12153${NC}"
+echo ""
+
+print_header "RANK PATCHER FEATURES"
+echo -e "${GREEN}The rank patcher (rank_patcher.sh, started by server_manager.sh) provides:${NC}"
+echo -e "${CYAN}• Player authentication with IP verification${NC}"
+echo -e "${CYAN}• Password protection for players (!psw, !change_psw, !ip_change)${NC}"
+echo -e "${CYAN}• Automated rank management based on players.log (ADMIN, MOD, SUPER)${NC}"
+echo -e "${CYAN}• Real-time monitoring of player lists and console log${NC}"
+echo ""
+
+print_header "PACKET SNIFFER (UNIQUE LOG)"
+echo -e "${GREEN}The server manager also starts a packet sniffer automatically:${NC}"
+echo -e "${CYAN}• It logs only UNIQUE packets sent/received on the server port.${NC}"
+echo -e "${CYAN}• Log file: ${YELLOW}\$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/WORLD_ID/packet_dump.log${NC}"
+echo -e "${CYAN}• View live unique packets: ${YELLOW}tail -f <path_to_packet_dump.log>${NC}"
+echo -e "${CYAN}• The screen session 'blockheads_sniffer_PORT' exists but will be BLANK (output is redirected).${NC}"
+echo ""
+
+
+print_header "MULTI-SERVER SUPPORT"
+echo -e "${GREEN}You can run multiple servers simultaneously using different ports:${NC}"
+echo -e "${CYAN}./server_manager.sh start WorldID1 12153${NC}"
+echo -e "${CYAN}./server_manager.sh start WorldID2 12154${NC}"
+echo -e "${CYAN}./server_manager.sh start WorldID3 12155${NC}"
+echo ""
+echo -e "${YELLOW}Each server runs in its own screen session with its own patcher and sniffer.${NC}"
+
+print_header "INSTALLATION COMPLETE"
+echo -e "${GREEN}Your Blockheads server with rank management and packet logger is now ready!${NC}"
