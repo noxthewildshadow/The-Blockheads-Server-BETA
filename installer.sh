@@ -1,5 +1,5 @@
 #!/bin/bash
-# --- set -e HA SIDO ELIMINADO ---
+# --- set -e HA SIDO ELIMINADO PARA EVITAR QUE SE DETENGA POR ERRORES ---
 
 # --- Colores ---
 RED='\033[0;31m'
@@ -8,11 +8,12 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
+ORANGE='\033[0;33m'
 PURPLE='\033[0;35m'
+BOLD='\033[1m'
 NC='\033[0m'
 
 # --- Funciones de Impresión ---
-# ... (igual que antes) ...
 print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
@@ -38,33 +39,38 @@ SERVER_URL="https://web.archive.org/web/20240309015235if_/https://majicdave.com/
 TEMP_FILE="/tmp/blockheads_server171.tar.gz"
 SERVER_BINARY="blockheads_server171"
 
-# !!! VERIFICA Y CORRIGE ESTAS URLs SI ES NECESARIO !!!
+# !!! ============================================================= !!!
+# !!! ASEGÚRATE DE QUE ESTAS DOS URLs SEAN CORRECTAS EN TU ARCHIVO !!!
+# !!! ============================================================= !!!
 SERVER_MANAGER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/server_manager.sh" # URL al server_manager.sh CON log de paquetes únicos
 RANK_PATCHER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/rank_patcher.sh"
 
-# --- Listas de Paquetes (Python3 añadido) ---
+# --- Listas de Paquetes (Python3/gawk añadidos) ---
 declare -a PACKAGES_DEBIAN=(
     'git' 'cmake' 'ninja-build' 'clang' 'patchelf' 'libgnustep-base-dev' 'libobjc4'
     'libgnutls28-dev' 'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev' 'zlib1g'
     'libicu-dev' 'libstdc++6' 'libgcc-s1' 'wget' 'curl' 'tar' 'grep' 'screen' 'lsof'
-    'inotify-tools' 'ngrep' 'binutils' 'gawk' 'python3' # <-- python3 añadido
+    'inotify-tools' 'ngrep' 'binutils' 'gawk' 'python3' # <-- Python3 y gawk añadidos
 )
 declare -a PACKAGES_ARCH=(
     'base-devel' 'git' 'cmake' 'ninja' 'clang' 'patchelf' 'gnustep-base' 'gcc-libs'
     'gnutls' 'libgcrypt' 'libxml2' 'libffi' 'libnsl' 'zlib' 'icu' 'libdispatch'
-    'wget' 'curl' 'tar' 'grep' 'screen' 'lsof' 'inotify-tools' 'ngrep' 'binutils' 'gawk' 'python' # <-- python añadido (en Arch suele ser python3)
+    'wget' 'curl' 'tar' 'grep' 'screen' 'lsof' 'inotify-tools' 'ngrep' 'binutils' 'gawk' 'python' # <-- Python y gawk añadidos
 )
-# (Añadir yum/dnf si es necesario: python3)
-
+# (Añadir yum/dnf si es necesario: python3, gawk)
 
 print_header "THE BLOCKHEADS LINUX SERVER INSTALLER (VERBOSE MODE)"
-# ... (resto del script install.sh igual que la versión anterior) ...
+echo -e "${CYAN}Welcome to The Blockheads Server Installation!${NC}"
+echo -e "${YELLOW}This script will install and configure everything you need.${NC}"
+echo
 
 # --- Funciones Auxiliares ---
 find_library() {
     local SEARCH=$1
+    # Usar ldconfig -p que es más fiable y rápido
     local LIBRARY=$(ldconfig -p | grep -F "$SEARCH" -m 1 | awk '{print $NF}' | head -1)
     if [ -z "$LIBRARY" ]; then
+        # Fallback: buscar en directorios comunes si ldconfig falla o no encuentra
         local common_paths=(/usr/lib /usr/lib64 /lib /lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu)
         for path in "${common_paths[@]}"; do
             LIBRARY=$(find "$path" -maxdepth 1 -name "$SEARCH*" -print -quit)
@@ -179,7 +185,7 @@ test_binary() {
 set_permissions() {
     print_step "[8/8] Setting final ownership and permissions..."; print_progress "Changing ownership to '$ORIGINAL_USER'..."
     chown -R "$ORIGINAL_USER:$ORIGINAL_USER" . || print_warning "Could not set ownership."
-    print_progress "Setting execute permissions..."; chmod u+x "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" || print_warning "Could not set execute permissions."
+    print_progress "Setting execute permissions..."; chmod u+x "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" 2>/dev/null || true # Ignorar error si placeholders no existen
     print_success "Permissions set."
 }
 
@@ -191,11 +197,11 @@ extract_and_patch
 test_binary
 set_permissions
 
-# --- Instrucciones Finales ---
-# ... (igual que la versión anterior, con la ayuda restaurada) ...
+# --- Instrucciones Finales (Restauradas) ---
 print_header "INSTALLATION COMPLETE"
 echo -e "${GREEN}Server installed successfully!${NC}"
 echo ""
+
 print_header "SERVER BINARY INFORMATION"
 echo ""
 sudo -u "$ORIGINAL_USER" ./blockheads_server171 -h
@@ -213,6 +219,7 @@ echo -e "${GREEN}5. Check status: ${CYAN}./server_manager.sh status [PORT]${NC} 
 echo -e "${GREEN}6. List running: ${CYAN}./server_manager.sh list${NC}"
 echo -e "${GREEN}7. Default port: ${YELLOW}12153${NC}"
 echo ""
+
 print_header "RANK PATCHER FEATURES"
 echo -e "${GREEN}The rank patcher (rank_patcher.sh, started by server_manager.sh) provides:${NC}"
 echo -e "${CYAN}• Player authentication with IP verification${NC}"
@@ -220,6 +227,7 @@ echo -e "${CYAN}• Password protection for players (!psw, !change_psw, !ip_chan
 echo -e "${CYAN}• Automated rank management based on players.log (ADMIN, MOD, SUPER)${NC}"
 echo -e "${CYAN}• Real-time monitoring of player lists and console log${NC}"
 echo ""
+
 print_header "PACKET SNIFFER (UNIQUE LOG)"
 echo -e "${GREEN}The server manager also starts a packet sniffer automatically:${NC}"
 echo -e "${CYAN}• It logs only UNIQUE packets sent/received on the server port.${NC}"
@@ -227,6 +235,8 @@ echo -e "${CYAN}• Log file: ${YELLOW}\$HOME/GNUstep/Library/ApplicationSupport
 echo -e "${CYAN}• View live unique packets: ${YELLOW}tail -f <path_to_packet_dump.log>${NC}"
 echo -e "${CYAN}• The screen session 'blockheads_sniffer_PORT' exists but will be BLANK (output is redirected).${NC}"
 echo ""
+
+
 print_header "MULTI-SERVER SUPPORT"
 echo -e "${GREEN}You can run multiple servers simultaneously using different ports:${NC}"
 echo -e "${CYAN}./server_manager.sh start WorldID1 12153${NC}"
@@ -234,5 +244,6 @@ echo -e "${CYAN}./server_manager.sh start WorldID2 12154${NC}"
 echo -e "${CYAN}./server_manager.sh start WorldID3 12155${NC}"
 echo ""
 echo -e "${YELLOW}Each server runs in its own screen session with its own patcher and sniffer.${NC}"
+
 print_header "INSTALLATION COMPLETE"
 echo -e "${GREEN}Your Blockheads server with rank management and packet logger is now ready!${NC}"
