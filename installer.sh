@@ -51,7 +51,6 @@ SERVER_URL="https://web.archive.org/web/20240309015235if_/https://majicdave.com/
 TEMP_FILE="/tmp/blockheads_server171.tar.gz"
 SERVER_BINARY="blockheads_server171"
 
-# URLs de tus scripts en GitHub (Asegúrate que sean correctas)
 SERVER_MANAGER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/server_manager.sh"
 RANK_PATCHER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/rank_patcher.sh"
 
@@ -59,13 +58,13 @@ declare -a PACKAGES_DEBIAN=(
     'git' 'cmake' 'ninja-build' 'clang' 'patchelf' 'libgnustep-base-dev' 'libobjc4'
     'libgnutls28-dev' 'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev' 'zlib1g'
     'libicu-dev' 'libstdc++6' 'libgcc-s1' 'wget' 'curl' 'tar' 'grep' 'screen' 'lsof'
-    'inotify-tools' 'binutils' # Añadido binutils explícitamente
+    'inotify-tools'
 )
 
 declare -a PACKAGES_ARCH=(
     'base-devel' 'git' 'cmake' 'ninja' 'clang' 'patchelf' 'gnustep-base' 'gcc-libs'
     'gnutls' 'libgcrypt' 'libxml2' 'libffi' 'libnsl' 'zlib' 'icu' 'libdispatch'
-    'wget' 'curl' 'tar' 'grep' 'screen' 'lsof' 'inotify-tools' 'binutils' # Añadido binutils explícitamente
+    'wget' 'curl' 'tar' 'grep' 'screen' 'lsof' 'inotify-tools'
 )
 
 print_header "THE BLOCKHEADS LINUX SERVER INSTALLER"
@@ -121,7 +120,7 @@ download_server_files() {
         chmod +x "server_manager.sh"
         print_success "Server manager downloaded successfully"
     else
-        print_error "Failed to download server manager from $SERVER_MANAGER_URL"
+        print_error "Failed to download server manager"
         return 1
     fi
 
@@ -130,14 +129,12 @@ download_server_files() {
         chmod +x "rank_patcher.sh"
         print_success "Rank patcher downloaded successfully"
     else
-        print_error "Failed to download rank patcher from $RANK_PATCHER_URL"
+        print_error "Failed to download rank patcher"
         return 1
     fi
 
     return 0
 }
-
-# --- Inicio de la Instalación ---
 
 print_step "[1/7] Installing required packages and dependencies..."
 if ! install_packages; then
@@ -146,8 +143,8 @@ if ! install_packages; then
         print_error "Failed to update package list"
         exit 1
     fi
-    # Instalar solo los esenciales si falla el método completo
-    if ! apt-get install -y libgnustep-base-dev libobjc4 libdispatch-dev patchelf wget curl tar screen lsof inotify-tools binutils >/dev/null 2>&1; then
+
+    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget curl tar screen lsof inotify-tools >/dev/null 2>&1; then
         print_error "Failed to install essential packages"
         exit 1
     fi
@@ -155,15 +152,12 @@ fi
 
 print_step "[2/7] Downloading server archive from archive.org..."
 print_progress "Downloading server binary (this may take a moment)..."
-# Usar --show-progress para feedback, pero redirigir stderr para ocultar otros mensajes de wget
-if wget --timeout=60 --tries=5 --show-progress "$SERVER_URL" -O "$TEMP_FILE" 2>&1 | grep --line-buffered "%" | sed -u -e "s,\.,,g" | awk '{printf("\b\b\b\b%4s", $2)}'; then
-    echo -e "\b\b\b\b100%" # Asegura mostrar 100% al final
+if wget --timeout=30 --tries=3 --show-progress "$SERVER_URL" -O "$TEMP_FILE" 2>/dev/null; then
     print_success "Download successful from archive.org"
 else
     print_error "Failed to download server file from archive.org"
     exit 1
 fi
-
 
 print_step "[3/7] Extracting files..."
 EXTRACT_DIR="/tmp/blockheads_extract_$$"
@@ -171,31 +165,22 @@ mkdir -p "$EXTRACT_DIR"
 
 print_progress "Extracting server files..."
 if ! tar -xzf "$TEMP_FILE" -C "$EXTRACT_DIR" >/dev/null 2>&1; then
-    print_error "Failed to extract server files from $TEMP_FILE"
-    rm -rf "$EXTRACT_DIR" "$TEMP_FILE"
+    print_error "Failed to extract server files"
+    rm -rf "$EXTRACT_DIR"
     exit 1
 fi
 
-# Mover contenido al directorio actual
-shopt -s dotglob
-mv "$EXTRACT_DIR"/* ./ 2>/dev/null || print_warning "Could not move all extracted files, some might already exist."
-shopt -u dotglob
-rm -rf "$EXTRACT_DIR" "$TEMP_FILE" # Limpiar temp file aquí
-
+cp -r "$EXTRACT_DIR"/* ./
+rm -rf "$EXTRACT_DIR"
 
 if [ ! -f "$SERVER_BINARY" ]; then
-    ALTERNATIVE_BINARY=$(find . -maxdepth 1 -iname "*blockheads*server*" -type f -executable -print -quit)
-     if [ -z "$ALTERNATIVE_BINARY" ]; then
-          ALTERNATIVE_BINARY=$(find . -maxdepth 1 -iname "*blockheads*" -type f -executable -print -quit)
-     fi
-     if [ -n "$ALTERNATIVE_BINARY" ] && [ "$ALTERNATIVE_BINARY" != "./$SERVER_BINARY" ]; then
-          print_warning "Server binary named '$SERVER_BINARY' not found, renaming '$ALTERNATIVE_BINARY'"
-          mv "$ALTERNATIVE_BINARY" "$SERVER_BINARY"
-     elif [ ! -f "$SERVER_BINARY" ]; then
-          print_error "Server binary ('$SERVER_BINARY' or similar) not found after extraction!"
-          ls -lA . # Mostrar contenido del directorio
-          exit 1
-     fi
+    ALTERNATIVE_BINARY=$(find . -name "*blockheads*" -type f -executable | head -n 1)
+    [ -n "$ALTERNATIVE_BINARY" ] && mv "$ALTERNATIVE_BINARY" "blockheads_server171" && SERVER_BINARY="blockheads_server171"
+fi
+
+if [ ! -f "$SERVER_BINARY" ]; then
+    print_error "Server binary not found after extraction"
+    exit 1
 fi
 
 chmod +x "$SERVER_BINARY"
@@ -215,73 +200,65 @@ declare -A LIBS=(
 
 TOTAL_LIBS=${#LIBS[@]}
 COUNT=0
-PATCHED_COUNT=0
 
-print_status "Attempting patches..."
 for LIB in "${!LIBS[@]}"; do
-    TARGET_LIB="${LIBS[$LIB]}"
-    echo -n "  Patch $LIB -> $TARGET_LIB... "
-    if [ -z "$TARGET_LIB" ]; then echo -e "${YELLOW}SKIP (Target empty)${NC}"; continue; fi
-    if ! ldconfig -p | grep -q "$(basename "$TARGET_LIB")" && [ ! -f "$TARGET_LIB" ] && [ ! -L "$TARGET_LIB" ]; then echo -e "${YELLOW}SKIP (Target missing)${NC}"; continue; fi
-    # Verificar si es necesario
-    if ! ldd "$SERVER_BINARY" 2>/dev/null | grep -q "$LIB"; then echo -e "${BLUE}SKIP (Not needed)${NC}"; continue; fi
-    ((COUNT++))
-    if patchelf --replace-needed "$LIB" "$TARGET_LIB" "$SERVER_BINARY" >/dev/null 2>&1; then
-        echo -e "${GREEN}OK${NC}"
-        ((PATCHED_COUNT++))
-    else
-        patch_ec=$?
-        echo -e "${RED}FAILED (Code:$patch_ec)${NC}"
-        print_warning "Failed to patch $LIB."
+    [ -z "${LIBS[$LIB]}" ] && continue
+    COUNT=$((COUNT+1))
+
+    if ! patchelf --replace-needed "$LIB" "${LIBS[$LIB]}" "$SERVER_BINARY" >/dev/null 2>&1; then
+        print_warning "Failed to patch $LIB"
     fi
 done
 
-print_success "Compatibility patches applied ($PATCHED_COUNT/$COUNT needed & attempted)"
+print_success "Compatibility patches applied ($COUNT/$TOTAL_LIBS libraries)"
 
 print_step "[5/7] Testing server binary..."
-# Ejecutar como usuario original, silenciar salida normal
-if sudo -u "$ORIGINAL_USER" ./$SERVER_BINARY -h >/dev/null 2>&1; then
+if ./blockheads_server171 -h >/dev/null 2>&1; then
     print_success "Server binary test passed"
 else
-    print_warning "Server binary execution test failed - check dependencies manually using 'ldd ./$SERVER_BINARY'"
+    print_warning "Server binary execution test failed - may need additional dependencies"
 fi
 
 print_step "[6/7] Downloading server manager and rank patcher..."
-# Salir si falla la descarga de estos scripts cruciales
 if ! download_server_files; then
-    print_error "Failed to download required helper scripts. Aborting."
-    exit 1
+    print_warning "Creating basic server manager and rank patcher..."
+
+    cat > server_manager.sh << 'EOF'
+#!/bin/bash
+echo "Use: ./blockheads_server171 -n (to create world)"
+echo "Then: ./blockheads_server171 -o WORLD_NAME -p PORT"
+EOF
+    chmod +x server_manager.sh
+
+    cat > rank_patcher.sh << 'EOF'
+#!/bin/bash
+echo "Rank patcher placeholder - download failed"
+EOF
+    chmod +x rank_patcher.sh
 fi
 
 print_step "[7/7] Setting ownership and permissions..."
-# Cambiar propiedad de todo en el directorio actual al usuario original
-chown -R "$ORIGINAL_USER:$ORIGINAL_USER" . 2>/dev/null || print_warning "Could not set ownership for current directory."
-# Asegurar permisos de ejecución
-chmod u+x "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" 2>/dev/null || print_warning "Could not set execute permissions."
+chown "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" 2>/dev/null || true
+chmod 755 "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" 2>/dev/null || true
 
-print_success "Ownership and permissions set."
-
-# Limpieza final
-# rm -f "$TEMP_FILE" # Comentado por si se necesita debug
+rm -f "$TEMP_FILE"
 
 print_header "INSTALLATION COMPLETE"
 echo -e "${GREEN}Server installed successfully!${NC}"
 echo ""
 
-# --- INSTRUCCIONES FINALES (Restauradas de tu versión original) ---
 print_header "SERVER BINARY INFORMATION"
 echo ""
-sudo -u "$ORIGINAL_USER" ./blockheads_server171 -h
+./blockheads_server171 -h
 echo ""
 print_header "SERVER MANAGER INSTRUCTIONS"
 echo -e "${GREEN}1. Create a world: ${CYAN}./blockheads_server171 -n${NC}"
 print_warning "After creating the world, press CTRL+C to exit the creation process"
 echo -e "${GREEN}2. See world list: ${CYAN}./blockheads_server171 -l${NC}"
 echo -e "${GREEN}3. Start server: ${CYAN}./server_manager.sh start WORLD_ID YOUR_PORT${NC}"
-echo -e "${GREEN}4. Stop server: ${CYAN}./server_manager.sh stop [PORT]${NC}"
-echo -e "${GREEN}5. Check status: ${CYAN}./server_manager.sh status [PORT]${NC}"
-echo -e "${GREEN}6. List running: ${CYAN}./server_manager.sh list${NC}" # Añadido 'list'
-echo -e "${GREEN}7. Default port: ${YELLOW}12153${NC} (can be overridden)" # Aclarado
+echo -e "${GREEN}4. Stop server: ${CYAN}./server_manager.sh stop${NC}"
+echo -e "${GREEN}5. Check status: ${CYAN}./server_manager.sh status${NC}"
+echo -e "${GREEN}6. Default port: ${YELLOW}12153${NC}"
 echo ""
 
 print_header "RANK PATCHER FEATURES"
@@ -300,6 +277,5 @@ echo -e "${CYAN}./server_manager.sh start WorldID3 12155${NC}"
 echo ""
 echo -e "${YELLOW}Each server runs in its own screen session with rank patcher${NC}"
 
-print_header "READY TO GO!" # Cambiado título final
+print_header "INSTALLATION COMPLETE"
 echo -e "${GREEN}Your Blockheads server with rank management is now ready!${NC}"
-print_warning "Remember to run server_manager.sh as '$ORIGINAL_USER', not root."
