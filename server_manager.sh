@@ -2,7 +2,7 @@
 # Este script se ejecuta como un USUARIO NORMAL (ej: fer)
 # NO ejecutar con sudo
 
-# --- Colores para la salida ---
+# --- Colores ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -40,7 +40,7 @@ is_port_in_use() {
 check_world_exists() {
     local world_id="$1"
     local saves_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
-    
+
     if [ ! -d "$saves_dir/$world_id" ]; then
         print_error "World '$world_id' does not exist in: $saves_dir/"
         echo ""
@@ -48,28 +48,28 @@ check_world_exists() {
         print_warning "After creating the world, press ${YELLOW}CTRL+C${NC} to exit"
         return 1
     fi
-    
+
     return 0
 }
 
-# --- Función para liberar puerto (modificada para sniffer) ---
+# --- Función para liberar puerto ---
 free_port() {
     local port="$1"
     print_warning "Freeing port $port..."
-    
+
     local pids=$(lsof -ti ":$port" 2>/dev/null)
     if [ -n "$pids" ]; then
         kill -9 $pids 2>/dev/null
     fi
-    
+
     local screen_server="blockheads_server_$port"
     local screen_patcher="blockheads_patcher_$port"
     local screen_sniffer="blockheads_sniffer_$port"
-    
+
     if screen_session_exists "$screen_server"; then
         screen -S "$screen_server" -X quit 2>/dev/null
     fi
-    
+
     if screen_session_exists "$screen_patcher"; then
         screen -S "$screen_patcher" -X quit 2>/dev/null
     fi
@@ -77,7 +77,7 @@ free_port() {
     if screen_session_exists "$screen_sniffer"; then
         screen -S "$screen_sniffer" -X quit 2>/dev/null
     fi
-    
+
     sleep 2
     if is_port_in_use "$port"; then
         return 1
@@ -90,42 +90,42 @@ free_port() {
 cleanup_server_lists() {
     local world_id="$1"
     local port="$2"
-    
+
     (
         sleep 5
         local world_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/$world_id"
         local admin_list="$world_dir/adminlist.txt"
         local mod_list="$world_dir/modlist.txt"
-        
+
         if [ -f "$admin_list" ]; then
             rm -f "$admin_list"
         fi
-        
+
         if [ -f "$mod_list" ]; then
             rm -f "$mod_list"
         fi
     ) &
 }
 
-# --- Función para iniciar (CORREGIDA) ---
+# --- Función para iniciar (MODIFICADA para sniffer con log único) ---
 start_server() {
     local world_id="$1"
     local port="${2:-$DEFAULT_PORT}"
-    
+
     local SCREEN_SERVER="blockheads_server_$port"
     local SCREEN_PATCHER="blockheads_patcher_$port"
     local SCREEN_SNIFFER="blockheads_sniffer_$port"
-    
+
     if [ ! -f "$SERVER_BINARY" ]; then
         print_error "Server binary not found: $SERVER_BINARY"
         print_warning "Please run the installer script first."
         return 1
     fi
-    
+
     if ! check_world_exists "$world_id"; then
         return 1
     fi
-    
+
     if is_port_in_use "$port"; then
         print_warning "Port $port is in use."
         if ! free_port "$port"; then
@@ -133,107 +133,128 @@ start_server() {
             return 1
         fi
     fi
-    
+
     # Limpieza de sesiones anteriores
-    if screen_session_exists "$SCREEN_SERVER"; then
-        screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
-    fi
-    if screen_session_exists "$SCREEN_PATCHER"; then
-        screen -S "$SCREEN_PATCHER" -X quit 2>/dev/null
-    fi
-    if screen_session_exists "$SCREEN_SNIFFER"; then
-        screen -S "$SCREEN_SNIFFER" -X quit 2>/dev/null
-    fi
-    
+    if screen_session_exists "$SCREEN_SERVER"; then screen -S "$SCREEN_SERVER" -X quit 2>/dev/null; fi
+    if screen_session_exists "$SCREEN_PATCHER"; then screen -S "$SCREEN_PATCHER" -X quit 2>/dev/null; fi
+    if screen_session_exists "$SCREEN_SNIFFER"; then screen -S "$SCREEN_SNIFFER" -X quit 2>/dev/null; fi
+
     sleep 1
-    
+
     # --- Usa $HOME directamente ---
     local log_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/$world_id"
     local log_file="$log_dir/console.log"
+    local packet_log_file="$log_dir/packet_dump.log" # <-- Archivo para paquetes únicos
     mkdir -p "$log_dir"
+    # Asegurarse de que el usuario actual sea el propietario
     chown -R "$USER:$USER" "$HOME/GNUstep" 2>/dev/null || true
-    
+    # Limpiar log de paquetes anterior si existe
+    rm -f "$packet_log_file"
+    touch "$packet_log_file"
+    chown "$USER:$USER" "$packet_log_file" 2>/dev/null || true
+
     print_header "STARTING SERVER - WORLD: $world_id, PORT: $port"
-    
+
     echo "$world_id" > "world_id_$port.txt"
-    
+
     print_step "Starting server in screen session: $SCREEN_SERVER"
-    
+
     if ! command -v screen >/dev/null 2>&1; then
         print_error "Screen command not found. Please run the installer script."
         return 1
     fi
-    
+
     # Script temporal para el bucle de reinicio del servidor
     local start_script=$(mktemp)
+    # --- CORRECCIÓN: Usar 'script' para simular TTY y capturar entrada/salida ---
     cat > "$start_script" << EOF
 #!/bin/bash
 cd '$PWD'
 export LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
+# Usar 'script' para crear un pseudo-terminal
+# Esto permite que 'tee' funcione correctamente y que la entrada manual funcione.
+script -q -c "./run_server_loop.sh '$world_id' '$port' '$log_file'" /dev/null
+EOF
+
+    # Script interno para el bucle real (llamado por 'script')
+    cat > "./run_server_loop.sh" << LOOP_EOF
+#!/bin/bash
+world_id="\$1"
+port="\$2"
+log_file="\$3"
 while true; do
     echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting server..."
-    # --- CORRECCIÓN CLAVE: 'tee' permite la entrada manual ---
-    if ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'; then
+    # Ejecutar directamente (sin tee aquí, 'script' lo captura)
+    if ./blockheads_server171 -o "\$world_id" -p \$port; then
         echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server closed normally"
     else
         exit_code=\$?
         echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server failed with code: \$exit_code"
-        if [ \$exit_code -eq 1 ] && tail -n 5 '$log_file' | grep -q "port.*already in use"; then
-            echo "[\$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Port already in use. Will not retry."
-            break
+        # Comprobar si el log existe antes de usar tail
+        if [ -f "\$log_file" ] && tail -n 5 "\$log_file" | grep -q "port.*already in use"; then
+             echo "[\$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Port already in use. Will not retry."
+             break
         fi
     fi
     echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Restarting in 5 seconds..."
     sleep 5
 done
-EOF
-    
+LOOP_EOF
+
     chmod +x "$start_script"
-    
-    # Iniciar servidor
-    if screen -dmS "$SCREEN_SERVER" bash -c "exec $start_script"; then
+    chmod +x "./run_server_loop.sh"
+
+    # Iniciar servidor usando el script temporal que llama a 'script'
+    if screen -L -Logfile "$log_file" -dmS "$SCREEN_SERVER" bash -c "exec $start_script"; then
         print_success "Server screen session created successfully"
-        (sleep 10; rm -f "$start_script") &
+        (sleep 10; rm -f "$start_script" "./run_server_loop.sh") & # Limpiar ambos scripts
     else
         print_error "Failed to create screen session for server"
-        rm -f "$start_script"
+        rm -f "$start_script" "./run_server_loop.sh"
         return 1
     fi
-    
+
     cleanup_server_lists "$world_id" "$port"
-    
+
     print_step "Waiting for server to start..."
-    
+
     local wait_time=0
-    while [ ! -f "$log_file" ] && [ $wait_time -lt 15 ]; do
+    # Esperar a que el log file se cree por 'screen -L'
+    while [ ! -f "$log_file" ] && [ $wait_time -lt 20 ]; do
         sleep 1
         ((wait_time++))
     done
-    
+
     if [ ! -f "$log_file" ]; then
-        print_error "Could not create log file. Server may not have started."
-        return 1
+        print_error "Could not detect log file ($log_file). Server might have failed."
+        # No retornar error necesariamente, podría estar tardando
     fi
-    
+
     local server_ready=false
-    for i in {1..30}; do
-        if grep -q "World load complete\|Server started\|Ready for connections\|using seed:\|save delay:" "$log_file"; then
+    print_status "Checking server log ($log_file) for ready message..."
+    for i in {1..45}; do # Aumentar tiempo de espera
+         # Asegurarse de que el archivo exista antes de hacer grep
+         if [ -f "$log_file" ] && grep -q -E "World load complete|Server started|Ready for connections|using seed:|save delay:" "$log_file"; then
             server_ready=true
             break
-        fi
-        sleep 1
+         fi
+         echo -n "." # Mostrar progreso
+         sleep 1
     done
-    
+    echo # Nueva línea después de los puntos
+
     if [ "$server_ready" = false ]; then
+        print_warning "Server ready message not detected in log after 45 seconds."
         if ! screen_session_exists "$SCREEN_SERVER"; then
-            print_error "Server screen session not found"
+            print_error "Server screen session not found. Startup likely failed."
             return 1
         fi
+         print_warning "Proceeding anyway, but check server status manually."
     else
         print_success "Server started successfully!"
     fi
-    
-    # --- CORRECCIÓN CLAVE: Sin 'sudo -u' ---
+
+    # Iniciar Patcher
     print_step "Starting rank patcher..."
     if [ -f "./rank_patcher.sh" ]; then
         if screen -dmS "$SCREEN_PATCHER" bash -c "cd '$PWD' && ./rank_patcher.sh '$port'"; then
@@ -245,190 +266,236 @@ EOF
         print_warning "rank_patcher.sh not found. Skipping."
     fi
 
-    # El sniffer SÍ necesita 'sudo'
-    print_step "Starting packet sniffer (interactive)..."
+    # --- INICIO: BLOQUE MODIFICADO PARA SNIFFER CON LOG ÚNICO ---
+    print_step "Starting packet sniffer (logging unique packets)..."
     if ! command -v ngrep >/dev/null 2>&1; then
         print_error "ngrep command not found. Please run installer."
+    elif ! command -v awk >/dev/null 2>&1; then
+         print_error "awk command not found. Cannot filter unique packets."
     else
-        if screen -dmS "$SCREEN_SNIFFER" bash -c "sudo ngrep -d any -W byline port $port"; then
+        # Comando ngrep + awk para filtrar únicos y guardar en log
+        # Usamos -x para salida hexadecimal, que es más fácil de parsear y comparar
+        local ngrep_awk_cmd="sudo ngrep -x -q -d any port $port | awk 'BEGIN{RS=\"#\\s*\\n\"; ORS=RT; pkt_count=0} { header = \$0; getline body; gsub(/[[:space:]]/,\"\",body); if (body != \"\" && !(body in seen)) { seen[body]=1; pkt_count++; printf \"%s\", header RT body \"\\n\"} } END { print \"Logged \" pkt_count \" unique packets.\" >> \"/dev/stderr\" }' >> '$packet_log_file' 2>&1"
+
+        if screen -dmS "$SCREEN_SNIFFER" bash -c "$ngrep_awk_cmd"; then
             print_success "Packet sniffer screen session created: $SCREEN_SNIFFER"
-            print_status "Packets will be visible in: ${CYAN}screen -r $SCREEN_SNIFFER${NC}"
+            print_status "Unique packets logged to: ${CYAN}$packet_log_file${NC}"
+            # La screen estará vacía, ya que todo se redirige al archivo
         else
             print_error "Failed to create packet sniffer screen session."
             print_warning "Did you configure ${YELLOW}passwordless sudo${NC} with the installer?"
         fi
     fi
-    
+    # --- FIN: BLOQUE MODIFICADO ---
+
     local server_started=0
     local patcher_started=0
     local sniffer_started=0
-    
+
     if screen_session_exists "$SCREEN_SERVER"; then server_started=1; fi
     if screen_session_exists "$SCREEN_PATCHER"; then patcher_started=1; fi
     if screen_session_exists "$SCREEN_SNIFFER"; then sniffer_started=1; fi
-    
-    print_header "SERVER, PATCHER, AND SNIFFER STARTED!"
+
+    print_header "SERVER STARTUP COMPLETE"
     print_success "World: $world_id"
     print_success "Port: $port"
     echo ""
-    print_status "To view server console: ${CYAN}screen -r $SCREEN_SERVER${NC}"
+    if [ "$server_started" -eq 1 ]; then
+        print_status "Server Console: ${CYAN}screen -r $SCREEN_SERVER${NC}"
+    else
+        print_error "Server FAILED to start."
+    fi
     if [ "$patcher_started" -eq 1 ]; then
-        print_status "To view rank patcher: ${CYAN}screen -r $SCREEN_PATCHER${NC}"
+        print_status "Rank Patcher:   ${CYAN}screen -r $SCREEN_PATCHER${NC}"
+    else
+        print_warning "Rank Patcher FAILED to start."
     fi
     if [ "$sniffer_started" -eq 1 ]; then
-        print_status "To view packet sniffer: ${CYAN}screen -r $SCREEN_SNIFFER${NC}"
+        print_status "Packet Log:     ${CYAN}tail -f $packet_log_file${NC}"
+        # print_status " (Sniffer screen '$SCREEN_SNIFFER' is intentionally blank)"
+    else
+        print_warning "Packet Sniffer FAILED to start."
     fi
     echo ""
-    print_warning "To exit console without stopping server: ${YELLOW}CTRL+A, D${NC}"
+    print_warning "To detach from screen: ${YELLOW}CTRL+A, D${NC}"
 }
 
 # --- Función para detener ---
 stop_server() {
     local port="$1"
-    
+
     if [ -z "$port" ]; then
         print_header "STOPPING ALL SERVERS"
-        
+
         for server_session in $(screen -list | grep "blockheads_server_" | awk -F. '{print $1}'); do
             screen -S "$server_session" -X quit 2>/dev/null
             print_success "Stopped server: $server_session"
         done
-        
+
         for patcher_session in $(screen -list | grep "blockheads_patcher_" | awk -F. '{print $1}'); do
             screen -S "$patcher_session" -X quit 2>/dev/null
             print_success "Stopped rank patcher: $patcher_session"
         done
-        
+
         for sniffer_session in $(screen -list | grep "blockheads_sniffer_" | awk -F. '{print $1}'); do
             screen -S "$sniffer_session" -X quit 2>/dev/null
             print_success "Stopped packet sniffer: $sniffer_session"
         done
-        
+
+        # Matar procesos residuales
         pkill -f "$SERVER_BINARY" 2>/dev/null || true
+        pkill -f "rank_patcher.sh" 2>/dev/null || true
+        # Matar ngrep necesita sudo si el usuario no tiene permiso
+        sudo pkill -f "ngrep.*port" 2>/dev/null || pkill -f "ngrep.*port" 2>/dev/null || true
+
+
         rm -f world_id_*.txt 2>/dev/null || true
+        rm -f run_server_loop.sh 2>/dev/null || true # Limpiar script de loop
         print_success "All processes stopped."
     else
         print_header "STOPPING SERVER ON PORT $port"
-        
+
         local screen_server="blockheads_server_$port"
         local screen_patcher="blockheads_patcher_$port"
         local screen_sniffer="blockheads_sniffer_$port"
-        
+
         if screen_session_exists "$screen_server"; then
             screen -S "$screen_server" -X quit 2>/dev/null
             print_success "Server stopped on port $port."
         else
             print_warning "Server was not running on port $port."
         fi
-        
+
         if screen_session_exists "$screen_patcher"; then
             screen -S "$screen_patcher" -X quit 2>/dev/null
             print_success "Rank patcher stopped on port $port."
         else
             print_warning "Rank patcher was not running on port $port."
         fi
-        
+
         if screen_session_exists "$screen_sniffer"; then
             screen -S "$screen_sniffer" -X quit 2>/dev/null
             print_success "Packet sniffer stopped on port $port."
         else
             print_warning "Packet sniffer was not running on port $port."
         fi
-        
-        pkill -f "$SERVER_BINARY.*$port" 2>/dev/null || true
+
+        # Matar procesos residuales para este puerto
+        pkill -f "$SERVER_BINARY.*-p $port" 2>/dev/null || true
+        pkill -f "rank_patcher.sh '$port'" 2>/dev/null || true
+        sudo pkill -f "ngrep.*port $port" 2>/dev/null || pkill -f "ngrep.*port $port" 2>/dev/null || true
+
+
         rm -f "world_id_$port.txt" 2>/dev/null || true
+         rm -f run_server_loop.sh 2>/dev/null || true # Limpiar script de loop
     fi
 }
 
 # --- Función de listar ---
 list_servers() {
     print_header "LIST OF RUNNING SERVERS"
-    
-    local servers=$(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | sed 's/blockheads_server_/ - Port: /')
-    
-    if [ -z "$servers" ]; then
-        print_warning "No servers are currently running."
-    else
-        print_status "Running servers:"
-        while IFS= read -r server; do
-            print_status " $server"
-        done <<< "$servers"
+
+    local running_servers=()
+    local all_ports=$(ls world_id_*.txt 2>/dev/null | sed -n 's/world_id_\(.*\).txt/\1/p')
+
+    if [ -z "$all_ports" ]; then
+         print_warning "No configured servers found (no world_id_*.txt files)."
+         # Comprobar si hay screens huérfanas
+         local orphan_screens=$(screen -list | grep -E "blockheads_(server|patcher|sniffer)_" | awk '{print $1}')
+         if [ -n "$orphan_screens" ]; then
+              print_warning "Found potentially orphaned screen sessions:"
+              echo "$orphan_screens"
+              print_warning "Use 'screen -r <session_name>' or '$0 stop' to manage."
+         fi
+         return
     fi
+
+    print_status "Checking status for configured ports..."
+    for port in $all_ports; do
+        local server_running="STOPPED"
+        local patcher_running="STOPPED"
+        local sniffer_running="STOPPED"
+        local world_id=$(cat "world_id_$port.txt" 2>/dev/null || echo "Unknown")
+
+        if screen_session_exists "blockheads_server_$port"; then server_running="${GREEN}RUNNING${NC}"; fi
+        if screen_session_exists "blockheads_patcher_$port"; then patcher_running="${GREEN}RUNNING${NC}"; fi
+        if screen_session_exists "blockheads_sniffer_$port"; then sniffer_running="${GREEN}RUNNING${NC}"; fi
+
+        echo "----------------------------------------"
+        print_status "Port: ${YELLOW}$port${NC} (World: ${CYAN}$world_id${NC})"
+        echo -e "  Server: $server_running"
+        echo -e "  Patcher: $patcher_running"
+        echo -e "  Sniffer: $sniffer_running"
+        running_servers+=("$port")
+
+    done
+    echo "----------------------------------------"
+
+    # Comprobar screens huérfanas de nuevo
+    local orphan_screens=$(screen -list | grep -E "blockheads_(server|patcher|sniffer)_" | awk '{print $1}' | grep -vFf <(printf "%s\n" "${running_servers[@]}" | sed -e 's/^/blockheads_server_/' -e 's/^/blockheads_patcher_/' -e 's/^/blockheads_sniffer_/'))
+     if [ -n "$orphan_screens" ]; then
+          print_warning "Found potentially orphaned screen sessions:"
+          echo "$orphan_screens"
+          print_warning "Use 'screen -r <session_name>' or '$0 stop' to manage."
+     fi
+
 }
+
 
 # --- Función de estado ---
 show_status() {
     local port="$1"
-    
+
     if [ -z "$port" ]; then
-        print_header "THE BLOCKHEADS SERVER STATUS - ALL SERVERS"
-        
-        local servers=$(screen -list | grep "blockheads_server_" | awk -F. '{print $1}' | sed 's/blockheads_server_//')
-        
-        if [ -z "$servers" ]; then
-            print_error "No servers are currently running."
-        else
-            while IFS= read -r server_port; do
-                if screen_session_exists "blockheads_server_$server_port"; then
-                    print_success "Server on port $server_port: RUNNING"
-                else
-                    print_error "Server on port $server_port: STOPPED"
-                fi
-                
-                if screen_session_exists "blockheads_patcher_$server_port"; then
-                    print_success "Rank patcher on port $server_port: RUNNING"
-                else
-                    print_error "Rank patcher on port $server_port: STOPPED"
-                fi
-                
-                if screen_session_exists "blockheads_sniffer_$server_port"; then
-                    print_success "Packet Sniffer on port $server_port: RUNNING"
-                else
-                    print_error "Packet Sniffer on port $server_port: STOPPED"
-                fi
-                
-                if [ -f "world_id_$server_port.txt" ]; then
-                    local WORLD_ID=$(cat "world_id_$server_port.txt" 2>/dev/null)
-                    print_status "World for port $server_port: ${CYAN}$WORLD_ID${NC}"
-                fi
-                echo ""
-            done <<< "$servers"
-        fi
+        # Reutilizar list_servers para el estado general
+        list_servers
     else
         print_header "THE BLOCKHEADS SERVER STATUS - PORT $port"
-        
-        if screen_session_exists "blockheads_server_$port"; then
-            print_success "Server: RUNNING"
-        else
-            print_error "Server: STOPPED"
-        fi
-        
-        if screen_session_exists "blockheads_patcher_$port"; then
-            print_success "Rank patcher: RUNNING"
-        else
-            print_error "Rank patcher: STOPPED"
-        fi
-        
-        if screen_session_exists "blockheads_sniffer_$port"; then
-            print_success "Packet Sniffer: RUNNING"
-        else
-            print_error "Packet Sniffer: STOPPED"
-        fi
-        
+
+        local server_running="${RED}STOPPED${NC}"
+        local patcher_running="${RED}STOPPED${NC}"
+        local sniffer_running="${RED}STOPPED${NC}"
+        local world_id="Not configured"
+        local packet_log_status="N/A"
+
+        if screen_session_exists "blockheads_server_$port"; then server_running="${GREEN}RUNNING${NC}"; fi
+        if screen_session_exists "blockheads_patcher_$port"; then patcher_running="${GREEN}RUNNING${NC}"; fi
+        if screen_session_exists "blockheads_sniffer_$port"; then sniffer_running="${GREEN}RUNNING${NC}"; fi
+
         if [ -f "world_id_$port.txt" ]; then
-            local WORLD_ID=$(cat "world_id_$port.txt" 2>/dev/null)
-            print_status "Current world: ${CYAN}$WORLD_ID${NC}"
-            
-            if screen_session_exists "blockheads_server_$port"; then
-                print_status "To view console: ${CYAN}screen -r blockheads_server_$port${NC}"
-                print_status "To view rank patcher: ${CYAN}screen -r blockheads_patcher_$port${NC}"
-                print_status "To view packet sniffer: ${CYAN}screen -r blockheads_sniffer_$port${NC}"
-            fi
-        else
-            print_warning "World: Not configured for port $port"
+            world_id=$(cat "world_id_$port.txt" 2>/dev/null)
+             local packet_log_file="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/$world_id/packet_dump.log"
+             if [ -f "$packet_log_file" ]; then
+                  packet_log_status="Exists (${CYAN}$(du -h "$packet_log_file" | cut -f1)${NC})"
+             else
+                  packet_log_status="${YELLOW}Not found${NC}"
+             fi
         fi
+
+
+        echo -e "  World: ${CYAN}$world_id${NC}"
+        echo -e "  Server Status: $server_running"
+        echo -e "  Patcher Status: $patcher_running"
+        echo -e "  Sniffer Status: $sniffer_running"
+        echo -e "  Packet Log: $packet_log_status"
+        echo ""
+
+        if [ "$server_running" != "${RED}STOPPED${NC}" ]; then
+            print_status "View Server Console: ${CYAN}screen -r blockheads_server_$port${NC}"
+        fi
+         if [ "$patcher_running" != "${RED}STOPPED${NC}" ]; then
+            print_status "View Rank Patcher:   ${CYAN}screen -r blockheads_patcher_$port${NC}"
+        fi
+         if [ "$sniffer_running" != "${RED}STOPPED${NC}" ]; then
+             # La screen estará vacía, así que apuntamos al log
+             if [ "$world_id" != "Not configured" ]; then
+                print_status "View Packet Log:     ${CYAN}tail -f $packet_log_file${NC}"
+             fi
+        fi
+
     fi
 }
+
 
 # --- Función de Ayuda ---
 show_usage() {
@@ -436,17 +503,18 @@ show_usage() {
     print_status "Usage: $0 [command]"
     echo ""
     print_status "Available commands:"
-    echo -e " ${GREEN}start${NC} [WORLD_NAME] [PORT] - Start server with rank patcher & sniffer"
-    echo -e " ${RED}stop${NC} [PORT] - Stop server, rank patcher & sniffer"
-    echo -e " ${CYAN}status${NC} [PORT] - Show server status (includes sniffer)"
-    echo -e " ${YELLOW}list${NC} - List all running servers"
+    echo -e " ${GREEN}start${NC} [WORLD_NAME] [PORT] - Start server, patcher & packet logger"
+    echo -e " ${RED}stop${NC} [PORT] - Stop server, patcher & packet logger"
+    echo -e " ${CYAN}status${NC} [PORT] - Show server status (includes logger)"
+    echo -e " ${YELLOW}list${NC} - List all running/configured servers"
     echo -e " ${YELLOW}help${NC} - Show this help"
     echo ""
     print_status "Examples:"
     echo -e " ${GREEN}$0 start MyWorld 12153${NC}"
-    echo -e " ${GREEN}$0 start MyWorld${NC} (uses default port 12153)"
+    echo -e " ${GREEN}$0 start MyWorld${NC} (uses default port $DEFAULT_PORT)"
     echo -e " ${RED}$0 stop${NC} (stops all servers)"
-    echo -e " ${RED}$0 stop 12153${NC} (stops server on port 12153)"
+    echo -e " ${RED}$0 stop 12153${NC}"
+    echo -e " ${CYAN}$0 status 12153${NC}"
     echo ""
     print_warning "First create a world: ./blockheads_server171 -n"
     print_warning "After creating the world, press CTRL+C to exit"
@@ -476,6 +544,7 @@ case "$1" in
     list)
         list_servers
         ;;
+    # install-deps quitado, es parte del installer.sh
     help|--help|-h|*)
         show_usage
         ;;
