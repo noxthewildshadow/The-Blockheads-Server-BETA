@@ -1,4 +1,6 @@
 #!/bin/bash
+# Este script se ejecuta como un USUARIO NORMAL (ej: fer)
+# NO ejecutar con sudo
 
 # --- Colores para la salida ---
 RED='\033[0;31m'
@@ -25,103 +27,6 @@ print_header() {
 SERVER_BINARY="./blockheads_server171"
 DEFAULT_PORT=12153
 
-# --- Función para instalar dependencias de librerías ---
-install_dependencies() {
-    print_header "INSTALLING REQUIRED DEPENDENCIES"
-    print_warning "This command should be run from the installer script. Running manually..."
-    
-    if ! command -v sudo &> /dev/null; then
-        print_error "sudo is required to install dependencies."
-        return 1
-    fi
-
-    if ! command -v ldd &> /dev/null; then
-        print_step "Installing ldd utility..."
-        if command -v apt-get &> /dev/null; then
-            sudo apt-get update && sudo apt-get install -y binutils
-        elif command -v yum &> /dev/null; then
-            sudo yum install -y binutils
-        elif command -v dnf &> /dev/null; then
-            sudo dnf install -y binutils
-        elif command -v pacman &> /dev/null; then
-            sudo pacman -Sy --noconfirm binutils
-        fi
-    fi
-    
-    print_step "Checking for missing libraries..."
-    local missing_libs=$(ldd "$SERVER_BINARY" 2>/dev/null | grep "not found" | awk '{print $1}' | tr '\n' ' ')
-    
-    if [ -n "$missing_libs" ]; then
-        if command -v apt-get &> /dev/null; then
-            print_step "Installing dependencies on Debian/Ubuntu..."
-            sudo apt-get update
-            for lib in $missing_libs; do
-                case "$lib" in
-                    libdispatch.so.0)
-                        sudo apt-get install -y libdispatch-dev || sudo apt-get install -y libdispatch0
-                        ;;
-                    libobjc.so.4)
-                        sudo apt-get install -y libobjc4
-                        ;;
-                    libgnustep-base.so.1.28)
-                        sudo apt-get install -y gnustep-base-runtime
-                        ;;
-                    libpthread.so.0|libc.so.6|libm.so.6|libdl.so.2)
-                        sudo apt-get install -y libc6
-                        ;;
-                    *)
-                        sudo apt-get install -y "lib${lib%.*}" || sudo apt-get install -y "${lib%.*}"
-                        ;;
-                esac
-            done
-        # ... (otras distros)
-        fi
-    fi
-    
-    return 0
-}
-
-# --- Función para chequear librerías ---
-check_and_fix_libraries() {
-    print_header "CHECKING SYSTEM LIBRARIES"
-    
-    if [ ! -f "$SERVER_BINARY" ]; then
-        print_error "Server binary not found: $SERVER_BINARY"
-        return 1
-    fi
-    
-    if ! command -v ldd &> /dev/null; then
-        print_error "ldd command not found. Please install binutils."
-        return 1
-    fi
-    
-    print_step "Checking library dependencies for $SERVER_BINARY..."
-    
-    local lib_error=$(ldd "$SERVER_BINARY" 2>&1 | grep -i "error\|not found\|cannot")
-    
-    if [ -n "$lib_error" ]; then
-        if ! install_dependencies; then
-            local lib_paths=""
-            if [ -d "/usr/lib/x86_64-linux-gnu" ]; then
-                lib_paths="/usr/lib/x86_64-linux-gnu:$lib_paths"
-            fi
-            if [ -d "/usr/lib64" ]; then
-                lib_paths="/usr/lib64:$lib_paths"
-            fi
-            if [ -d "/usr/lib" ]; then
-                lib_paths="/usr/lib:$lib_paths"
-            fi
-            if [ -d "/lib/x86_64-linux-gnu" ]; then
-                lib_paths="/lib/x86_64-linux-gnu:$lib_paths"
-            fi
-            
-            export LD_LIBRARY_PATH="$lib_paths:$LD_LIBRARY_PATH"
-        fi
-    fi
-    
-    return 0
-}
-
 # --- Funciones de Utilidad ---
 screen_session_exists() {
     screen -list | grep -q "$1"
@@ -131,7 +36,7 @@ is_port_in_use() {
     lsof -Pi ":$1" -sTCP:LISTEN -t >/dev/null 2>&1
 }
 
-# --- CORREGIDO: Usa $HOME directamente ---
+# --- Usa $HOME directamente ---
 check_world_exists() {
     local world_id="$1"
     local saves_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
@@ -159,7 +64,7 @@ free_port() {
     
     local screen_server="blockheads_server_$port"
     local screen_patcher="blockheads_patcher_$port"
-    local screen_sniffer="blockheads_sniffer_$port" # <-- AÑADIDO
+    local screen_sniffer="blockheads_sniffer_$port"
     
     if screen_session_exists "$screen_server"; then
         screen -S "$screen_server" -X quit 2>/dev/null
@@ -169,7 +74,7 @@ free_port() {
         screen -S "$screen_patcher" -X quit 2>/dev/null
     fi
 
-    if screen_session_exists "$screen_sniffer"; then # <-- AÑADIDO
+    if screen_session_exists "$screen_sniffer"; then
         screen -S "$screen_sniffer" -X quit 2>/dev/null
     fi
     
@@ -181,7 +86,7 @@ free_port() {
     fi
 }
 
-# --- CORREGIDO: Usa $HOME directamente ---
+# --- Usa $HOME directamente ---
 cleanup_server_lists() {
     local world_id="$1"
     local port="$2"
@@ -202,7 +107,7 @@ cleanup_server_lists() {
     ) &
 }
 
-# --- Función para iniciar (MODIFICADA) ---
+# --- Función para iniciar (CORREGIDA) ---
 start_server() {
     local world_id="$1"
     local port="${2:-$DEFAULT_PORT}"
@@ -213,11 +118,8 @@ start_server() {
     
     if [ ! -f "$SERVER_BINARY" ]; then
         print_error "Server binary not found: $SERVER_BINARY"
+        print_warning "Please run the installer script first."
         return 1
-    fi
-    
-    if ! check_and_fix_libraries; then
-        print_warning "Proceeding with library issues - server may fail to start"
     fi
     
     if ! check_world_exists "$world_id"; then
@@ -245,11 +147,10 @@ start_server() {
     
     sleep 1
     
-    # --- CORREGIDO: Usa $HOME directamente ---
+    # --- Usa $HOME directamente ---
     local log_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/$world_id"
     local log_file="$log_dir/console.log"
     mkdir -p "$log_dir"
-    # Asegurarse de que el usuario actual sea el propietario
     chown -R "$USER:$USER" "$HOME/GNUstep" 2>/dev/null || true
     
     print_header "STARTING SERVER - WORLD: $world_id, PORT: $port"
@@ -259,7 +160,7 @@ start_server() {
     print_step "Starting server in screen session: $SCREEN_SERVER"
     
     if ! command -v screen >/dev/null 2>&1; then
-        print_error "Screen command not found. Please install screen."
+        print_error "Screen command not found. Please run the installer script."
         return 1
     fi
     
@@ -271,9 +172,7 @@ cd '$PWD'
 export LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
 while true; do
     echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting server..."
-    # --- CORREGIDO: Eliminado 'sudo -u' ---
-    # Ahora el servidor se ejecuta como el usuario actual (fer)
-    # y la tubería 'tee' funcionará correctamente para la entrada manual.
+    # --- CORRECCIÓN CLAVE: 'tee' permite la entrada manual ---
     if ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'; then
         echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server closed normally"
     else
@@ -334,26 +233,29 @@ EOF
         print_success "Server started successfully!"
     fi
     
-    # --- CORREGIDO: Eliminado 'sudo -u' ---
+    # --- CORRECCIÓN CLAVE: Sin 'sudo -u' ---
     print_step "Starting rank patcher..."
-    if screen -dmS "$SCREEN_PATCHER" bash -c "cd '$PWD' && ./rank_patcher.sh '$port'"; then
-        print_success "Rank patcher screen session created: $SCREEN_PATCHER"
+    if [ -f "./rank_patcher.sh" ]; then
+        if screen -dmS "$SCREEN_PATCHER" bash -c "cd '$PWD' && ./rank_patcher.sh '$port'"; then
+            print_success "Rank patcher screen session created: $SCREEN_PATCHER"
+        else
+            print_warning "Failed to create rank patcher screen session"
+        fi
     else
-        print_warning "Failed to create rank patcher screen session"
+        print_warning "rank_patcher.sh not found. Skipping."
     fi
 
-    # El sniffer necesita 'sudo' real, lo cual está bien por la regla de sudoers
+    # El sniffer SÍ necesita 'sudo'
     print_step "Starting packet sniffer (interactive)..."
     if ! command -v ngrep >/dev/null 2>&1; then
-        print_error "ngrep command not found. Cannot start sniffer."
-        print_warning "Run '${YELLOW}$0 install-deps${NC}' to install ngrep."
+        print_error "ngrep command not found. Please run installer."
     else
         if screen -dmS "$SCREEN_SNIFFER" bash -c "sudo ngrep -d any -W byline port $port"; then
             print_success "Packet sniffer screen session created: $SCREEN_SNIFFER"
             print_status "Packets will be visible in: ${CYAN}screen -r $SCREEN_SNIFFER${NC}"
         else
             print_error "Failed to create packet sniffer screen session."
-            print_warning "Did you configure ${YELLOW}passwordless sudo${NC} for ngrep?"
+            print_warning "Did you configure ${YELLOW}passwordless sudo${NC} with the installer?"
         fi
     fi
     
@@ -365,25 +267,22 @@ EOF
     if screen_session_exists "$SCREEN_PATCHER"; then patcher_started=1; fi
     if screen_session_exists "$SCREEN_SNIFFER"; then sniffer_started=1; fi
     
-    if [ "$server_started" -eq 1 ] && [ "$patcher_started" -eq 1 ]; then
-        print_header "SERVER, PATCHER, AND SNIFFER STARTED!"
-        print_success "World: $world_id"
-        print_success "Port: $port"
-        echo ""
-        print_status "To view server console: ${CYAN}screen -r $SCREEN_SERVER${NC}"
+    print_header "SERVER, PATCHER, AND SNIFFER STARTED!"
+    print_success "World: $world_id"
+    print_success "Port: $port"
+    echo ""
+    print_status "To view server console: ${CYAN}screen -r $SCREEN_SERVER${NC}"
+    if [ "$patcher_started" -eq 1 ]; then
         print_status "To view rank patcher: ${CYAN}screen -r $SCREEN_PATCHER${NC}"
-        if [ "$sniffer_started" -eq 1 ]; then
-            print_status "To view packet sniffer: ${CYAN}screen -r $SCREEN_SNIFFER${NC}"
-        fi
-        echo ""
-        print_warning "To exit console without stopping server: ${YELLOW}CTRL+A, D${NC}"
-    elif [ "$server_started" -eq 1 ]; then
-        print_warning "Server started, but Patcher or Sniffer FAILED."
-        print_status "To view server console: ${CYAN}screen -r $SCREEN_SERVER${NC}"
     fi
+    if [ "$sniffer_started" -eq 1 ]; then
+        print_status "To view packet sniffer: ${CYAN}screen -r $SCREEN_SNIFFER${NC}"
+    fi
+    echo ""
+    print_warning "To exit console without stopping server: ${YELLOW}CTRL+A, D${NC}"
 }
 
-# --- Función para detener (modificada para sniffer) ---
+# --- Función para detener ---
 stop_server() {
     local port="$1"
     
@@ -406,10 +305,8 @@ stop_server() {
         done
         
         pkill -f "$SERVER_BINARY" 2>/dev/null || true
-        
         rm -f world_id_*.txt 2>/dev/null || true
-        
-        print_success "All servers, rank patchers, and sniffers stopped."
+        print_success "All processes stopped."
     else
         print_header "STOPPING SERVER ON PORT $port"
         
@@ -439,7 +336,6 @@ stop_server() {
         fi
         
         pkill -f "$SERVER_BINARY.*$port" 2>/dev/null || true
-        
         rm -f "world_id_$port.txt" 2>/dev/null || true
     fi
 }
@@ -460,7 +356,7 @@ list_servers() {
     fi
 }
 
-# --- Función de estado (modificada para sniffer) ---
+# --- Función de estado ---
 show_status() {
     local port="$1"
     
@@ -534,41 +430,6 @@ show_status() {
     fi
 }
 
-# --- Función de instalación de dependencias (modificada para ngrep) ---
-install_system_dependencies() {
-    print_header "INSTALLING SYSTEM DEPENDENCIES"
-    print_warning "This command MUST be run as root or with sudo."
-    
-    if ! command -v sudo &> /dev/null; then
-        print_error "sudo command not found. This script requires sudo to install packages."
-        return 1
-    fi
-
-    if command -v apt-get &> /dev/null; then
-        print_step "Installing dependencies on Debian/Ubuntu..."
-        sudo apt-get update
-        sudo apt-get install -y screen binutils libdispatch-dev libobjc4 gnustep-base-runtime libc6 ngrep
-    elif command -v yum &> /dev/null; then
-        print_step "Installing dependencies on RHEL/CentOS..."
-        sudo yum install -y epel-release
-        sudo yum install -y screen binutils libdispatch libobjc ngrep
-    elif command -v dnf &> /dev/null; then
-        print_step "Installing dependencies on Fedora..."
-        sudo dnf install -y epel-release
-        sudo dnf install -y screen binutils libdispatch libobjc ngrep
-    elif command -v pacman &> /dev/null; then
-        print_step "Installing dependencies on Arch Linux..."
-        sudo pacman -Sy --noconfirm screen binutils libdispatch libobjc ngrep
-    else
-        print_error "Cannot automatically install dependencies on this system."
-        return 1
-    fi
-    
-    print_success "System dependencies installed successfully!"
-    print_warning "Please run the installer script to configure passwordless sudo for ngrep."
-    return 0
-}
-
 # --- Función de Ayuda ---
 show_usage() {
     print_header "THE BLOCKHEADS SERVER MANAGER"
@@ -579,7 +440,6 @@ show_usage() {
     echo -e " ${RED}stop${NC} [PORT] - Stop server, rank patcher & sniffer"
     echo -e " ${CYAN}status${NC} [PORT] - Show server status (includes sniffer)"
     echo -e " ${YELLOW}list${NC} - List all running servers"
-    echo -e " ${MAGENTA}install-deps${NC} - Install system dependencies (includes ngrep)"
     echo -e " ${YELLOW}help${NC} - Show this help"
     echo ""
     print_status "Examples:"
@@ -587,10 +447,6 @@ show_usage() {
     echo -e " ${GREEN}$0 start MyWorld${NC} (uses default port 12153)"
     echo -e " ${RED}$0 stop${NC} (stops all servers)"
     echo -e " ${RED}$0 stop 12153${NC} (stops server on port 12153)"
-    echo -e " ${CYAN}$0 status${NC} (shows status of all servers)"
-    echo -e " ${CYAN}$0 status 12153${NC} (shows status of server on port 12153)"
-    echo -e " ${YELLOW}$0 list${NC} (lists all running servers)"
-    echo -e " ${MAGENTA}$0 install-deps${NC} (installs system dependencies)"
     echo ""
     print_warning "First create a world: ./blockheads_server171 -n"
     print_warning "After creating the world, press CTRL+C to exit"
@@ -620,13 +476,11 @@ case "$1" in
     list)
         list_servers
         ;;
-    install-deps)
-        install_system_dependencies
-        ;;
     help|--help|-h|*)
         show_usage
         ;;
     *)
+        print_error "Unknown command: $1"
         show_usage
         ;;
 esac
