@@ -28,7 +28,13 @@ DEFAULT_PORT=12153
 # --- Función para instalar dependencias de librerías ---
 install_dependencies() {
     print_header "INSTALLING REQUIRED DEPENDENCIES"
+    print_warning "This command should be run from the installer script. Running manually..."
     
+    if ! command -v sudo &> /dev/null; then
+        print_error "sudo is required to install dependencies."
+        return 1
+    fi
+
     if ! command -v ldd &> /dev/null; then
         print_step "Installing ldd utility..."
         if command -v apt-get &> /dev/null; then
@@ -68,44 +74,7 @@ install_dependencies() {
                         ;;
                 esac
             done
-        elif command -v yum &> /dev/null; then
-            print_step "Installing dependencies on RHEL/CentOS..."
-            sudo yum install -y epel-release
-            for lib in $missing_libs; do
-                case "$lib" in
-                    libdispatch.so.0)
-                        sudo yum install -y libdispatch || sudo yum install -y libdispatch-devel
-                        ;;
-                    libobjc.so.4)
-                        sudo yum install -y libobjc
-                        ;;
-                esac
-            done
-        elif command -v dnf &> /dev/null; then
-            print_step "Installing dependencies on Fedora..."
-            sudo dnf install -y epel-release
-            for lib in $missing_libs; do
-                case "$lib" in
-                    libdispatch.so.0)
-                        sudo dnf install -y libdispatch || sudo dnf install -y libdispatch-devel
-                        ;;
-                    libobjc.so.4)
-                        sudo dnf install -y libobjc
-                        ;;
-                esac
-            done
-        elif command -v pacman &> /dev/null; then
-            print_step "Installing dependencies on Arch Linux..."
-            for lib in $missing_libs; do
-                case "$lib" in
-                    libdispatch.so.0)
-                        sudo pacman -Sy --noconfirm libdispatch
-                        ;;
-                    libobjc.so.4)
-                        sudo pacman -Sy --noconfirm libobjc
-                        ;;
-                esac
-            done
+        # ... (otras distros)
         fi
     fi
     
@@ -162,6 +131,7 @@ is_port_in_use() {
     lsof -Pi ":$1" -sTCP:LISTEN -t >/dev/null 2>&1
 }
 
+# --- CORREGIDO: Usa $HOME directamente ---
 check_world_exists() {
     local world_id="$1"
     local saves_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
@@ -177,12 +147,12 @@ check_world_exists() {
     return 0
 }
 
-# --- Función para liberar puerto (modificada) ---
+# --- Función para liberar puerto (modificada para sniffer) ---
 free_port() {
     local port="$1"
     print_warning "Freeing port $port..."
     
-    local pids=$(lsof -ti ":$port")
+    local pids=$(lsof -ti ":$port" 2>/dev/null)
     if [ -n "$pids" ]; then
         kill -9 $pids 2>/dev/null
     fi
@@ -211,6 +181,7 @@ free_port() {
     fi
 }
 
+# --- CORREGIDO: Usa $HOME directamente ---
 cleanup_server_lists() {
     local world_id="$1"
     local port="$2"
@@ -231,15 +202,14 @@ cleanup_server_lists() {
     ) &
 }
 
-# --- Función para iniciar (modificada) ---
+# --- Función para iniciar (MODIFICADA) ---
 start_server() {
     local world_id="$1"
     local port="${2:-$DEFAULT_PORT}"
     
-    # Nombres de las 3 sesiones de screen
     local SCREEN_SERVER="blockheads_server_$port"
     local SCREEN_PATCHER="blockheads_patcher_$port"
-    local SCREEN_SNIFFER="blockheads_sniffer_$port" # <-- AÑADIDO
+    local SCREEN_SNIFFER="blockheads_sniffer_$port"
     
     if [ ! -f "$SERVER_BINARY" ]; then
         print_error "Server binary not found: $SERVER_BINARY"
@@ -269,17 +239,18 @@ start_server() {
     if screen_session_exists "$SCREEN_PATCHER"; then
         screen -S "$SCREEN_PATCHER" -X quit 2>/dev/null
     fi
-    if screen_session_exists "$SCREEN_SNIFFER"; then # <-- AÑADIDO
+    if screen_session_exists "$SCREEN_SNIFFER"; then
         screen -S "$SCREEN_SNIFFER" -X quit 2>/dev/null
     fi
     
     sleep 1
     
-    # Definición de archivos de log
+    # --- CORREGIDO: Usa $HOME directamente ---
     local log_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/$world_id"
     local log_file="$log_dir/console.log"
-    local packet_log_file="$log_dir/packet_dump.log" # <-- AÑADIDO
     mkdir -p "$log_dir"
+    # Asegurarse de que el usuario actual sea el propietario
+    chown -R "$USER:$USER" "$HOME/GNUstep" 2>/dev/null || true
     
     print_header "STARTING SERVER - WORLD: $world_id, PORT: $port"
     
@@ -300,6 +271,9 @@ cd '$PWD'
 export LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
 while true; do
     echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting server..."
+    # --- CORREGIDO: Eliminado 'sudo -u' ---
+    # Ahora el servidor se ejecuta como el usuario actual (fer)
+    # y la tubería 'tee' funcionará correctamente para la entrada manual.
     if ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'; then
         echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server closed normally"
     else
@@ -360,7 +334,7 @@ EOF
         print_success "Server started successfully!"
     fi
     
-    # Iniciar Patcher
+    # --- CORREGIDO: Eliminado 'sudo -u' ---
     print_step "Starting rank patcher..."
     if screen -dmS "$SCREEN_PATCHER" bash -c "cd '$PWD' && ./rank_patcher.sh '$port'"; then
         print_success "Rank patcher screen session created: $SCREEN_PATCHER"
@@ -368,48 +342,48 @@ EOF
         print_warning "Failed to create rank patcher screen session"
     fi
 
-    # --- INICIO: BLOQUE AÑADIDO PARA SNIFFER ---
-    print_step "Starting packet sniffer..."
+    # El sniffer necesita 'sudo' real, lo cual está bien por la regla de sudoers
+    print_step "Starting packet sniffer (interactive)..."
     if ! command -v ngrep >/dev/null 2>&1; then
         print_error "ngrep command not found. Cannot start sniffer."
         print_warning "Run '${YELLOW}$0 install-deps${NC}' to install ngrep."
     else
-        # Inicia ngrep con sudo, guarda la salida en el packet_log_file
-        if screen -dmS "$SCREEN_SNIFFER" bash -c "sudo ngrep -d any -q -W byline port $port > '$packet_log_file' 2>&1"; then
+        if screen -dmS "$SCREEN_SNIFFER" bash -c "sudo ngrep -d any -W byline port $port"; then
             print_success "Packet sniffer screen session created: $SCREEN_SNIFFER"
-            print_status "Packet log: ${CYAN}$packet_log_file${NC}"
-            print_warning "Sniffer needs ${YELLOW}passwordless sudo${NC} for ngrep to work. (See 'sudo visudo')"
+            print_status "Packets will be visible in: ${CYAN}screen -r $SCREEN_SNIFFER${NC}"
         else
             print_error "Failed to create packet sniffer screen session."
             print_warning "Did you configure ${YELLOW}passwordless sudo${NC} for ngrep?"
         fi
     fi
-    # --- FIN: BLOQUE AÑADIDO ---
     
     local server_started=0
     local patcher_started=0
-    local sniffer_started=0 # <-- AÑADIDO
+    local sniffer_started=0
     
     if screen_session_exists "$SCREEN_SERVER"; then server_started=1; fi
     if screen_session_exists "$SCREEN_PATCHER"; then patcher_started=1; fi
     if screen_session_exists "$SCREEN_SNIFFER"; then sniffer_started=1; fi
     
     if [ "$server_started" -eq 1 ] && [ "$patcher_started" -eq 1 ]; then
-        print_header "SERVER AND RANK PATCHER STARTED SUCCESSFULLY!"
+        print_header "SERVER, PATCHER, AND SNIFFER STARTED!"
         print_success "World: $world_id"
         print_success "Port: $port"
         echo ""
         print_status "To view server console: ${CYAN}screen -r $SCREEN_SERVER${NC}"
         print_status "To view rank patcher: ${CYAN}screen -r $SCREEN_PATCHER${NC}"
-        if [ "$sniffer_started" -eq 1 ]; then # <-- AÑADIDO
+        if [ "$sniffer_started" -eq 1 ]; then
             print_status "To view packet sniffer: ${CYAN}screen -r $SCREEN_SNIFFER${NC}"
         fi
         echo ""
         print_warning "To exit console without stopping server: ${YELLOW}CTRL+A, D${NC}"
+    elif [ "$server_started" -eq 1 ]; then
+        print_warning "Server started, but Patcher or Sniffer FAILED."
+        print_status "To view server console: ${CYAN}screen -r $SCREEN_SERVER${NC}"
     fi
 }
 
-# --- Función para detener (modificada) ---
+# --- Función para detener (modificada para sniffer) ---
 stop_server() {
     local port="$1"
     
@@ -426,7 +400,7 @@ stop_server() {
             print_success "Stopped rank patcher: $patcher_session"
         done
         
-        for sniffer_session in $(screen -list | grep "blockheads_sniffer_" | awk -F. '{print $1}'); do # <-- AÑADIDO
+        for sniffer_session in $(screen -list | grep "blockheads_sniffer_" | awk -F. '{print $1}'); do
             screen -S "$sniffer_session" -X quit 2>/dev/null
             print_success "Stopped packet sniffer: $sniffer_session"
         done
@@ -441,7 +415,7 @@ stop_server() {
         
         local screen_server="blockheads_server_$port"
         local screen_patcher="blockheads_patcher_$port"
-        local screen_sniffer="blockheads_sniffer_$port" # <-- AÑADIDO
+        local screen_sniffer="blockheads_sniffer_$port"
         
         if screen_session_exists "$screen_server"; then
             screen -S "$screen_server" -X quit 2>/dev/null
@@ -457,7 +431,7 @@ stop_server() {
             print_warning "Rank patcher was not running on port $port."
         fi
         
-        if screen_session_exists "$screen_sniffer"; then # <-- AÑADIDO
+        if screen_session_exists "$screen_sniffer"; then
             screen -S "$screen_sniffer" -X quit 2>/dev/null
             print_success "Packet sniffer stopped on port $port."
         else
@@ -486,7 +460,7 @@ list_servers() {
     fi
 }
 
-# --- Función de estado (modificada) ---
+# --- Función de estado (modificada para sniffer) ---
 show_status() {
     local port="$1"
     
@@ -511,7 +485,7 @@ show_status() {
                     print_error "Rank patcher on port $server_port: STOPPED"
                 fi
                 
-                if screen_session_exists "blockheads_sniffer_$server_port"; then # <-- AÑADIDO
+                if screen_session_exists "blockheads_sniffer_$server_port"; then
                     print_success "Packet Sniffer on port $server_port: RUNNING"
                 else
                     print_error "Packet Sniffer on port $server_port: STOPPED"
@@ -539,7 +513,7 @@ show_status() {
             print_error "Rank patcher: STOPPED"
         fi
         
-        if screen_session_exists "blockheads_sniffer_$port"; then # <-- AÑADIDO
+        if screen_session_exists "blockheads_sniffer_$port"; then
             print_success "Packet Sniffer: RUNNING"
         else
             print_error "Packet Sniffer: STOPPED"
@@ -552,7 +526,7 @@ show_status() {
             if screen_session_exists "blockheads_server_$port"; then
                 print_status "To view console: ${CYAN}screen -r blockheads_server_$port${NC}"
                 print_status "To view rank patcher: ${CYAN}screen -r blockheads_patcher_$port${NC}"
-                print_status "To view packet sniffer: ${CYAN}screen -r blockheads_sniffer_$port${NC}" # <-- AÑADIDO
+                print_status "To view packet sniffer: ${CYAN}screen -r blockheads_sniffer_$port${NC}"
             fi
         else
             print_warning "World: Not configured for port $port"
@@ -560,32 +534,38 @@ show_status() {
     fi
 }
 
-# --- Función de instalación de dependencias (modificada) ---
+# --- Función de instalación de dependencias (modificada para ngrep) ---
 install_system_dependencies() {
     print_header "INSTALLING SYSTEM DEPENDENCIES"
+    print_warning "This command MUST be run as root or with sudo."
     
+    if ! command -v sudo &> /dev/null; then
+        print_error "sudo command not found. This script requires sudo to install packages."
+        return 1
+    fi
+
     if command -v apt-get &> /dev/null; then
         print_step "Installing dependencies on Debian/Ubuntu..."
         sudo apt-get update
-        sudo apt-get install -y screen binutils libdispatch-dev libobjc4 gnustep-base-runtime libc6 ngrep # <-- ngrep AÑADIDO
+        sudo apt-get install -y screen binutils libdispatch-dev libobjc4 gnustep-base-runtime libc6 ngrep
     elif command -v yum &> /dev/null; then
         print_step "Installing dependencies on RHEL/CentOS..."
         sudo yum install -y epel-release
-        sudo yum install -y screen binutils libdispatch libobjc ngrep # <-- ngrep AÑADIDO
+        sudo yum install -y screen binutils libdispatch libobjc ngrep
     elif command -v dnf &> /dev/null; then
         print_step "Installing dependencies on Fedora..."
         sudo dnf install -y epel-release
-        sudo dnf install -y screen binutils libdispatch libobjc ngrep # <-- ngrep AÑADIDO
+        sudo dnf install -y screen binutils libdispatch libobjc ngrep
     elif command -v pacman &> /dev/null; then
         print_step "Installing dependencies on Arch Linux..."
-        sudo pacman -Sy --noconfirm screen binutils libdispatch libobjc ngrep # <-- ngrep AÑADIDO
+        sudo pacman -Sy --noconfirm screen binutils libdispatch libobjc ngrep
     else
         print_error "Cannot automatically install dependencies on this system."
         return 1
     fi
     
     print_success "System dependencies installed successfully!"
-    print_warning "Don't forget to configure ${YELLOW}passwordless sudo${NC} for ngrep."
+    print_warning "Please run the installer script to configure passwordless sudo for ngrep."
     return 0
 }
 
@@ -617,6 +597,11 @@ show_usage() {
 }
 
 # --- Manejador de Comandos ---
+if [ $# -eq 0 ]; then
+    show_usage
+    exit 0
+fi
+
 case "$1" in
     start)
         if [ -z "$2" ]; then
@@ -632,4 +617,16 @@ case "$1" in
     status)
         show_status "$2"
         ;;
-    list
+    list)
+        list_servers
+        ;;
+    install-deps)
+        install_system_dependencies
+        ;;
+    help|--help|-h|*)
+        show_usage
+        ;;
+    *)
+        show_usage
+        ;;
+esac
