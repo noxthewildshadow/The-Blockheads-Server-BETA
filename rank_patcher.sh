@@ -48,7 +48,7 @@ log_debug() {
         local message="$1"
         local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
         echo "$timestamp $message" >> "$PATCH_DEBUG_LOG"
-        echo -e "${CYAN}[DEBUG]${NC} $message"
+        # echo -e "${CYAN}[DEBUG]${NC} $message" # Descomentar para debug en consola
     fi
 }
 
@@ -108,7 +108,7 @@ execute_server_command() {
     local time_diff=$((current_time - last_time))
     
     if [ $time_diff -lt 1 ]; then
-        local sleep_time=$((1 - time_diff))
+        local sleep_time=$(bc <<< "1 - $time_diff")
         sleep $sleep_time
     fi
     
@@ -124,12 +124,13 @@ send_server_command() {
     if screen -S "$screen_session" -p 0 -X stuff "$command$(printf \\r)" 2>/dev/null; then
         return 0
     else
+        log_debug "FAILED to send command to screen: $screen_session"
         return 1
     fi
 }
 
 screen_session_exists() {
-    screen -list | grep -q "$1"
+    screen -list | grep -q "\.$1"
 }
 
 get_player_info() {
@@ -245,17 +246,17 @@ apply_rank_to_connected_player() {
     
     case "$rank" in
         "MOD")
-            execute_server_command "/mod $player_name"
+            execute_server_command "/mod \"$player_name\""
             current_player_ranks["$player_name"]="$rank"
             rank_already_applied["$player_name"]="$rank"
             ;;
         "ADMIN")
-            execute_server_command "/admin $player_name"
+            execute_server_command "/admin \"$player_name\""
             current_player_ranks["$player_name"]="$rank"
             rank_already_applied["$player_name"]="$rank"
             ;;
         "SUPER")
-            execute_server_command "/admin $player_name"
+            execute_server_command "/admin \"$player_name\""
             add_to_cloud_admin "$player_name"
             current_player_ranks["$player_name"]="$rank"
             rank_already_applied["$player_name"]="$rank"
@@ -292,13 +293,13 @@ remove_player_rank() {
         
         case "$rank" in
             "MOD")
-                execute_server_command "/unmod $player_name"
+                execute_server_command "/unmod \"$player_name\""
                 ;;
             "ADMIN")
-                execute_server_command "/unadmin $player_name"
+                execute_server_command "/unadmin \"$player_name\""
                 ;;
             "SUPER")
-                execute_server_command "/unadmin $player_name"
+                execute_server_command "/unadmin \"$player_name\""
                 remove_from_cloud_admin "$player_name"
                 ;;
         esac
@@ -331,14 +332,14 @@ apply_pending_ranks() {
         
         case "$pending_rank" in
             "ADMIN")
-                execute_server_command "/admin $player_name"
+                execute_server_command "/admin \"$player_name\""
                 ;;
             "MOD")
-                execute_server_command "/mod $player_name"
+                execute_server_command "/mod \"$player_name\""
                 ;;
             "SUPER")
                 add_to_cloud_admin "$player_name"
-                execute_server_command "/admin $player_name"
+                execute_server_command "/admin \"$player_name\""
                 ;;
         esac
         
@@ -359,7 +360,6 @@ start_password_reminder_timer() {
                 local password=$(echo "$player_info" | cut -d'|' -f2)
                 if [ "$password" = "NONE" ]; then
                     execute_server_command "SECURITY: $player_name, set your password within 60 seconds!"
-                    sleep 1
                     execute_server_command "Example of use: !psw Mypassword123 Mypassword123"
                 fi
             fi
@@ -379,7 +379,7 @@ start_password_kick_timer() {
             if [ -n "$player_info" ]; then
                 local password=$(echo "$player_info" | cut -d'|' -f2)
                 if [ "$password" = "NONE" ]; then
-                    execute_server_command "/kick $player_name"
+                    execute_server_command "/kick \"$player_name\""
                 fi
             fi
         fi
@@ -399,13 +399,11 @@ start_ip_grace_timer() {
                 local first_ip=$(echo "$player_info" | cut -d'|' -f1)
                 if [ "$first_ip" != "UNKNOWN" ] && [ "$first_ip" != "$current_ip" ]; then
                     execute_server_command "SECURITY ALERT: $player_name, your IP has changed!"
-                    sleep 1
                     execute_server_command "Verify with !ip_change + YOUR_PASSWORD within 25 seconds!"
-                    sleep 1
                     execute_server_command "Else you'll get kicked and a temporal ip ban for 30 seconds."
                     sleep 25
                     if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" != "verified" ]; then
-                        execute_server_command "/kick $player_name"
+                        execute_server_command "/kick \"$player_name\""
                         execute_server_command "/ban $current_ip"
                         
                         (
@@ -437,18 +435,21 @@ handle_password_creation() {
     if [ -n "$player_info" ]; then
         local current_password=$(echo "$player_info" | cut -d'|' -f2)
         if [ "$current_password" != "NONE" ]; then
-            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, you already have a password set. Use !change_psw to change it."
+            # [CORRECCIÓN] Usar execute_server_command
+            execute_server_command "ERROR: $player_name, you already have a password set. Use !change_psw to change it."
             return 1
         fi
     fi
     
     if [ ${#password} -lt 7 ] || [ ${#password} -gt 16 ]; then
-        send_server_command "$SCREEN_SESSION" "ERROR: $player_name, password must be between 7 and 16 characters."
+        # [CORRECCIÓN] Usar execute_server_command
+        execute_server_command "ERROR: $player_name, password must be between 7 and 16 characters."
         return 1
     fi
     
     if [ "$password" != "$confirm_password" ]; then
-        send_server_command "$SCREEN_SESSION" "ERROR: $player_name, passwords do not match."
+        # [CORRECCIÓN] Usar execute_server_command
+        execute_server_command "ERROR: $player_name, passwords do not match."
         return 1
     fi
     
@@ -462,10 +463,12 @@ handle_password_creation() {
         
         update_player_info "$player_name" "$first_ip" "$password" "$rank" "$whitelisted" "$blacklisted"
         
-        send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, password set successfully."
+        # [CORRECCIÓN] Usar execute_server_command
+        execute_server_command "SUCCESS: $player_name, password set successfully."
         return 0
     else
-        send_server_command "$SCREEN_SESSION" "ERROR: $player_name, player not found in registry."
+        # [CORRECCIÓN] Usar execute_server_command
+        execute_server_command "ERROR: $player_name, player not found in registry."
         return 1
     fi
 }
@@ -476,7 +479,8 @@ handle_password_change() {
     execute_server_command "/clear"
     
     if [ ${#new_password} -lt 7 ] || [ ${#new_password} -gt 16 ]; then
-        send_server_command "$SCREEN_SESSION" "ERROR: $player_name, new password must be between 7 and 16 characters."
+        # [CORRECCIÓN] Usar execute_server_command
+        execute_server_command "ERROR: $player_name, new password must be between 7 and 16 characters."
         return 1
     fi
     
@@ -489,16 +493,19 @@ handle_password_change() {
         local blacklisted=$(echo "$player_info" | cut -d'|' -f5)
         
         if [ "$current_password" != "$old_password" ]; then
-            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, old password is incorrect."
+            # [CORRECCIÓN] Usar execute_server_command
+            execute_server_command "ERROR: $player_name, old password is incorrect."
             return 1
         fi
         
         update_player_info "$player_name" "$first_ip" "$new_password" "$rank" "$whitelisted" "$blacklisted"
         
-        send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your password has been changed successfully."
+        # [CORRECCIÓN] Usar execute_server_command
+        execute_server_command "SUCCESS: $player_name, your password has been changed successfully."
         return 0
     else
-        send_server_command "$SCREEN_SESSION" "ERROR: $player_name, player not found in registry."
+        # [CORRECCIÓN] Usar execute_server_command
+        execute_server_command "ERROR: $player_name, player not found in registry."
         return 1
     fi
 }
@@ -517,7 +524,8 @@ handle_ip_change() {
         local blacklisted=$(echo "$player_info" | cut -d'|' -f5)
         
         if [ "$current_password" != "$password" ]; then
-            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, password is incorrect."
+            # [CORRECCIÓN] Usar execute_server_command
+            execute_server_command "ERROR: $player_name, password is incorrect."
             return 1
         fi
         
@@ -534,10 +542,12 @@ handle_ip_change() {
         
         sync_lists_from_players_log
         
-        send_server_command "$SCREEN_SESSION" "SUCCESS: $player_name, your IP has been verified and updated."
+        # [CORRECCIÓN] Usar execute_server_command
+        execute_server_command "SUCCESS: $player_name, your IP has been verified and updated."
         return 0
     else
-        send_server_command "$SCREEN_SESSION" "ERROR: $player_name, player not found in registry."
+        # [CORRECCIÓN] Usar execute_server_command
+        execute_server_command "ERROR: $player_name, player not found in registry."
         return 1
     fi
 }
@@ -623,13 +633,13 @@ apply_rank_changes() {
     
     case "$old_rank" in
         "ADMIN")
-            execute_server_command "/unadmin $player_name"
+            execute_server_command "/unadmin \"$player_name\""
             ;;
         "MOD")
-            execute_server_command "/unmod $player_name"
+            execute_server_command "/unmod \"$player_name\""
             ;;
         "SUPER")
-            execute_server_command "/unadmin $player_name"
+            execute_server_command "/unadmin \"$player_name\""
             remove_from_cloud_admin "$player_name"
             ;;
     esac
@@ -641,18 +651,18 @@ apply_rank_changes() {
         
         case "$new_rank" in
             "ADMIN")
-                execute_server_command "/admin $player_name"
+                execute_server_command "/admin \"$player_name\""
                 current_player_ranks["$player_name"]="$new_rank"
                 rank_already_applied["$player_name"]="$new_rank"
                 ;;
             "MOD")
-                execute_server_command "/mod $player_name"
+                execute_server_command "/mod \"$player_name\""
                 current_player_ranks["$player_name"]="$new_rank"
                 rank_already_applied["$player_name"]="$new_rank"
                 ;;
             "SUPER")
                 add_to_cloud_admin "$player_name"
-                execute_server_command "/admin $player_name"
+                execute_server_command "/admin \"$player_name\""
                 current_player_ranks["$player_name"]="$new_rank"
                 rank_already_applied["$player_name"]="$new_rank"
                 ;;
@@ -664,6 +674,7 @@ handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="${3:-unknown}"
     
     print_error "INVALID PLAYER NAME DETECTED: '$player_name' (IP: $player_ip, Hash: $player_hash)"
+    log_debug "INVALID PLAYER NAME DETECTED: '$player_name' (IP: $player_ip, Hash: $player_hash)"
     
     local safe_name=$(sanitize_name_for_command "$player_name")
     
@@ -671,7 +682,6 @@ handle_invalid_player_name() {
         sleep 3
         execute_server_command "WARNING: Invalid player name '$player_name'! Names must be 3-16 alphanumeric characters, no spaces/symbols or nullbytes!"
         
-        sleep 1
         execute_server_command "WARNING: You will be kicked and IP banned in 3 seconds for 60 seconds."
         sleep 3
 
@@ -714,6 +724,7 @@ monitor_players_log() {
             local current_checksum=$(md5sum "$PLAYERS_LOG" 2>/dev/null | cut -d' ' -f1)
             
             if [ "$current_checksum" != "$last_checksum" ]; then
+                log_debug "players.log change detected. Processing..."
                 process_players_log_changes "$temp_file"
                 last_checksum="$current_checksum"
                 cp "$PLAYERS_LOG" "$temp_file"
@@ -743,6 +754,7 @@ process_players_log_changes() {
             local prev_rank=$(echo "$previous_line" | cut -d'|' -f4 | xargs)
             
             if [ "$prev_rank" != "$rank" ]; then
+                log_debug "Rank change for $name: $prev_rank -> $rank"
                 apply_rank_changes "$name" "$prev_rank" "$rank"
             fi
         fi
@@ -763,6 +775,7 @@ monitor_list_files() {
         if [ -f "$admin_list" ]; then
             local current_admin_checksum=$(md5sum "$admin_list" 2>/dev/null | cut -d' ' -f1)
             if [ "$current_admin_checksum" != "$last_admin_checksum" ]; then
+                log_debug "adminlist.txt changed externally. Re-syncing..."
                 sleep 2
                 sync_lists_from_players_log
                 last_admin_checksum="$current_admin_checksum"
@@ -772,6 +785,7 @@ monitor_list_files() {
         if [ -f "$mod_list" ]; then
             local current_mod_checksum=$(md5sum "$mod_list" 2>/dev/null | cut -d' ' -f1)
             if [ "$current_mod_checksum" != "$last_mod_checksum" ]; then
+                log_debug "modlist.txt changed externally. Re-syncing..."
                 sleep 2
                 sync_lists_from_players_log
                 last_mod_checksum="$current_mod_checksum"
@@ -792,22 +806,26 @@ monitor_console_log() {
     done
     
     if [ ! -f "$CONSOLE_LOG" ]; then
+        print_error "Console log file not found after 30s: $CONSOLE_LOG"
         return 1
     fi
     
     tail -n 0 -F "$CONSOLE_LOG" | while read -r line; do
+        log_debug "CONSOLE: $line"
         if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
             local player_hash="${BASH_REMATCH[3]}"
             
             player_name=$(extract_real_name "$player_name")
-            player_name=$(echo "$player_name" | xargs)
+            player_name=$(echo "$player_name" | xargs | tr '[:lower:]' '[:upper:]')
             
             if ! is_valid_player_name "$player_name"; then
                 handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
                 continue
             fi
+            
+            log_debug "Player Connected: $player_name, IP: $player_ip"
             
             cancel_disconnect_timer "$player_name"
             
@@ -816,6 +834,7 @@ monitor_console_log() {
             
             local player_info=$(get_player_info "$player_name")
             if [ -z "$player_info" ]; then
+                log_debug "New player: $player_name. Creating entry."
                 update_player_info "$player_name" "$player_ip" "NONE" "NONE" "NO" "NO"
                 player_verification_status["$player_name"]="verified"
                 current_player_ranks["$player_name"]="NONE"
@@ -829,22 +848,27 @@ monitor_console_log() {
                 current_player_ranks["$player_name"]="$rank"
                 
                 if [ "$first_ip" = "UNKNOWN" ]; then
+                    log_debug "Updating IP for $player_name to $player_ip"
                     update_player_info "$player_name" "$player_ip" "$password" "$rank" "NO" "NO"
                     player_verification_status["$player_name"]="verified"
                 elif [ "$first_ip" != "$player_ip" ]; then
+                    log_debug "IP Mismatch for $player_name. Registered: $first_ip, Current: $player_ip"
                     player_verification_status["$player_name"]="pending"
                     
                     if [ "$rank" != "NONE" ]; then
+                        log_debug "Removing rank for $player_name pending IP verification."
                         apply_rank_changes "$player_name" "$rank" "NONE"
                         pending_ranks["$player_name"]="$rank"
                     fi
                     
                     start_ip_grace_timer "$player_name" "$player_ip"
                 else
+                    log_debug "IP match for $player_name. Status: Verified."
                     player_verification_status["$player_name"]="verified"
                 fi
                 
                 if [ "$password" = "NONE" ]; then
+                    log_debug "No password for $player_name. Starting enforcement."
                     start_password_enforcement "$player_name"
                 fi
                 
@@ -858,9 +882,10 @@ monitor_console_log() {
         
         if [[ "$line" =~ Player\ Disconnected\ (.+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
-            player_name=$(echo "$player_name" | xargs)
+            player_name=$(echo "$player_name" | xargs | tr '[:lower:]' '[:upper:]')
             
             if is_valid_player_name "$player_name"; then
+                log_debug "Player Disconnected: $player_name"
                 cancel_player_timers "$player_name"
                 
                 start_disconnect_timer "$player_name"
@@ -880,7 +905,7 @@ monitor_console_log() {
             local message="${BASH_REMATCH[2]}"
             local current_ip="${player_ip_map[$player_name]}"
             
-            player_name=$(echo "$player_name" | xargs)
+            player_name=$(echo "$player_name" | xargs | tr '[:lower:]' '[:upper:]')
             
             if is_valid_player_name "$player_name"; then
                 case "$message" in
@@ -888,29 +913,35 @@ monitor_console_log() {
                         if [[ "$message" =~ !psw\ ([^[:space:]]+)\ ([^[:space:]]+)$ ]]; then
                             local password="${BASH_REMATCH[1]}"
                             local confirm_password="${BASH_REMATCH[2]}"
+                            log_debug "$player_name trying to set password."
                             handle_password_creation "$player_name" "$password" "$confirm_password"
                         else
                             execute_server_command "/clear"
-                            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format! Example: !psw Mypassword123 Mypassword123"
+                            # [CORRECCIÓN] Usar execute_server_command
+                            execute_server_command "ERROR: $player_name, invalid format! Example: !psw Mypassword123 Mypassword123"
                         fi
                         ;;
                     "!change_psw "*)
                         if [[ "$message" =~ !change_psw\ ([^[:space:]]+)\ ([^[:space:]]+)$ ]]; then
                             local old_password="${BASH_REMATCH[1]}"
                             local new_password="${BASH_REMATCH[2]}"
+                            log_debug "$player_name trying to change password."
                             handle_password_change "$player_name" "$old_password" "$new_password"
                         else
                             execute_server_command "/clear"
-                            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format! Use: !change_psw OLD_PASSWORD NEW_PASSWORD"
+                            # [CORRECCIÓN] Usar execute_server_command
+                            execute_server_command "ERROR: $player_name, invalid format! Use: !change_psw OLD_PASSWORD NEW_PASSWORD"
                         fi
                         ;;
                     "!ip_change "*)
                         if [[ "$message" =~ !ip_change\ (.+)$ ]]; then
                             local password="${BASH_REMATCH[1]}"
+                            log_debug "$player_name trying to verify IP."
                             handle_ip_change "$player_name" "$password" "$current_ip"
                         else
                             execute_server_command "/clear"
-                            send_server_command "$SCREEN_SESSION" "ERROR: $player_name, invalid format! Use: !ip_change YOUR_PASSWORD"
+                            # [CORRECCIÓN] Usar execute_server_command
+                            execute_server_command "ERROR: $player_name, invalid format! Use: !ip_change YOUR_PASSWORD"
                         fi
                         ;;
                 esac
@@ -918,6 +949,7 @@ monitor_console_log() {
         fi
         
         if [[ "$line" =~ cleared\ (.+)\ list ]]; then
+            log_debug "Server list cleared detected. Forcing reload."
             sleep 2
             force_reload_all_lists
         fi
@@ -930,13 +962,14 @@ setup_paths() {
     if [ -f "world_id_$port.txt" ]; then
         WORLD_ID=$(cat "world_id_$port.txt")
     else
-        WORLD_ID=$(find "$BASE_SAVES_DIR" -maxdepth 1 -type d -name "*" | grep -v "^$BASE_SAVES_DIR$" | head -1 | xargs basename)
-        if [ -n "$WORLD_ID" ]; then
-            echo "$WORLD_ID" > "world_id_$port.txt"
-        else
-            print_error "No world found. Please create a world first."
-            exit 1
-        fi
+        print_error "world_id_$port.txt not found. Rank patcher cannot determine world."
+        print_error "This file should have been created by server_manager.sh"
+        return 1
+    fi
+    
+    if [ -z "$WORLD_ID" ]; then
+        print_error "World ID file is empty. Cannot continue."
+        return 1
     fi
     
     PLAYERS_LOG="$BASE_SAVES_DIR/$WORLD_ID/players.log"
@@ -946,6 +979,8 @@ setup_paths() {
     
     [ ! -f "$PLAYERS_LOG" ] && touch "$PLAYERS_LOG"
     [ ! -f "$PATCH_DEBUG_LOG" ] && touch "$PATCH_DEBUG_LOG"
+    
+    return 0
 }
 
 cleanup() {
@@ -989,9 +1024,12 @@ main() {
         exit 1
     fi
     
+    log_debug "--- Rank Patcher Starting ---"
+    
     if ! screen_session_exists "$SCREEN_SESSION"; then
         print_error "Server screen session not found: $SCREEN_SESSION"
         print_status "Please start the server first using server_manager.sh"
+        log_debug "CRITICAL: Server screen $SCREEN_SESSION not found on start."
         exit 1
     fi
     
@@ -1009,6 +1047,7 @@ main() {
     print_status "Managing: $PLAYERS_LOG"
     print_status "Debug log: $PATCH_DEBUG_LOG"
     print_status "Server session: $SCREEN_SESSION"
+    log_debug "--- Rank Patcher is RUNNING ---"
     
     wait
 }
