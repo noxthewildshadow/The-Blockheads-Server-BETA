@@ -800,7 +800,9 @@ monitor_console_log() {
     
     tail -n 0 -F "$CONSOLE_LOG" | while read -r line; do
         log_debug "CONSOLE: $line"
-        if [[ "$line" =~ Player\ Connected\ (.+)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
+        
+        # <<< [CORRECCIÓN] Se cambió (.+) por (.*) para capturar nombres vacíos
+        if [[ "$line" =~ Player\ Connected\ (.*)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
             local player_hash="${BASH_REMATCH[3]}"
