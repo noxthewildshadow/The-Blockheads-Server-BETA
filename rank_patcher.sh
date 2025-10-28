@@ -246,17 +246,17 @@ apply_rank_to_connected_player() {
     
     case "$rank" in
         "MOD")
-            execute_server_command "/mod \"$player_name\""
+            execute_server_command "/mod $player_name" # [CORRECCIÓN]
             current_player_ranks["$player_name"]="$rank"
             rank_already_applied["$player_name"]="$rank"
             ;;
         "ADMIN")
-            execute_server_command "/admin \"$player_name\""
+            execute_server_command "/admin $player_name" # [CORRECCIÓN]
             current_player_ranks["$player_name"]="$rank"
             rank_already_applied["$player_name"]="$rank"
             ;;
         "SUPER")
-            execute_server_command "/admin \"$player_name\""
+            execute_server_command "/admin $player_name" # [CORRECCIÓN]
             add_to_cloud_admin "$player_name"
             current_player_ranks["$player_name"]="$rank"
             rank_already_applied["$player_name"]="$rank"
@@ -293,13 +293,13 @@ remove_player_rank() {
         
         case "$rank" in
             "MOD")
-                execute_server_command "/unmod \"$player_name\""
+                execute_server_command "/unmod $player_name" # [CORRECCIÓN]
                 ;;
             "ADMIN")
-                execute_server_command "/unadmin \"$player_name\""
+                execute_server_command "/unadmin $player_name" # [CORRECCIÓN]
                 ;;
             "SUPER")
-                execute_server_command "/unadmin \"$player_name\""
+                execute_server_command "/unadmin $player_name" # [CORRECCIÓN]
                 remove_from_cloud_admin "$player_name"
                 ;;
         esac
@@ -332,14 +332,14 @@ apply_pending_ranks() {
         
         case "$pending_rank" in
             "ADMIN")
-                execute_server_command "/admin \"$player_name\""
+                execute_server_command "/admin $player_name" # [CORRECCIÓN]
                 ;;
             "MOD")
-                execute_server_command "/mod \"$player_name\""
+                execute_server_command "/mod $player_name" # [CORRECCIÓN]
                 ;;
             "SUPER")
                 add_to_cloud_admin "$player_name"
-                execute_server_command "/admin \"$player_name\""
+                execute_server_command "/admin $player_name" # [CORRECCIÓN]
                 ;;
         esac
         
@@ -379,7 +379,7 @@ start_password_kick_timer() {
             if [ -n "$player_info" ]; then
                 local password=$(echo "$player_info" | cut -d'|' -f2)
                 if [ "$password" = "NONE" ]; then
-                    execute_server_command "/kick \"$player_name\""
+                    execute_server_command "/kick $player_name" # [CORRECCIÓN]
                 fi
             fi
         fi
@@ -403,7 +403,7 @@ start_ip_grace_timer() {
                     execute_server_command "Else you'll get kicked and a temporal ip ban for 30 seconds."
                     sleep 25
                     if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" != "verified" ]; then
-                        execute_server_command "/kick \"$player_name\""
+                        execute_server_command "/kick $player_name" # [CORRECCIÓN]
                         execute_server_command "/ban $current_ip"
                         
                         (
@@ -435,20 +435,17 @@ handle_password_creation() {
     if [ -n "$player_info" ]; then
         local current_password=$(echo "$player_info" | cut -d'|' -f2)
         if [ "$current_password" != "NONE" ]; then
-            # [CORRECCIÓN] Usar execute_server_command
             execute_server_command "ERROR: $player_name, you already have a password set. Use !change_psw to change it."
             return 1
         fi
     fi
     
     if [ ${#password} -lt 7 ] || [ ${#password} -gt 16 ]; then
-        # [CORRECCIÓN] Usar execute_server_command
         execute_server_command "ERROR: $player_name, password must be between 7 and 16 characters."
         return 1
     fi
     
     if [ "$password" != "$confirm_password" ]; then
-        # [CORRECCIÓN] Usar execute_server_command
         execute_server_command "ERROR: $player_name, passwords do not match."
         return 1
     fi
@@ -463,11 +460,9 @@ handle_password_creation() {
         
         update_player_info "$player_name" "$first_ip" "$password" "$rank" "$whitelisted" "$blacklisted"
         
-        # [CORRECCIÓN] Usar execute_server_command
         execute_server_command "SUCCESS: $player_name, password set successfully."
         return 0
     else
-        # [CORRECCIÓN] Usar execute_server_command
         execute_server_command "ERROR: $player_name, player not found in registry."
         return 1
     fi
@@ -479,7 +474,6 @@ handle_password_change() {
     execute_server_command "/clear"
     
     if [ ${#new_password} -lt 7 ] || [ ${#new_password} -gt 16 ]; then
-        # [CORRECCIÓN] Usar execute_server_command
         execute_server_command "ERROR: $player_name, new password must be between 7 and 16 characters."
         return 1
     fi
@@ -493,18 +487,15 @@ handle_password_change() {
         local blacklisted=$(echo "$player_info" | cut -d'|' -f5)
         
         if [ "$current_password" != "$old_password" ]; then
-            # [CORRECCIÓN] Usar execute_server_command
             execute_server_command "ERROR: $player_name, old password is incorrect."
             return 1
         fi
         
         update_player_info "$player_name" "$first_ip" "$new_password" "$rank" "$whitelisted" "$blacklisted"
         
-        # [CORRECCIÓN] Usar execute_server_command
         execute_server_command "SUCCESS: $player_name, your password has been changed successfully."
         return 0
     else
-        # [CORRECCIÓN] Usar execute_server_command
         execute_server_command "ERROR: $player_name, player not found in registry."
         return 1
     fi
@@ -524,7 +515,6 @@ handle_ip_change() {
         local blacklisted=$(echo "$player_info" | cut -d'|' -f5)
         
         if [ "$current_password" != "$password" ]; then
-            # [CORRECCIÓN] Usar execute_server_command
             execute_server_command "ERROR: $player_name, password is incorrect."
             return 1
         fi
@@ -542,11 +532,9 @@ handle_ip_change() {
         
         sync_lists_from_players_log
         
-        # [CORRECCIÓN] Usar execute_server_command
         execute_server_command "SUCCESS: $player_name, your IP has been verified and updated."
         return 0
     else
-        # [CORRECCIÓN] Usar execute_server_command
         execute_server_command "ERROR: $player_name, player not found in registry."
         return 1
     fi
@@ -633,13 +621,13 @@ apply_rank_changes() {
     
     case "$old_rank" in
         "ADMIN")
-            execute_server_command "/unadmin \"$player_name\""
+            execute_server_command "/unadmin $player_name" # [CORRECCIÓN]
             ;;
         "MOD")
-            execute_server_command "/unmod \"$player_name\""
+            execute_server_command "/unmod $player_name" # [CORRECCIÓN]
             ;;
         "SUPER")
-            execute_server_command "/unadmin \"$player_name\""
+            execute_server_command "/unadmin $player_name" # [CORRECCIÓN]
             remove_from_cloud_admin "$player_name"
             ;;
     esac
@@ -651,18 +639,18 @@ apply_rank_changes() {
         
         case "$new_rank" in
             "ADMIN")
-                execute_server_command "/admin \"$player_name\""
+                execute_server_command "/admin $player_name" # [CORRECCIÓN]
                 current_player_ranks["$player_name"]="$new_rank"
                 rank_already_applied["$player_name"]="$new_rank"
                 ;;
             "MOD")
-                execute_server_command "/mod \"$player_name\""
+                execute_server_command "/mod $player_name" # [CORRECCIÓN]
                 current_player_ranks["$player_name"]="$new_rank"
                 rank_already_applied["$player_name"]="$new_rank"
                 ;;
             "SUPER")
                 add_to_cloud_admin "$player_name"
-                execute_server_command "/admin \"$player_name\""
+                execute_server_command "/admin $player_name" # [CORRECCIÓN]
                 current_player_ranks["$player_name"]="$new_rank"
                 rank_already_applied["$player_name"]="$new_rank"
                 ;;
@@ -687,7 +675,7 @@ handle_invalid_player_name() {
 
         if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
             execute_server_command "/ban $player_ip"
-            execute_server_command "/kick \"$safe_name\""
+            execute_server_command "/kick \"$safe_name\"" # [NOTA] Se mantienen las comillas aquí por seguridad, ya que el nombre es inválido.
             print_warning "Banned invalid player name: '$player_name' (IP: $player_ip) for 60 seconds"
             
             (
@@ -696,8 +684,8 @@ handle_invalid_player_name() {
                 print_success "Unbanned IP: $player_ip"
             ) &
         else
-            execute_server_command "/ban \"$safe_name\""
-            execute_server_command "/kick \"$safe_name\""
+            execute_server_command "/ban \"$safe_name\"" # [NOTA] Se mantienen las comillas aquí por seguridad.
+            execute_server_command "/kick \"$safe_name\"" # [NOTA] Se mantienen las comillas aquí por seguridad.
             print_warning "Banned invalid player name: '$player_name' (fallback to name ban)"
         fi
     ) &
@@ -917,8 +905,7 @@ monitor_console_log() {
                             handle_password_creation "$player_name" "$password" "$confirm_password"
                         else
                             execute_server_command "/clear"
-                            # [CORRECCIÓN] Usar execute_server_command
-                            execute_server_command "ERROR: $player_name, invalid format! Example: !psw Mypassword123 Mypassword123"
+                            execute_server_command "ERROR: $player_name, invalid format! Example: !psw Mypassword123 Mypassword1abc"
                         fi
                         ;;
                     "!change_psw "*)
@@ -929,7 +916,6 @@ monitor_console_log() {
                             handle_password_change "$player_name" "$old_password" "$new_password"
                         else
                             execute_server_command "/clear"
-                            # [CORRECCIÓN] Usar execute_server_command
                             execute_server_command "ERROR: $player_name, invalid format! Use: !change_psw OLD_PASSWORD NEW_PASSWORD"
                         fi
                         ;;
@@ -940,7 +926,6 @@ monitor_console_log() {
                             handle_ip_change "$player_name" "$password" "$current_ip"
                         else
                             execute_server_command "/clear"
-                            # [CORRECCIÓN] Usar execute_server_command
                             execute_server_command "ERROR: $player_name, invalid format! Use: !ip_change YOUR_PASSWORD"
                         fi
                         ;;
