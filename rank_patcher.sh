@@ -221,8 +221,6 @@ remove_from_cloud_admin() {
     fi
 }
 
-# [CORREGIDO] Se eliminó el 'sleep 1' y el subshell (&)
-# Ahora se ejecuta inmediatamente y de forma síncrona.
 start_rank_application_timer() {
     local player_name="$1"
     
@@ -239,7 +237,6 @@ start_rank_application_timer() {
         local rank=$(echo "$player_info" | cut -d'|' -f3)
         if [ "$rank" != "NONE" ]; then
             log_debug "Applying rank for $player_name immediately."
-            # Esto ahora se llama instantáneamente, ganando la condición de carrera
             apply_rank_to_connected_player "$player_name"
         fi
     fi
@@ -269,6 +266,7 @@ apply_rank_to_connected_player() {
     fi
     
     if [ -n "${rank_already_applied[$player_name]}" ] && [ "${rank_already_applied[$player_name]}" = "$rank" ]; then
+        log_debug "Rank $rank for $player_name already applied. Skipping."
         return
     fi
     
@@ -297,6 +295,7 @@ apply_rank_to_connected_player() {
     esac
 }
 
+# [CORREGIDO] La lógica de limpieza de estado se movió de aquí...
 start_disconnect_timer() {
     local player_name="$1"
     local rank="$2"
@@ -306,17 +305,7 @@ start_disconnect_timer() {
         (
             sleep 1
             remove_player_rank "$player_name" "$rank"
-            
-            log_debug "Cleaning state for unverified player $player_name"
-            unset connected_players["$player_name"]
-            unset player_ip_map["$player_name"]
-            unset player_verification_status["$player_name"]
-            unset pending_ranks["$player_name"]
-            unset rank_already_applied["$player_name"]
-            unset current_player_ranks["$player_name"]
-
             check_and_restart_deletion_loop
-            
             unset disconnect_timers["$player_name"]
         ) &
         disconnect_timers["$player_name"]=$!
@@ -325,17 +314,7 @@ start_disconnect_timer() {
         (
             sleep 10
             remove_player_rank "$player_name" "$rank"
-            
-            log_debug "Cleaning state for verified player $player_name after 10s grace"
-            unset connected_players["$player_name"]
-            unset player_ip_map["$player_name"]
-            unset player_verification_status["$player_name"]
-            unset pending_ranks["$player_name"]
-            unset rank_already_applied["$player_name"]
-            unset current_player_ranks["$player_name"]
-
             check_and_restart_deletion_loop
-            
             unset disconnect_timers["$player_name"]
         ) &
         disconnect_timers["$player_name"]=$!
@@ -345,6 +324,7 @@ start_disconnect_timer() {
 check_and_restart_deletion_loop() {
     local ranked_player_online=0
     
+    # Itera sobre la lista de jugadores *actualmente conectados*
     for player in "${!connected_players[@]}"; do
         if [ "${player_verification_status[$player]}" == "verified" ]; then
             
@@ -383,9 +363,8 @@ remove_player_rank() {
                 remove_from_cloud_admin "$player_name"
                 ;;
         esac
-        
-        unset rank_already_applied["$player_name"]
     fi
+    # [NOTA] 'rank_already_applied' se borra INMEDIATAMENTE en 'monitor_console_log'
 }
 
 cancel_disconnect_timer() {
@@ -871,6 +850,7 @@ monitor_list_files() {
     done
 }
 
+# [CORREGIDO] La lógica de 'unset' está aquí ahora.
 monitor_console_log() {
     print_header "STARTING CONSOLE LOG MONITOR"
     
@@ -948,7 +928,6 @@ monitor_console_log() {
                 fi
                 
                 if [ "${player_verification_status[$player_name]}" = "verified" ]; then
-                    # [CORRECCIÓN] Esto ahora se llama inmediatamente y detiene el loop
                     start_rank_application_timer "$player_name"
                 fi
             fi
@@ -968,8 +947,17 @@ monitor_console_log() {
 
                 cancel_player_timers "$player_name"
                 
-                # [CORRECCIÓN] La lógica de 'unset' se movió a start_disconnect_timer
                 start_disconnect_timer "$player_name" "$rank"
+                
+                # [CORRECCIÓN] El estado se limpia INMEDIATAMENTE
+                # para que una reconexión rápida se maneje como un nuevo jugador.
+                log_debug "Cleaning state for $player_name immediately on disconnect."
+                unset connected_players["$player_name"]
+                unset player_ip_map["$player_name"]
+                unset player_verification_status["$player_name"]
+                unset pending_ranks["$player_name"]
+                unset rank_already_applied["$player_name"]
+                unset current_player_ranks["$player_name"]
                 
                 sync_lists_from_players_log
             fi
