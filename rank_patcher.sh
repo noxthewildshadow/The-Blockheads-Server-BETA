@@ -668,24 +668,26 @@ handle_invalid_player_name() {
         # [NUEVA LÓGICA] Revisar si el nombre es específicamente el string vacío.
         if [ -z "$player_name" ]; then
             # CASO 1: Es el exploit de alias vacío.
-            # Banear la IP permanentemente y detener el servidor.
-            log_debug "EXPLOIT (empty alias): Banning IP $player_ip permanently and stopping server."
-            print_warning "Banned exploit IP: $player_ip (Permanent)"
-            print_error "SERVER SHUTDOWN initiated due to exploit attempt from IP: $player_ip"
+            # Banea permanentemente la IP Y lo expulsa explícitamente.
+            log_debug "EXPLOIT (empty alias): Banning IP $player_ip permanently AND forcing kick."
+            print_warning "Banned exploit IP: $player_ip (Permanent) and Kicking."
             
+            # 1. Banear la IP permanentemente
             execute_server_command "/ban $player_ip"
             
-            # Ejecutar /stop como se solicitó
-            execute_server_command "/stop"
+            # 2. Expulsar explícitamente, ya que /ban puede no expulsar a un admin.
+            # Usamos safe_name para enviar comillas vacías: /kick ""
+            local safe_name=$(sanitize_name_for_command "$player_name")
+            execute_server_command "/kick \"$safe_name\"" 
             
         else
-            # CASO 2: Es otro nombre inválido (ej. "TEST!", " "). Banear temporalmente.
-            log_debug "INVALID NAME: Banning IP $player_ip temporarily (60s)."
+            # CASO 2: Es otro nombre inválido (ej. "TEST!", " ").
+            # Banea temporalmente la IP. El comando /ban TAMBIÉN lo expulsa.
+            log_debug "INVALID NAME: Kicking and Banning IP $player_ip temporarily (60s)."
             print_warning "Banned invalid player name: '$player_name' (IP: $player_ip) for 60 seconds"
             
+            # /ban $player_ip lo expulsa y banea
             execute_server_command "/ban $player_ip"
-            local safe_name=$(sanitize_name_for_command "$player_name")
-            execute_server_command "/kick \"$safe_name\"" # Intentar kick por nombre
             
             # Iniciar temporizador para desbanear la IP
             (
@@ -700,7 +702,6 @@ handle_invalid_player_name() {
         print_warning "Banned invalid player name: '$player_name' (fallback to name ban)"
         local safe_name=$(sanitize_name_for_command "$player_name")
         execute_server_command "/ban \"$safe_name\"" 
-        execute_server_command "/kick \"$safe_name\""
     fi
     
     return 1
