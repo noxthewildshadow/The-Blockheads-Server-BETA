@@ -55,10 +55,12 @@ log_debug() {
 is_valid_player_name() {
     local name="$1"
     
+    # [DEFENSA PRIMARIA] Bloquea nombres vacíos o solo con espacios
     if [[ -z "$name" ]] || [[ "$name" =~ ^[[:space:]]+$ ]]; then
         return 1
     fi
     
+    # Bloquea caracteres de control (como null bytes)
     if echo "$name" | grep -q -P "[\\x00-\\x1F\\x7F]"; then
         return 1
     fi
@@ -190,17 +192,12 @@ remove_from_cloud_admin() {
         if [ -s "$temp_file" ]; then
             mv "$temp_file" "$cloud_file"
         else
+            # Si el archivo temporal está vacío, borra el archivo original
+            # Esto es seguro para la cloud list, ya que no es el vector del exploit
             rm -f "$cloud_file"
             rm -f "$temp_file"
         fi
     fi
-}
-
-# [NUEVA FUNCIÓN] Envía el mensaje de re-logueo
-send_relog_message() {
-    local player_name="$1"
-    execute_server_command "SERVER: $player_name, your rank has been applied."
-    execute_server_command "SERVER: If you don't see it, please relog (out and in < 10s) to apply it."
 }
 
 start_rank_application_timer() {
@@ -256,114 +253,118 @@ apply_rank_to_connected_player() {
             execute_server_command "/mod $player_name"
             current_player_ranks["$player_name"]="$rank"
             rank_already_applied["$player_name"]="$rank"
-            send_relog_message "$player_name" # [NUEVO]
             ;;
         "ADMIN")
             execute_server_command "/admin $player_name"
             current_player_ranks["$player_name"]="$rank"
             rank_already_applied["$player_name"]="$rank"
-            send_relog_message "$player_name" # [NUEVO]
             ;;
         "SUPER")
             execute_server_command "/admin $player_name"
             add_to_cloud_admin "$player_name"
             current_player_ranks["$player_name"]="$rank"
             rank_already_applied["$player_name"]="$rank"
-            send_relog_message "$player_name" # [NUEVO]
             ;;
     esac
 }
 
-# [MODIFICADO] Esta es la nueva lógica de limpieza
-handle_disconnect_cleanup() {
-    local player_name="$1"
-    log_debug "Running disconnect cleanup for $player_name"
-    
-    local player_info=$(get_player_info "$player_name")
-    if [ -z "$player_info" ]; then
-        log_debug "No player info for $player_name, cleanup aborted."
-        return
-    fi
-    
-    local rank=$(echo "$player_info" | cut -d'|' -f3)
-    
-    # --- Paso 1: Quitar el rango al jugador desconectado ---
-    case "$rank" in
-        "MOD")
-            execute_server_command "/unmod $player_name"
-            ;;
-        "ADMIN")
-            execute_server_command "/unadmin $player_name"
-            ;;
-        "SUPER")
-            execute_server_command "/unadmin $player_name"
-            remove_from_cloud_admin "$player_name"
-            ;;
-    esac
-    unset rank_already_applied["$player_name"]
-    log_debug "Removed rank $rank from $player_name"
-
-    # --- Paso 2: Escanear jugadores restantes ---
-    local has_admin=0
-    local has_mod=0
-    local has_super=0
-    
-    for p_name in "${!connected_players[@]}"; do
-        if [ -z "$p_name" ]; then continue; fi
-        
-        local p_info=$(get_player_info "$p_name")
-        if [ -z "$p_info" ]; then continue; fi
-        
-        local p_rank=$(echo "$p_info" | cut -d'|' -f3)
-        
-        if [ "$p_rank" = "ADMIN" ]; then has_admin=1; fi
-        if [ "$p_rank" = "MOD" ]; then has_mod=1; fi
-        if [ "$p_rank" = "SUPER" ]; then has_super=1; has_admin=1; fi # Un SUPER admin también cuenta como admin
-    done
-    
-    log_debug "Remaining players scan: has_admin=$has_admin, has_mod=$has_mod, has_super=$has_super"
-
-    # --- Paso 3: Borrar archivos si no queda nadie con ese rango ---
-    local world_dir="$BASE_SAVES_DIR/$WORLD_ID"
-    
-    if [ $has_admin -eq 0 ]; then
-        if [ -f "$world_dir/adminlist.txt" ]; then
-            rm -f "$world_dir/adminlist.txt"
-            log_debug "Removed adminlist.txt (last admin disconnected)"
-        fi
-    fi
-    
-    if [ $has_mod -eq 0 ]; then
-        if [ -f "$world_dir/modlist.txt" ]; then
-            rm -f "$world_dir/modlist.txt"
-            log_debug "Removed modlist.txt (last mod disconnected)"
-        fi
-    fi
-    
-    # NOTA: No borramos cloudWideOwnedAdminlist.txt porque es global.
-    # La función remove_from_cloud_admin() ya quitó el nombre del jugador.
-}
-
-
+# [MODIFICADO] Acepta el rango del jugador que se desconectó
 start_disconnect_timer() {
     local player_name="$1"
+    local rank="$2"
     
-    # Cancela cualquier timer de desconexión anterior para este jugador
-    cancel_disconnect_timer "$player_name"
-    
-    log_debug "Starting 10s disconnect timer for $player_name"
-    (
-        sleep 10
-        # La comprobación de reconexión se maneja en el evento "Player Connected"
-        # que llama a cancel_disconnect_timer().
-        # Si llegamos aquí, el jugador no se ha reconectado.
-        log_debug "Disconnect grace period ended for $player_name. Running cleanup."
-        handle_disconnect_cleanup "$player_name"
-        unset disconnect_timers["$player_name"]
-    ) &
-    disconnect_timers["$player_name"]=$!
+    if [ "${player_verification_status[$player_name]}" != "verified" ]; then
+        (
+            sleep 1
+            remove_player_rank "$player_name" "$rank" # Pasa el rango
+            unset disconnect_timers["$player_name"]
+        ) &
+        disconnect_timers["$player_name"]=$!
+    else
+        (
+            sleep 10
+            remove_player_rank "$player_name" "$rank" # Pasa el rango
+            
+            # [NUEVA LÓGICA] Comprueba si el archivo de lista debe ser borrado
+            check_and_delete_list_file "$rank"
+            
+            unset disconnect_timers["$player_name"]
+        ) &
+        disconnect_timers["$player_name"]=$!
+    fi
 }
 
+# [NUEVA FUNCIÓN] Comprueba si otros jugadores con rango están conectados antes de borrar el archivo
+check_and_delete_list_file() {
+    local disconnected_rank="$1"
+    local world_dir="$BASE_SAVES_DIR/$WORLD_ID"
+    
+    # Comprobar MODs
+    if [ "$disconnected_rank" == "MOD" ]; then
+        local mod_online=0
+        for player in "${!connected_players[@]}"; do
+            local other_info=$(get_player_info "$player")
+            local other_rank=$(echo "$other_info" | cut -d'|' -f3)
+            if [ "$other_rank" == "MOD" ]; then
+                mod_online=1
+                break
+            fi
+        done
+        
+        if [ $mod_online -eq 0 ]; then
+            log_debug "Last MOD disconnected. Deleting modlist.txt"
+            rm -f "$world_dir/modlist.txt"
+        else
+            log_debug "Player with MOD left, but other MODs are still online. File modlist.txt will not be deleted."
+        fi
+        return
+    fi
+
+    # Comprobar ADMINs o SUPERs (ambos usan adminlist.txt)
+    if [ "$disconnected_rank" == "ADMIN" ] || [ "$disconnected_rank" == "SUPER" ]; then
+        local admin_online=0
+        for player in "${!connected_players[@]}"; do
+            local other_info=$(get_player_info "$player")
+            local other_rank=$(echo "$other_info" | cut -d'|' -f3)
+            if [ "$other_rank" == "ADMIN" ] || [ "$other_rank" == "SUPER" ]; then
+                admin_online=1
+                break
+            fi
+        done
+        
+        if [ $admin_online -eq 0 ]; then
+            log_debug "Last ADMIN/SUPER disconnected. Deleting adminlist.txt"
+            rm -f "$world_dir/adminlist.txt"
+        else
+             log_debug "Player with ADMIN/SUPER left, but others are still online. File adminlist.txt will not be deleted."
+        fi
+        return
+    fi
+}
+
+# [MODIFICADO] Acepta el rango para no tener que buscarlo de nuevo
+remove_player_rank() {
+    local player_name="$1"
+    local rank="$2" # Recibe el rango del jugador
+    
+    if [ -n "$rank" ] && [ "$rank" != "NONE" ]; then
+        case "$rank" in
+            "MOD")
+                execute_server_command "/unmod $player_name"
+                ;;
+            "ADMIN")
+                execute_server_command "/unadmin $player_name"
+                ;;
+            "SUPER")
+                execute_server_command "/unadmin $player_name"
+                # Como pediste, la cloud list SÓLO se le quita el nombre, no se borra el archivo.
+                remove_from_cloud_admin "$player_name"
+                ;;
+        esac
+        
+        unset rank_already_applied["$player_name"]
+    fi
+}
 
 cancel_disconnect_timer() {
     local player_name="$1"
@@ -372,7 +373,6 @@ cancel_disconnect_timer() {
         local pid="${disconnect_timers[$player_name]}"
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
-            log_debug "Cancelled disconnect timer for $player_name (reconnected)."
         fi
         unset disconnect_timers["$player_name"]
     fi
@@ -404,7 +404,6 @@ apply_pending_ranks() {
         current_player_ranks["$player_name"]="$pending_rank"
         rank_already_applied["$player_name"]="$pending_rank"
         unset pending_ranks["$player_name"]
-        send_relog_message "$player_name" # [NUEVO]
     fi
 }
 
@@ -615,9 +614,7 @@ cancel_player_timers() {
         fi
     done
     
-    # NO llames a cancel_disconnect_timer aquí.
-    # Esta función se llama CUANDO un jugador se desconecta,
-    # pero ANTES de que se inicie el temporizador de desconexión.
+    cancel_disconnect_timer "$player_name"
 }
 
 sync_lists_from_players_log() {
@@ -703,20 +700,17 @@ apply_rank_changes() {
                 execute_server_command "/admin $player_name"
                 current_player_ranks["$player_name"]="$new_rank"
                 rank_already_applied["$player_name"]="$new_rank"
-                send_relog_message "$player_name" # [NUEVO]
                 ;;
             "MOD")
                 execute_server_command "/mod $player_name"
                 current_player_ranks["$player_name"]="$new_rank"
                 rank_already_applied["$player_name"]="$new_rank"
-                send_relog_message "$player_name" # [NUEVO]
                 ;;
             "SUPER")
                 add_to_cloud_admin "$player_name"
                 execute_server_command "/admin $player_name"
                 current_player_ranks["$player_name"]="$new_rank"
                 rank_already_applied["$player_name"]="$new_rank"
-                send_relog_message "$player_name" # [NUEVO]
                 ;;
         esac
     fi
@@ -739,7 +733,7 @@ handle_invalid_player_name() {
 
         if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
             execute_server_command "/ban $player_ip"
-            execute_server_command "/kick \"$safe_name\""
+            execute_server_command "/kick \"$safe_name\"" 
             print_warning "Banned invalid player name: '$player_name' (IP: $player_ip) for 60 seconds"
             
             (
@@ -748,7 +742,7 @@ handle_invalid_player_name() {
                 print_success "Unbanned IP: $player_ip"
             ) &
         else
-            execute_server_command "/ban \"$safe_name\""
+            execute_server_command "/ban \"$safe_name\"" 
             execute_server_command "/kick \"$safe_name\""
             print_warning "Banned invalid player name: '$player_name' (fallback to name ban)"
         fi
@@ -872,6 +866,7 @@ monitor_console_log() {
             player_name=$(extract_real_name "$player_name")
             player_name=$(echo "$player_name" | xargs | tr '[:lower:]' '[:upper:]')
             
+            # [DEFENSA PRIMARIA] Aquí se activa la defensa
             if ! is_valid_player_name "$player_name"; then
                 handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
                 continue
@@ -879,8 +874,6 @@ monitor_console_log() {
             
             log_debug "Player Connected: $player_name, IP: $player_ip"
             
-            # [MODIFICADO] Esto cancela el temporizador de 10s si el jugador
-            # se reconecta, previniendo la limpieza.
             cancel_disconnect_timer "$player_name"
             
             connected_players["$player_name"]=1
@@ -940,20 +933,23 @@ monitor_console_log() {
             
             if is_valid_player_name "$player_name"; then
                 log_debug "Player Disconnected: $player_name"
-                cancel_player_timers "$player_name" # Cancela timers de pswd, etc.
                 
-                # [MODIFICADO] Inicia el temporizador de limpieza de 10 segundos
-                start_disconnect_timer "$player_name"
+                # [MODIFICADO] Obtiene el rango ANTES de desconectarlo
+                local player_info=$(get_player_info "$player_name")
+                local rank=$(echo "$player_info" | cut -d'|' -f3)
+
+                cancel_player_timers "$player_name"
                 
-                # Quita al jugador de la lista activa INMEDIATAMENTE
-                # La función de limpieza escaneará esta lista
+                # [MODIFICADO] Pasa el rango al temporizador de desconexión
+                start_disconnect_timer "$player_name" "$rank"
+                
                 unset connected_players["$player_name"]
                 unset player_ip_map["$player_name"]
                 unset player_verification_status["$player_name"]
                 unset pending_ranks["$player_name"]
                 unset rank_already_applied["$player_name"]
                 
-                # sync_lists_from_players_log # No es necesario sincronizar aquí
+                sync_lists_from_players_log
             fi
         fi
         
