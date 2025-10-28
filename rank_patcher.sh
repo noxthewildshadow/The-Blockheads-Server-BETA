@@ -97,7 +97,6 @@ extract_real_name() {
 
 sanitize_name_for_command() {
     local name="$1"
-    # [CORRECCIÓN] Ya no sanitizamos para comillas si el nombre está vacío
     if [ -z "$name" ]; then
         echo "$name"
         return
@@ -105,6 +104,7 @@ sanitize_name_for_command() {
     echo "$name" | sed 's/\\/\\\\/g; s/"/\\"/g; s/`/\\`/g; s/\$/\\$/g'
 }
 
+# Comandos NORMALES (con rate-limit de 1 seg)
 execute_server_command() {
     local command="$1"
     local current_time=$(date +%s)
@@ -121,6 +121,7 @@ execute_server_command() {
     last_command_time["$SCREEN_SESSION"]=$(date +%s)
 }
 
+# Función base para enviar comandos (SIN rate-limit)
 send_server_command() {
     local screen_session="$1"
     local command="$2"
@@ -670,31 +671,30 @@ handle_invalid_player_name() {
     
     if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
         
-        # [NUEVA LÓGICA] Revisar si el nombre es específicamente el string vacío.
         if [ -z "$player_name" ]; then
-            # CASO 1: Es el exploit de alias vacío.
-            # Banea permanentemente la IP Y lo expulsa explícitamente.
+            # CASO 1: Exploit de alias vacío.
             log_debug "EXPLOIT (empty alias): Banning IP $player_ip permanently AND forcing kick."
             print_warning "Banned exploit IP: $player_ip (Permanent) and Kicking."
             
-            # 1. Banear la IP permanentemente
-            execute_server_command "/ban $player_ip"
+            # [CORRECCIÓN] Llamada directa a 'send_server_command' para acción URGENTE
+            # Banea la IP permanentemente
+            send_server_command "$SCREEN_SESSION" "/ban $player_ip"
             
-            # 2. Expulsar explícitamente, ya que /ban puede no expulsar a un admin.
-            # No usamos comillas, enviamos /kick seguido de un espacio.
             local safe_name=$(sanitize_name_for_command "$player_name")
-            execute_server_command "/kick $safe_name" 
+            # [CORRECCIÓN] Llamada directa a 'send_server_command' para acción URGENTE
+            # Envía /kick sin comillas
+            send_server_command "$SCREEN_SESSION" "/kick $safe_name" 
             
         else
-            # CASO 2: Es otro nombre inválido (ej. "TEST!", " ").
-            # Banea temporalmente la IP. El comando /ban TAMBIÉN lo expulsa.
+            # CASO 2: Otro nombre inválido.
             log_debug "INVALID NAME: Kicking and Banning IP $player_ip temporarily (60s)."
             print_warning "Banned invalid player name: '$player_name' (IP: $player_ip) for 60 seconds"
             
+            # [CORRECCIÓN] Llamada directa a 'send_server_command' para acción URGENTE
             # /ban $player_ip lo expulsa y banea
-            execute_server_command "/ban $player_ip"
+            send_server_command "$SCREEN_SESSION" "/ban $player_ip"
             
-            # Iniciar temporizador para desbanear la IP
+            # El 'unban' no es urgente, puede usar el 'execute_server_command' normal.
             (
                 sleep 60
                 execute_server_command "/unban $player_ip"
@@ -706,7 +706,9 @@ handle_invalid_player_name() {
         # Fallback si la IP es desconocida (baneo por nombre)
         print_warning "Banned invalid player name: '$player_name' (fallback to name ban)"
         local safe_name=$(sanitize_name_for_command "$player_name")
-        execute_server_command "/ban \"$safe_name\"" 
+        
+        # [CORRECCIÓN] Llamada directa a 'send_server_command' para acción URGENTE
+        send_server_command "$SCREEN_SESSION" "/ban \"$safe_name\"" 
     fi
     
     return 1
@@ -940,7 +942,6 @@ monitor_console_log() {
                         fi
                         ;;
                     "!ip_change "*)
-                        # [CORRECCIÓN] Se cambió (.+) por ([^[:space:]]+)$ para evitar capturar \r
                         if [[ "$message" =~ !ip_change\ ([^[:space:]]+)$ ]]; then
                             local password="${BASH_REMATCH[1]}"
                             log_debug "$player_name trying to verify IP."
