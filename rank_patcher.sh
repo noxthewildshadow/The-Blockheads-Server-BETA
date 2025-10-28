@@ -19,7 +19,6 @@ print_header() {
     echo -e "${MAGENTA}================================================================================${NC}"
 }
 
-# [CORRECCIÓN] Se eliminó la variable SCRIPT_DIR ya que no se utilizaba (código muerto).
 HOME_DIR="$HOME"
 BASE_SAVES_DIR="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
 
@@ -661,45 +660,22 @@ apply_rank_changes() {
 handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="${3:-unknown}"
     
-    print_error "INVALID PLAYER NAME DETECTED: '$player_name' (IP: $player_ip, Hash: $player_hash)"
-    log_debug "INVALID NAME: Action required for '$player_name' (IP: $player_ip, Hash: $player_hash)"
+    # [MODIFICACIÓN]
+    # El jugador está en la misma IP que el host, por lo que el baneo por IP es inútil.
+    # Expulsamos usando el HASH (playerID) que el script captura.
     
-    local safe_name=$(sanitize_name_for_command "$player_name")
-
-    if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
-        
-        # [NUEVA LÓGICA] Revisar si el nombre es específicamente el string vacío.
-        if [ -z "$player_name" ]; then
-            # CASO 1: Es el exploit de alias vacío. Banear la IP permanentemente.
-            log_debug "EXPLOIT DETECTED (empty alias): Banning IP $player_ip permanently."
-            print_warning "Banned exploit IP: $player_ip (Permanent)"
-            
-            execute_server_command "/ban $player_ip"
-            execute_server_command "/kick \"$safe_name\"" # Intento de kick
-            
-            # No se inicia un temporizador de unban. El baneo es permanente.
-            
-        else
-            # CASO 2: Es otro nombre inválido (ej. "TEST!", " "). Banear temporalmente.
-            log_debug "INVALID NAME: Banning IP $player_ip temporarily (60s)."
-            print_warning "Banned invalid player name: '$player_name' (IP: $player_ip) for 60 seconds"
-            
-            execute_server_command "/ban $player_ip"
-            execute_server_command "/kick \"$safe_name\"" # Intento de kick
-            
-            # Iniciar temporizador para desbanear la IP
-            (
-                sleep 60
-                execute_server_command "/unban $player_ip"
-                print_success "Unbanned IP: $player_ip (Temp ban expired)"
-            ) &
-        fi
-        
+    print_error "INVALID PLAYER NAME DETECTED: '$player_name' (IP: $player_ip, Hash: $player_hash)"
+    log_debug "EXPLOIT ATTEMPT: Kicking invalid name '$player_name' by HASH: $player_hash"
+    
+    if [ -n "$player_hash" ] && [ "$player_hash" != "unknown" ]; then
+        # Usamos el hash para el kick, ya que es el único identificador fiable
+        execute_server_command "/kick-id $player_hash"
+        print_warning "Kicked exploit player by HASH: $player_hash"
     else
-        # Fallback si la IP es desconocida (baneo por nombre)
-        print_warning "Banned invalid player name: '$player_name' (fallback to name ban)"
-        execute_server_command "/ban \"$safe_name\"" 
+        # Fallback si el hash es desconocido (muy improbable)
+        local safe_name=$(sanitize_name_for_command "$player_name")
         execute_server_command "/kick \"$safe_name\""
+        print_warning "Kicked invalid player by NAME (Fallback): '$player_name'"
     fi
     
     return 1
@@ -881,15 +857,10 @@ monitor_console_log() {
             sync_lists_from_players_log
         fi
         
-        # [CORRECCIÓN] Se cambió (.+) por (.*) para capturar desconexiones de alias vacíos
         if [[ "$line" =~ Player\ Disconnected\ (.*) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             player_name=$(echo "$player_name" | xargs | tr '[:lower:]' '[:upper:]')
             
-            # Solo procesa si el nombre (incluso vacío) fue validado al conectarse
-            # Nota: 'is_valid_player_name' rechazaría un nombre vacío aquí,
-            # pero necesitamos procesar la desconexión.
-            # Comprobamos si lo teníamos en nuestros registros de conectados.
             if [ -n "${connected_players[$player_name]}" ] || [ -z "$player_name" ]; then
                 log_debug "Player Disconnected: '$player_name'"
                 cancel_player_timers "$player_name"
