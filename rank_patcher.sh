@@ -19,7 +19,7 @@ print_header() {
     echo -e "${MAGENTA}================================================================================${NC}"
 }
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# [CORRECCIÓN] Se eliminó la variable SCRIPT_DIR ya que no se utilizaba (código muerto).
 HOME_DIR="$HOME"
 BASE_SAVES_DIR="$HOME_DIR/GNUstep/Library/ApplicationSupport/TheBlockheads/saves"
 
@@ -246,17 +246,17 @@ apply_rank_to_connected_player() {
     
     case "$rank" in
         "MOD")
-            execute_server_command "/mod $player_name" # [CORRECCIÓN]
+            execute_server_command "/mod $player_name"
             current_player_ranks["$player_name"]="$rank"
             rank_already_applied["$player_name"]="$rank"
             ;;
         "ADMIN")
-            execute_server_command "/admin $player_name" # [CORRECCIÓN]
+            execute_server_command "/admin $player_name"
             current_player_ranks["$player_name"]="$rank"
             rank_already_applied["$player_name"]="$rank"
             ;;
         "SUPER")
-            execute_server_command "/admin $player_name" # [CORRECCIÓN]
+            execute_server_command "/admin $player_name"
             add_to_cloud_admin "$player_name"
             current_player_ranks["$player_name"]="$rank"
             rank_already_applied["$player_name"]="$rank"
@@ -293,13 +293,13 @@ remove_player_rank() {
         
         case "$rank" in
             "MOD")
-                execute_server_command "/unmod $player_name" # [CORRECCIÓN]
+                execute_server_command "/unmod $player_name"
                 ;;
             "ADMIN")
-                execute_server_command "/unadmin $player_name" # [CORRECCIÓN]
+                execute_server_command "/unadmin $player_name"
                 ;;
             "SUPER")
-                execute_server_command "/unadmin $player_name" # [CORRECCIÓN]
+                execute_server_command "/unadmin $player_name"
                 remove_from_cloud_admin "$player_name"
                 ;;
         esac
@@ -332,14 +332,14 @@ apply_pending_ranks() {
         
         case "$pending_rank" in
             "ADMIN")
-                execute_server_command "/admin $player_name" # [CORRECCIÓN]
+                execute_server_command "/admin $player_name"
                 ;;
             "MOD")
-                execute_server_command "/mod $player_name" # [CORRECCIÓN]
+                execute_server_command "/mod $player_name"
                 ;;
             "SUPER")
                 add_to_cloud_admin "$player_name"
-                execute_server_command "/admin $player_name" # [CORRECCIÓN]
+                execute_server_command "/admin $player_name"
                 ;;
         esac
         
@@ -379,7 +379,7 @@ start_password_kick_timer() {
             if [ -n "$player_info" ]; then
                 local password=$(echo "$player_info" | cut -d'|' -f2)
                 if [ "$password" = "NONE" ]; then
-                    execute_server_command "/kick $player_name" # [CORRECCIÓN]
+                    execute_server_command "/kick $player_name"
                 fi
             fi
         fi
@@ -403,7 +403,7 @@ start_ip_grace_timer() {
                     execute_server_command "Else you'll get kicked and a temporal ip ban for 30 seconds."
                     sleep 25
                     if [ -n "${connected_players[$player_name]}" ] && [ "${player_verification_status[$player_name]}" != "verified" ]; then
-                        execute_server_command "/kick $player_name" # [CORRECCIÓN]
+                        execute_server_command "/kick $player_name"
                         execute_server_command "/ban $current_ip"
                         
                         (
@@ -621,13 +621,13 @@ apply_rank_changes() {
     
     case "$old_rank" in
         "ADMIN")
-            execute_server_command "/unadmin $player_name" # [CORRECCIÓN]
+            execute_server_command "/unadmin $player_name"
             ;;
         "MOD")
-            execute_server_command "/unmod $player_name" # [CORRECCIÓN]
+            execute_server_command "/unmod $player_name"
             ;;
         "SUPER")
-            execute_server_command "/unadmin $player_name" # [CORRECCIÓN]
+            execute_server_command "/unadmin $player_name"
             remove_from_cloud_admin "$player_name"
             ;;
     esac
@@ -639,18 +639,18 @@ apply_rank_changes() {
         
         case "$new_rank" in
             "ADMIN")
-                execute_server_command "/admin $player_name" # [CORRECCIÓN]
+                execute_server_command "/admin $player_name"
                 current_player_ranks["$player_name"]="$new_rank"
                 rank_already_applied["$player_name"]="$new_rank"
                 ;;
             "MOD")
-                execute_server_command "/mod $player_name" # [CORRECCIÓN]
+                execute_server_command "/mod $player_name"
                 current_player_ranks["$player_name"]="$new_rank"
                 rank_already_applied["$player_name"]="$new_rank"
                 ;;
             "SUPER")
                 add_to_cloud_admin "$player_name"
-                execute_server_command "/admin $player_name" # [CORRECCIÓN]
+                execute_server_command "/admin $player_name"
                 current_player_ranks["$player_name"]="$new_rank"
                 rank_already_applied["$player_name"]="$new_rank"
                 ;;
@@ -662,33 +662,45 @@ handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="${3:-unknown}"
     
     print_error "INVALID PLAYER NAME DETECTED: '$player_name' (IP: $player_ip, Hash: $player_hash)"
-    log_debug "INVALID PLAYER NAME DETECTED: '$player_name' (IP: $player_ip, Hash: $player_hash)"
+    log_debug "INVALID NAME: Action required for '$player_name' (IP: $player_ip, Hash: $player_hash)"
     
     local safe_name=$(sanitize_name_for_command "$player_name")
-    
-    (
-        sleep 3
-        execute_server_command "WARNING: Invalid player name '$player_name'! Names must be 3-16 alphanumeric characters, no spaces/symbols or nullbytes!"
-        
-        execute_server_command "WARNING: You will be kicked and IP banned in 3 seconds for 60 seconds."
-        sleep 3
 
-        if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
+    if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
+        
+        # [NUEVA LÓGICA] Revisar si el nombre es específicamente el string vacío.
+        if [ -z "$player_name" ]; then
+            # CASO 1: Es el exploit de alias vacío. Banear la IP permanentemente.
+            log_debug "EXPLOIT DETECTED (empty alias): Banning IP $player_ip permanently."
+            print_warning "Banned exploit IP: $player_ip (Permanent)"
+            
             execute_server_command "/ban $player_ip"
-            execute_server_command "/kick \"$safe_name\"" # [NOTA] Se mantienen las comillas aquí por seguridad, ya que el nombre es inválido.
+            execute_server_command "/kick \"$safe_name\"" # Intento de kick
+            
+            # No se inicia un temporizador de unban. El baneo es permanente.
+            
+        else
+            # CASO 2: Es otro nombre inválido (ej. "TEST!", " "). Banear temporalmente.
+            log_debug "INVALID NAME: Banning IP $player_ip temporarily (60s)."
             print_warning "Banned invalid player name: '$player_name' (IP: $player_ip) for 60 seconds"
             
+            execute_server_command "/ban $player_ip"
+            execute_server_command "/kick \"$safe_name\"" # Intento de kick
+            
+            # Iniciar temporizador para desbanear la IP
             (
                 sleep 60
                 execute_server_command "/unban $player_ip"
-                print_success "Unbanned IP: $player_ip"
+                print_success "Unbanned IP: $player_ip (Temp ban expired)"
             ) &
-        else
-            execute_server_command "/ban \"$safe_name\"" # [NOTA] Se mantienen las comillas aquí por seguridad.
-            execute_server_command "/kick \"$safe_name\"" # [NOTA] Se mantienen las comillas aquí por seguridad.
-            print_warning "Banned invalid player name: '$player_name' (fallback to name ban)"
         fi
-    ) &
+        
+    else
+        # Fallback si la IP es desconocida (baneo por nombre)
+        print_warning "Banned invalid player name: '$player_name' (fallback to name ban)"
+        execute_server_command "/ban \"$safe_name\"" 
+        execute_server_command "/kick \"$safe_name\""
+    fi
     
     return 1
 }
@@ -801,7 +813,6 @@ monitor_console_log() {
     tail -n 0 -F "$CONSOLE_LOG" | while read -r line; do
         log_debug "CONSOLE: $line"
         
-        # <<< [CORRECCIÓN] Se cambió (.+) por (.*) para capturar nombres vacíos
         if [[ "$line" =~ Player\ Connected\ (.*)\ \|\ ([0-9a-fA-F.:]+)\ \|\ ([0-9a-f]+) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             local player_ip="${BASH_REMATCH[2]}"
@@ -870,12 +881,17 @@ monitor_console_log() {
             sync_lists_from_players_log
         fi
         
-        if [[ "$line" =~ Player\ Disconnected\ (.+) ]]; then
+        # [CORRECCIÓN] Se cambió (.+) por (.*) para capturar desconexiones de alias vacíos
+        if [[ "$line" =~ Player\ Disconnected\ (.*) ]]; then
             local player_name="${BASH_REMATCH[1]}"
             player_name=$(echo "$player_name" | xargs | tr '[:lower:]' '[:upper:]')
             
-            if is_valid_player_name "$player_name"; then
-                log_debug "Player Disconnected: $player_name"
+            # Solo procesa si el nombre (incluso vacío) fue validado al conectarse
+            # Nota: 'is_valid_player_name' rechazaría un nombre vacío aquí,
+            # pero necesitamos procesar la desconexión.
+            # Comprobamos si lo teníamos en nuestros registros de conectados.
+            if [ -n "${connected_players[$player_name]}" ] || [ -z "$player_name" ]; then
+                log_debug "Player Disconnected: '$player_name'"
                 cancel_player_timers "$player_name"
                 
                 start_disconnect_timer "$player_name"
