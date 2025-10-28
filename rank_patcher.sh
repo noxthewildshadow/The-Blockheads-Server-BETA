@@ -29,7 +29,7 @@ SCREEN_SESSION=""
 WORLD_ID=""
 PORT=""
 PATCH_DEBUG_LOG=""
-WORLD_DIR="" # [NUEVO] Variable global para la ruta del mundo
+WORLD_DIR="" 
 
 declare -A connected_players
 declare -A player_ip_map
@@ -42,7 +42,6 @@ declare -A disconnect_timers
 declare -A last_command_time
 declare -A rank_already_applied
 
-# [NUEVO] PID para el loop de borrado de 5 segundos
 DELETE_TIMER_PID=""
 
 DEBUG_LOG_ENABLED=1
@@ -56,9 +55,7 @@ log_debug() {
     fi
 }
 
-# [NUEVA FUNCIÓN] Inicia el loop de borrado de 5 segundos
 start_file_deletion_loop() {
-    # Si ya está corriendo, no hacer nada
     if [ -n "$DELETE_TIMER_PID" ] && kill -0 "$DELETE_TIMER_PID" 2>/dev/null; then
         log_debug "Deletion loop is already running."
         return
@@ -76,7 +73,6 @@ start_file_deletion_loop() {
     log_debug "Started deletion loop (PID: $DELETE_TIMER_PID)"
 }
 
-# [NUEVA FUNCIÓN] Detiene el loop de borrado de 5 segundos
 stop_file_deletion_loop() {
     if [ -n "$DELETE_TIMER_PID" ] && kill -0 "$DELETE_TIMER_PID" 2>/dev/null; then
         log_debug "Stopping deletion loop (PID: $DELETE_TIMER_PID)..."
@@ -90,33 +86,25 @@ stop_file_deletion_loop() {
 is_valid_player_name() {
     local name="$1"
     
-    # [DEFENSA PRIMARIA] Bloquea nombres vacíos o solo con espacios
     if [[ -z "$name" ]] || [[ "$name" =~ ^[[:space:]]+$ ]]; then
         return 1
     fi
-    
-    # Bloquea caracteres de control (como null bytes)
     if echo "$name" | grep -q -P "[\\x00-\\x1F\\x7F]"; then
         return 1
     fi
-    
     if [[ "$name" =~ ^[[:space:]]+ ]] || [[ "$name" =~ [[:space:]]+$ ]]; then
         return 1
     fi
-    
     if [[ "$name" =~ [[:space:]] ]]; then
         return 1
     fi
-    
     if [[ "$name" =~ [\\\/\|\<\>\:\"\?\*] ]]; then
         return 1
     fi
-    
     local trimmed_name=$(echo "$name" | xargs)
     if [ -z "$trimmed_name" ] || [ ${#trimmed_name} -lt 3 ] || [ ${#trimmed_name} -gt 16 ]; then
         return 1
     fi
-    
     if ! [[ "$trimmed_name" =~ ^[a-zA-Z0-9_]+$ ]]; then
         return 1
     fi
@@ -254,7 +242,6 @@ start_rank_application_timer() {
     fi
 }
 
-# [MODIFICADO] Ahora detiene el loop de borrado antes de aplicar rangos
 apply_rank_to_connected_player() {
     local player_name="$1"
     
@@ -282,8 +269,6 @@ apply_rank_to_connected_player() {
         return
     fi
     
-    # [NUEVA LÓGICA] Si el rango es válido, detener el loop de borrado
-    # antes de crear el archivo con el comando de rango.
     if [ "$rank" == "MOD" ] || [ "$rank" == "ADMIN" ] || [ "$rank" == "SUPER" ]; then
         log_debug "Verified ranked player $player_name is online. Stopping deletion loop."
         stop_file_deletion_loop
@@ -309,30 +294,46 @@ apply_rank_to_connected_player() {
     esac
 }
 
-# [MODIFICADO] Llama a la nueva lógica de reinicio del loop
+# [CORREGIDO] Toda la lógica de limpieza de estado se movió aquí.
 start_disconnect_timer() {
     local player_name="$1"
     local rank="$2"
     
-    # Esta es la lógica de 1 segundo (para jugadores no verificados, etc.)
+    # Lógica de 1 segundo (jugadores no verificados, etc.)
     if [ "${player_verification_status[$player_name]}" != "verified" ]; then
         (
             sleep 1
-            remove_player_rank "$player_name" "$rank" # Pasa el rango
+            remove_player_rank "$player_name" "$rank"
             
-            # Comprueba si el loop debe reiniciarse
+            # [NUEVO] Limpia el estado del jugador AHORA
+            log_debug "Cleaning state for unverified player $player_name"
+            unset connected_players["$player_name"]
+            unset player_ip_map["$player_name"]
+            unset player_verification_status["$player_name"]
+            unset pending_ranks["$player_name"]
+            unset rank_already_applied["$player_name"]
+            unset current_player_ranks["$player_name"]
+
             check_and_restart_deletion_loop
             
             unset disconnect_timers["$player_name"]
         ) &
         disconnect_timers["$player_name"]=$!
     else
-        # Esta es la lógica de 10 segundos (para jugadores verificados)
+        # Lógica de 10 segundos (jugadores verificados)
         (
             sleep 10
-            remove_player_rank "$player_name" "$rank" # Pasa el rango
+            remove_player_rank "$player_name" "$rank"
             
-            # Comprueba si el loop debe reiniciarse
+            # [NUEVO] Limpia el estado del jugador AHORA
+            log_debug "Cleaning state for verified player $player_name after 10s grace"
+            unset connected_players["$player_name"]
+            unset player_ip_map["$player_name"]
+            unset player_verification_status["$player_name"]
+            unset pending_ranks["$player_name"]
+            unset rank_already_applied["$player_name"]
+            unset current_player_ranks["$player_name"]
+
             check_and_restart_deletion_loop
             
             unset disconnect_timers["$player_name"]
@@ -341,11 +342,11 @@ start_disconnect_timer() {
     fi
 }
 
-# [NUEVA FUNCIÓN] Comprueba si quedan jugadores con rango y reactiva el loop si no.
 check_and_restart_deletion_loop() {
     local ranked_player_online=0
     
     # Itera sobre la lista de jugadores *actualmente conectados*
+    # (El jugador que se fue ya ha sido eliminado de esta lista)
     for player in "${!connected_players[@]}"; do
         # Comprueba si están verificados
         if [ "${player_verification_status[$player]}" == "verified" ]; then
@@ -395,6 +396,7 @@ cancel_disconnect_timer() {
     local player_name="$1"
     
     if [ -n "${disconnect_timers[$player_name]}" ]; then
+        log_debug "Canceling disconnect timer for $player_name (reconnected)."
         local pid="${disconnect_timers[$player_name]}"
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
@@ -413,7 +415,6 @@ apply_pending_ranks() {
             return
         fi
         
-        # [NUEVA LÓGICA] Detener el loop antes de aplicar el rango pendiente
         log_debug "Verified ranked player $player_name is online (from pending). Stopping deletion loop."
         stop_file_deletion_loop
 
@@ -724,7 +725,6 @@ apply_rank_changes() {
     if [ "$new_rank" != "NONE" ] && [ "${player_verification_status[$player_name]}" = "verified" ]; then
         unset rank_already_applied["$player_name"]
         
-        # [NUEVA LÓGICA] Detener el loop antes de aplicar el rango
         log_debug "Verified ranked player $player_name is online (from rank change). Stopping deletion loop."
         stop_file_deletion_loop
         
@@ -875,6 +875,7 @@ monitor_list_files() {
     done
 }
 
+# [CORREGIDO] Lógica de desconexión simplificada.
 monitor_console_log() {
     print_header "STARTING CONSOLE LOG MONITOR"
     
@@ -899,7 +900,6 @@ monitor_console_log() {
             player_name=$(extract_real_name "$player_name")
             player_name=$(echo "$player_name" | xargs | tr '[:lower:]' '[:upper:]')
             
-            # [DEFENSA PRIMARIA] Aquí se activa la defensa
             if ! is_valid_player_name "$player_name"; then
                 handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"
                 continue
@@ -967,20 +967,14 @@ monitor_console_log() {
             if is_valid_player_name "$player_name"; then
                 log_debug "Player Disconnected: $player_name"
                 
-                # Obtiene el rango ANTES de desconectarlo
                 local player_info=$(get_player_info "$player_name")
                 local rank=$(echo "$player_info" | cut -d'|' -f3)
 
                 cancel_player_timers "$player_name"
                 
-                # Pasa el rango al temporizador de desconexión
+                # [CORRECCIÓN] Se movió toda la lógica de 'unset'
+                # DENTRO de start_disconnect_timer
                 start_disconnect_timer "$player_name" "$rank"
-                
-                unset connected_players["$player_name"]
-                unset player_ip_map["$player_name"]
-                unset player_verification_status["$player_name"]
-                unset pending_ranks["$player_name"]
-                unset rank_already_applied["$player_name"]
                 
                 sync_lists_from_players_log
             fi
@@ -1055,7 +1049,6 @@ setup_paths() {
         return 1
     fi
     
-    # [NUEVO] Define la variable global
     WORLD_DIR="$BASE_SAVES_DIR/$WORLD_ID"
     
     PLAYERS_LOG="$WORLD_DIR/players.log"
@@ -1069,11 +1062,9 @@ setup_paths() {
     return 0
 }
 
-# [MODIFICADO] Asegura que el loop de borrado se detenga al salir
 cleanup() {
     print_header "CLEANING UP RANK PATCHER"
     
-    # Detiene el loop de borrado de 5 segundos
     stop_file_deletion_loop
     
     jobs -p | xargs kill -9 2>/dev/null
@@ -1123,7 +1114,6 @@ main() {
         exit 1
     fi
     
-    # [NUEVA LÓGICA] Inicia el loop de borrado como estado por defecto
     print_step "Starting rank file deletion loop (Safe Mode)..."
     start_file_deletion_loop
     
