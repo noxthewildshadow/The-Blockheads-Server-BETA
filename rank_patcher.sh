@@ -681,7 +681,7 @@ handle_invalid_player_name() {
             execute_server_command "/ban $player_ip"
             
             # 2. Expulsar explícitamente, ya que /ban puede no expulsar a un admin.
-            # [CORRECCIÓN] No usamos comillas, enviamos /kick seguido de un espacio.
+            # No usamos comillas, enviamos /kick seguido de un espacio.
             local safe_name=$(sanitize_name_for_command "$player_name")
             execute_server_command "/kick $safe_name" 
             
@@ -940,8 +940,9 @@ monitor_console_log() {
                         fi
                         ;;
                     "!ip_change "*)
-                        if [[ "$message" =~ !ip_change\ (.+)$ ]]; then
-                            local password="${BBASH_REMATCH[1]}"
+                        # [CORRECCIÓN] Se cambió (.+) por ([^[:space:]]+)$ para evitar capturar \r
+                        if [[ "$message" =~ !ip_change\ ([^[:space:]]+)$ ]]; then
+                            local password="${BASH_REMATCH[1]}"
                             log_debug "$player_name trying to verify IP."
                             handle_ip_change "$player_name" "$password" "$current_ip"
                         else
