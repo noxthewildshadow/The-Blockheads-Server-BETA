@@ -97,6 +97,11 @@ extract_real_name() {
 
 sanitize_name_for_command() {
     local name="$1"
+    # [CORRECCIÓN] Ya no sanitizamos para comillas si el nombre está vacío
+    if [ -z "$name" ]; then
+        echo "$name"
+        return
+    fi
     echo "$name" | sed 's/\\/\\\\/g; s/"/\\"/g; s/`/\\`/g; s/\$/\\$/g'
 }
 
@@ -676,9 +681,9 @@ handle_invalid_player_name() {
             execute_server_command "/ban $player_ip"
             
             # 2. Expulsar explícitamente, ya que /ban puede no expulsar a un admin.
-            # Usamos safe_name para enviar comillas vacías: /kick ""
+            # [CORRECCIÓN] No usamos comillas, enviamos /kick seguido de un espacio.
             local safe_name=$(sanitize_name_for_command "$player_name")
-            execute_server_command "/kick \"$safe_name\"" 
+            execute_server_command "/kick $safe_name" 
             
         else
             # CASO 2: Es otro nombre inválido (ej. "TEST!", " ").
@@ -936,7 +941,7 @@ monitor_console_log() {
                         ;;
                     "!ip_change "*)
                         if [[ "$message" =~ !ip_change\ (.+)$ ]]; then
-                            local password="${BASH_REMATCH[1]}"
+                            local password="${BBASH_REMATCH[1]}"
                             log_debug "$player_name trying to verify IP."
                             handle_ip_change "$player_name" "$password" "$current_ip"
                         else
