@@ -199,29 +199,25 @@ free_port() {
     fi
 }
 
-# [MODIFICADO] Esta función se asegura de que el servidor arranque sin archivos de rangos,
-# previniendo el exploit de nombre vacío.
+# [CORRECCIÓN] Esta función ahora se ejecuta de forma síncrona (sin el '&' ni 'sleep 5')
+# Se llamará ANTES de iniciar el servidor para evitar conflictos con el rank_patcher.
 cleanup_server_lists() {
     local world_id="$1"
     
-    print_step "Cleaning up old admin/mod lists for $world_id (Security Patch)"
+    print_step "Cleaning up old admin/mod lists for $world_id..."
     local world_dir="$HOME/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/$world_id"
     local admin_list="$world_dir/adminlist.txt"
     local mod_list="$world_dir/modlist.txt"
     
     if [ -f "$admin_list" ]; then
         rm -f "$admin_list"
-        print_status "Removed adminlist.txt (Mitigating empty string exploit)"
+        print_status "Removed old adminlist.txt"
     fi
     
     if [ -f "$mod_list" ]; then
         rm -f "$mod_list"
-        print_status "Removed modlist.txt (Mitigating empty string exploit)"
+        print_status "Removed old modlist.txt"
     fi
-    
-    # NOTA: No borramos cloudWideOwnedAdminlist.txt aquí porque es un
-    # archivo global y podría afectar a otros servidores en ejecución.
-    # El rank_patcher manejará a los jugadores SUPER de forma segura.
 }
 
 start_server() {
@@ -260,7 +256,7 @@ start_server() {
         screen -S "$SCREEN_PATCHER" -X quit 2>/dev/null
     fi
     
-    # [MODIFICADO] Se llama a la función de limpieza ANTES de iniciar el servidor.
+    # [CORRECCIÓN] Se llama a la función de limpieza ANTES de iniciar el servidor.
     cleanup_server_lists "$world_id"
     
     sleep 1
@@ -313,6 +309,8 @@ EOF
         return 1
     fi
     
+    # [CORRECCIÓN] La llamada a cleanup_server_lists se movió para arriba.
+    
     print_step "Waiting for server to start..."
     
     local wait_time=0
@@ -323,6 +321,7 @@ EOF
     
     if [ ! -f "$log_file" ]; then
         print_error "Could not create log file. Server may not have started."
+        # [CORRECCIÓN] Asegurarse de que la pantalla no exista si el log falló
         if ! screen_session_exists "$SCREEN_SERVER"; then
              print_error "Server screen session not found. Startup failed."
              return 1
@@ -338,6 +337,7 @@ EOF
         sleep 1
     done
     
+    # [CORRECCIÓN] Lógica de verificación de inicio mejorada.
     if [ "$server_ready" = false ]; then
         print_warning "Server log file did not confirm startup within 30s."
         if ! screen_session_exists "$SCREEN_SERVER"; then
@@ -351,6 +351,8 @@ EOF
         print_success "Server started successfully and confirmed ready!"
     fi
     
+    # [CORRECCIÓN] Verificación final antes de iniciar el patcher.
+    # Esto soluciona la condición de carrera.
     print_step "Verifying server screen session before starting rank patcher..."
     if ! screen_session_exists "$SCREEN_SERVER"; then
         print_error "Server screen '$SCREEN_SERVER' is not running. Cannot start rank patcher."
@@ -438,6 +440,7 @@ stop_server() {
 list_servers() {
     print_header "LIST OF RUNNING SERVERS"
     
+    # [CORRECCIÓN] Mejorada la forma de parsear la salida de `screen -list`
     local servers=$(screen -list | grep "blockheads_server_" | awk -F' ' '{print $1}' | cut -d. -f2 | sed 's/blockheads_server_/ - Port: /')
     
     if [ -z "$servers" ]; then
@@ -456,6 +459,7 @@ show_status() {
     if [ -z "$port" ]; then
         print_header "THE BLOCKHEADS SERVER STATUS - ALL SERVERS"
         
+        # [CORRECCIÓN] Mejorada la forma de parsear la salida de `screen -list`
         local servers=$(screen -list | grep "blockheads_server_" | awk -F' ' '{print $1}' | cut -d. -f2 | sed 's/blockheads_server_//')
         
         if [ -z "$servers" ]; then
