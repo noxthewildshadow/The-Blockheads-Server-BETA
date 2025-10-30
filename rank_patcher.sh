@@ -432,7 +432,6 @@ start_password_enforcement() {
     start_password_kick_timer "$player_name"
 }
 
-# ### NUEVO ###
 # Nueva función para manejar el bucle de advertencia y castigo para nombres inválidos
 start_invalid_name_timers() {
     local player_name="$1"
@@ -447,12 +446,14 @@ start_invalid_name_timers() {
             exit 0
         fi
         
+        log_debug "INVALID NAME: Sending warning to $player_name."
         execute_server_command "WARNING: $player_name, your name is invalid!"
         execute_server_command "Please reconnect with a valid name (3-16 chars, A-Z, 0-9, _)."
         execute_server_command "If you stay, you will be kicked+banned for 30s, every 30s."
         
         # 2. Bucle de kick/ban cada 30 segundos (empezando 30s *después* de la advertencia)
         while [ -n "${connected_players[$player_name]}" ]; do
+            log_debug "INVALID NAME LOOP: Sleeping 30s before kicking $player_name."
             sleep 30
             
             if [ -z "${connected_players[$player_name]}" ]; then
@@ -599,7 +600,6 @@ handle_ip_change() {
 cancel_player_timers() {
     local player_name="$1"
     
-    # ### MODIFICADO ###
     # Añadido "invalid_name" a la lista de temporizadores a cancelar
     local timer_types=("password_reminder" "password_kick" "ip_grace" "rank_application" "invalid_name")
     
@@ -634,7 +634,6 @@ sync_lists_from_players_log() {
                 continue
             fi
             
-            # ### MODIFICADO ###
             # No aplicar rangos a nombres inválidos
             if [ "${player_verification_status[$name]}" = "invalid_name" ]; then
                 continue
@@ -670,7 +669,6 @@ force_reload_all_lists() {
             continue
         fi
 
-        # ### MODIFICADO ###
         # No aplicar rangos a nombres inválidos
         if [ "${player_verification_status[$name]}" = "invalid_name" ]; then
             continue
@@ -729,8 +727,6 @@ apply_rank_changes() {
     fi
 }
 
-# ### MODIFICADO ###
-# Esta función ahora implementa tu lógica
 # Devuelve 1 (fallo) si la conexión debe ser RECHAZADA (nombre vacío)
 # Devuelve 0 (éxito) si la conexión debe ser PERMITIDA (otro nombre inválido)
 handle_invalid_player_name() {
@@ -746,13 +742,8 @@ handle_invalid_player_name() {
             log_debug "EXPLOIT (empty alias): Banning IP $player_ip permanently AND forcing kick."
             print_warning "Banned exploit IP: $player_ip (Permanent) and Kicking."
             
-            # [CORRECCIÓN] Llamada directa a 'send_server_command' para acción URGENTE
-            # Banea la IP permanentemente
             send_server_command "$SCREEN_SESSION" "/ban $player_ip"
-            
             local safe_name=$(sanitize_name_for_command "$player_name")
-            # [CORRECCIÓN] Llamada directa a 'send_server_command' para acción URGENTE
-            # Envía /kick sin comillas
             send_server_command "$SCREEN_SESSION" "/kick $safe_name" 
             
             return 1 # Devuelve 1 para RECHAZAR la conexión
@@ -772,8 +763,6 @@ handle_invalid_player_name() {
         # Fallback si la IP es desconocida (baneo por nombre)
         print_warning "Banned invalid player name: '$player_name' (fallback to name ban)"
         local safe_name=$(sanitize_name_for_command "$player_name")
-        
-        # [CORRECCIÓN] Llamada directa a 'send_server_command' para acción URGENTE
         send_server_command "$SCREEN_SESSION" "/ban \"$safe_name\"" 
         return 1 # RECHAZAR la conexión
     fi
@@ -870,6 +859,9 @@ monitor_list_files() {
     done
 }
 
+# ##################################################################
+# ### FUNCIÓN CORREGIDA ###
+# ##################################################################
 monitor_console_log() {
     print_header "STARTING CONSOLE LOG MONITOR"
     
@@ -895,32 +887,35 @@ monitor_console_log() {
             player_name=$(extract_real_name "$player_name")
             player_name=$(echo "$player_name" | xargs | tr '[:lower:]' '[:upper:]')
             
-            # ### MODIFICADO ###
-            # Nueva lógica para manejar nombres inválidos
+            # ### INICIO DE LA LÓGICA CORREGIDA ###
             local is_invalid_name=0
             if ! is_valid_player_name "$player_name"; then
-                # handle_invalid_player_name devuelve 1 si se debe RECHAZAR (nombre vacío)
-                # y 0 si se debe PERMITIR (otro nombre inválido)
-                if ! handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"; then
-                    # Era un nombre vacío, la conexión fue rechazada. Paramos aquí.
+                # handle_invalid_player_name devuelve 0 (éxito/ALLOW) para nombres inválidos (Hi, etc)
+                # y 1 (fallo/REJECT) para nombres vacíos (banea y rechaza)
+                
+                if handle_invalid_player_name "$player_name" "$player_ip" "$player_hash"; then
+                    # Éxito (0): Es un nombre inválido (no vacío). Marcar para monitoreo.
+                    is_invalid_name=1
+                    log_debug "handle_invalid_player_name returned 0, marking as invalid_name=1"
+                else
+                    # Fallo (1): Es un nombre vacío. Ya fue baneado. Saltar el resto.
+                    log_debug "handle_invalid_player_name returned 1, skipping connection logic."
                     continue
                 fi
-                # Era otro nombre inválido, los timers se iniciaron.
-                # Marcamos al jugador para saltar la lógica de rangos/contraseñas.
-                is_invalid_name=1
             fi
+            # ### FIN DE LA LÓGICA CORREGIDA ###
             
             log_debug "Player Connected: $player_name, IP: $player_ip"
             
             cancel_disconnect_timer "$player_name"
             
+            # ESTA LÍNEA AHORA SÍ SE EJECUTA PARA NOMBRES INVÁLIDOS (NO VACÍOS)
             connected_players["$player_name"]=1
             player_ip_map["$player_name"]="$player_ip"
             
-            # ### MODIFICADO ###
-            # Si el nombre es inválido, le asignamos un estado especial y omitimos
-            # la lógica de contraseñas, rangos, etc.
             if [ $is_invalid_name -eq 1 ]; then
+                # Si el nombre es inválido, le asignamos un estado especial
+                # y omitimos la lógica de contraseñas, rangos, etc.
                 player_verification_status["$player_name"]="invalid_name"
             else
                 # El nombre es VÁLIDO, procedemos con la lógica normal.
@@ -1001,7 +996,6 @@ monitor_console_log() {
             
             player_name=$(echo "$player_name" | xargs | tr '[:lower:]' '[:upper:]')
             
-            # ### MODIFICADO ###
             # Los jugadores con nombres inválidos no pueden usar comandos
             if [ "${player_verification_status[$player_name]}" = "invalid_name" ]; then
                 continue
