@@ -47,7 +47,6 @@ log_debug() {
         local message="$1"
         local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
         echo "$timestamp $message" >> "$PATCH_DEBUG_LOG"
-        # echo -e "${CYAN}[DEBUG]${NC} $message" # Descomentar para debug en consola
     fi
 }
 
@@ -104,7 +103,6 @@ sanitize_name_for_command() {
     echo "$name" | sed 's/\\/\\\\/g; s/"/\\"/g; s/`/\\`/g; s/\$/\\$/g'
 }
 
-# Comandos NORMALES (con rate-limit de 1 seg)
 execute_server_command() {
     local command="$1"
     local current_time=$(date +%s)
@@ -121,7 +119,6 @@ execute_server_command() {
     last_command_time["$SCREEN_SESSION"]=$(date +%s)
 }
 
-# Función base para enviar comandos (SIN rate-limit)
 send_server_command() {
     local screen_session="$1"
     local command="$2"
@@ -672,43 +669,69 @@ handle_invalid_player_name() {
     if [ -n "$player_ip" ] && [ "$player_ip" != "unknown" ]; then
         
         if [ -z "$player_name" ]; then
-            # CASO 1: Exploit de alias vacío.
             log_debug "EXPLOIT (empty alias): Banning IP $player_ip permanently AND forcing kick."
             print_warning "Banned exploit IP: $player_ip (Permanent) and Kicking."
             
-            # [CORRECCIÓN] Llamada directa a 'send_server_command' para acción URGENTE
-            # Banea la IP permanentemente
             send_server_command "$SCREEN_SESSION" "/ban $player_ip"
             
             local safe_name=$(sanitize_name_for_command "$player_name")
-            # [CORRECCIÓN] Llamada directa a 'send_server_command' para acción URGENTE
-            # Envía /kick sin comillas
             send_server_command "$SCREEN_SESSION" "/kick $safe_name" 
             
         else
-            # CASO 2: Otro nombre inválido.
-            log_debug "INVALID NAME: Kicking and Banning IP $player_ip temporarily (60s)."
-            print_warning "Banned invalid player name: '$player_name' (IP: $player_ip) for 60 seconds"
+            log_debug "INVALID NAME (Non-Empty): '$player_name' (IP: $player_ip). Starting 5s warning -> 30s kick timer."
+            print_warning "Invalid name detected: '$player_name' (IP: $player_ip). Applying 5s warning -> 30s kick/temp-ban policy."
             
-            # [CORRECCIÓN] Llamada directa a 'send_server_command' para acción URGENTE
-            # /ban $player_ip lo expulsa y banea
-            send_server_command "$SCREEN_SESSION" "/ban $player_ip"
-            
-            # El 'unban' no es urgente, puede usar el 'execute_server_command' normal.
             (
-                sleep 60
-                execute_server_command "/unban $player_ip"
-                print_success "Unbanned IP: $player_ip (Temp ban expired)"
-            ) &
+                local p_name="$1"
+                local p_ip="$2"
+                local session="$SCREEN_SESSION"
+                
+                sleep 5
+                
+                local upper_name=$(echo "$p_name" | tr '[:lower:]' '[:upper:]')
+                
+                if [ -z "${connected_players[$upper_name]}" ]; then
+                    log_debug "Player '$p_name' (invalid) disconnected before 5s warning."
+                    exit 0
+                fi
+
+                log_debug "Sending invalid name warning to '$p_name' (IP: $p_ip)."
+                send_server_command "$session" "WARNING: Your name '$p_name' is invalid."
+                send_server_command "$session" "Change it or you will be kicked/temp-banned in 25 seconds."
+                
+                sleep 25 
+                
+                if [ -z "${connected_players[$upper_name]}" ]; then
+                    log_debug "Player '$p_name' (invalid) disconnected before 30s kick."
+                    exit 0
+                fi
+
+                log_debug "Kicking and temp-banning '$p_name' (IP: $p_ip) for invalid name."
+                
+                local safe_name_for_kick
+                safe_name_for_kick=$(sanitize_name_for_command "$p_name")
+
+                send_server_command "$session" "/kick $safe_name_for_kick"
+                send_server_command "$session" "/ban $p_ip"
+                
+                (
+                    sleep 30
+                    execute_server_command "/unban $p_ip"
+                    log_debug "Temp-ban expired for $p_ip (invalid name)."
+                    print_success "Unbanned IP: $p_ip (Invalid name temp-ban expired)"
+                ) &
+                
+            ) "$player_name" "$player_ip" &
         fi
         
     else
-        # Fallback si la IP es desconocida (baneo por nombre)
         print_warning "Banned invalid player name: '$player_name' (fallback to name ban)"
-        local safe_name=$(sanitize_name_for_command "$player_name")
+        local safe_name
+        safe_name=$(sanitize_name_for_command "$player_name")
         
-        # [CORRECCIÓN] Llamada directa a 'send_server_command' para acción URGENTE
-        send_server_command "$SCREEN_SESSION" "/ban \"$safe_name\"" 
+        if [ -n "$safe_name" ]; then
+            send_server_command "$SCREEN_SESSION" "/ban \"$safe_name\""
+        fi
     fi
     
     return 1
