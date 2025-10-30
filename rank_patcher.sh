@@ -432,39 +432,42 @@ start_password_enforcement() {
     start_password_kick_timer "$player_name"
 }
 
-# Nueva función para manejar el bucle de advertencia y castigo para nombres inválidos
+# ##################################################################
+# ### FUNCIÓN CORREGIDA ###
+# ##################################################################
+# Esta versión usa 'while true' y depende de 'cancel_player_timers'
+# para matar el proceso cuando el jugador se desconecte.
 start_invalid_name_timers() {
     local player_name="$1"
     local player_ip="$2"
     
     (
         # 1. Advertencia inicial después de 5 segundos
+        log_debug "INVALID NAME: Timer started for $player_name. Sleeping 5s."
         sleep 5
         
-        if [ -z "${connected_players[$player_name]}" ]; then
-            log_debug "Invalid name timer: $player_name disconnected before warning."
-            exit 0
-        fi
-        
-        log_debug "INVALID NAME: Sending warning to $player_name."
+        # Si el script sigue corriendo, es porque cancel_player_timers (en disconnect) no lo ha matado.
+        # Asumimos que el jugador sigue conectado y mandamos la advertencia.
+        log_debug "INVALID NAME: Sending warning to $player_name (IP: $player_ip)."
         execute_server_command "WARNING: $player_name, your name is invalid!"
         execute_server_command "Please reconnect with a valid name (3-16 chars, A-Z, 0-9, _)."
         execute_server_command "If you stay, you will be kicked+banned for 30s, every 30s."
         
-        # 2. Bucle de kick/ban cada 30 segundos (empezando 30s *después* de la advertencia)
-        while [ -n "${connected_players[$player_name]}" ]; do
+        # 2. Bucle de kick/ban.
+        # Este bucle 'while true' será terminado externamente por 'cancel_player_timers'
+        # (que se llama en 'Player Disconnected') cuando el jugador se desconecte.
+        # 'cancel_player_timers' mata el PID de este subshell.
+        while true; do
             log_debug "INVALID NAME LOOP: Sleeping 30s before kicking $player_name."
             sleep 30
             
-            if [ -z "${connected_players[$player_name]}" ]; then
-                 log_debug "Invalid name timer: $player_name disconnected before kick loop."
-                 break
-            fi
-            
+            # Si el script llega aquí, es porque sigue vivo. Kick/Ban.
             log_debug "INVALID NAME LOOP: Kicking and temp-banning $player_name (IP: $player_ip) for 30s."
             execute_server_command "Kicked: Invalid name. Temp-banned for 30s."
-            execute_server_command "/kick $player_name"
-            execute_server_command "/ban $player_ip"
+            
+            # Usar send_server_command para acciones disciplinarias inmediatas
+            send_server_command "$SCREEN_SESSION" "/kick $player_name"
+            send_server_command "$SCREEN_SESSION" "/ban $player_ip"
             
             # Programar el unban
             (
@@ -473,8 +476,6 @@ start_invalid_name_timers() {
                 log_debug "INVALID NAME LOOP: Unbanned $player_ip."
             ) &
         done
-        
-        log_debug "Invalid name timer loop exited for $player_name."
         
     ) &
     
@@ -727,8 +728,8 @@ apply_rank_changes() {
     fi
 }
 
-# Devuelve 1 (fallo) si la conexión debe ser RECHAZADA (nombre vacío)
 # Devuelve 0 (éxito) si la conexión debe ser PERMITIDA (otro nombre inválido)
+# Devuelve 1 (fallo) si la conexión debe ser RECHAZADA (nombre vacío)
 handle_invalid_player_name() {
     local player_name="$1" player_ip="$2" player_hash="${3:-unknown}"
     
@@ -746,7 +747,7 @@ handle_invalid_player_name() {
             local safe_name=$(sanitize_name_for_command "$player_name")
             send_server_command "$SCREEN_SESSION" "/kick $safe_name" 
             
-            return 1 # Devuelve 1 para RECHAZAR la conexión
+            return 1 # Devuelve 1 (fallo) para RECHAZAR la conexión
         else
             # CASO 2: Otro nombre inválido (corto, caracteres, etc.).
             # PERMITIR CONEXIÓN, PERO INICIAR TEMPORIZADORES DE SANCIÓN.
@@ -756,7 +757,7 @@ handle_invalid_player_name() {
             # Inicia los temporizadores en segundo plano
             start_invalid_name_timers "$player_name" "$player_ip"
             
-            return 0 # Devuelve 0 para PERMITIR la conexión
+            return 0 # Devuelve 0 (éxito) para PERMITIR la conexión
         fi
         
     else
@@ -860,7 +861,7 @@ monitor_list_files() {
 }
 
 # ##################################################################
-# ### FUNCIÓN CORREGIDA ###
+# ### FUNCIÓN DE CONEXIÓN (LÓGICA CORREGIDA) ###
 # ##################################################################
 monitor_console_log() {
     print_header "STARTING CONSOLE LOG MONITOR"
@@ -887,7 +888,6 @@ monitor_console_log() {
             player_name=$(extract_real_name "$player_name")
             player_name=$(echo "$player_name" | xargs | tr '[:lower:]' '[:upper:]')
             
-            # ### INICIO DE LA LÓGICA CORREGIDA ###
             local is_invalid_name=0
             if ! is_valid_player_name "$player_name"; then
                 # handle_invalid_player_name devuelve 0 (éxito/ALLOW) para nombres inválidos (Hi, etc)
@@ -903,7 +903,6 @@ monitor_console_log() {
                     continue
                 fi
             fi
-            # ### FIN DE LA LÓGICA CORREGIDA ###
             
             log_debug "Player Connected: $player_name, IP: $player_ip"
             
@@ -1022,7 +1021,7 @@ monitor_console_log() {
                             handle_password_change "$player_name" "$old_password" "$new_password"
                         else
                             execute_server_command "/clear"
-                            execute_server_command "ERROR: $player_name, invalid format! Use: !change_psw OLD_PASSWORD NEW_PASSWORD"
+                            execute_server_command "ERROR: $player_name, invalid format! Use: !change_preplace_psw OLD_PASSWORD NEW_PASSWORD"
                         fi
                         ;;
                     "!ip_change "*)
