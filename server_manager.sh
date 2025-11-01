@@ -520,7 +520,11 @@ EOF
     # [MODIFICADO] Iniciar el patcher O el monitor de restauración
     if [ $restore_mode -eq 1 ]; then
         print_step "Starting restore monitor..."
-        if screen -dmS "$SCREEN_RESTORE" bash -c "$(declare -f print_header print_status print_warning print_error screen_session_exists); run_restore_monitor '$world_id' '$port' '$restore_seconds'"; then
+
+        # [CORRECCIÓN] Exportar TODAS las funciones necesarias, incluida run_restore_monitor
+        local functions_to_export=$(declare -f print_header print_status print_warning print_error screen_session_exists run_restore_monitor)
+
+        if screen -dmS "$SCREEN_RESTORE" bash -c "$functions_to_export; run_restore_monitor '$world_id' '$port' '$restore_seconds'"; then
             print_success "Restore monitor screen session created: $SCREEN_RESTORE"
         else
             print_warning "Failed to create restore monitor screen session"
@@ -567,7 +571,7 @@ EOF
             print_success "Port: $port"
             echo ""
             print_status "To view server console: ${CYAN}screen -r $SCREEN_SERVER${NC}"
-            print_status "To view rank patcher: ${CYAN}screen -r $SCREEN_PATCHER${NC}"
+            print_status "To view rank patchto: ${CYAN}screen -r $SCREEN_PATCHER${NC}"
         fi
         echo ""
         print_warning "To exit console without stopping server: ${YELLOW}CTRL+A, D${NC}"
