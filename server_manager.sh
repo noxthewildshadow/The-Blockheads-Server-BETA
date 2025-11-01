@@ -224,7 +224,7 @@ cleanup_server_lists() {
 }
 
 # ##################################################################
-# ### FUNCIÓN DE RESTAURACIÓN (LÓGICA CORREGIDA) ###
+# ### FUNCIÓN DE RESTAURACIÓN (LÓGICA CORREGIDA FINAL) ###
 # ##################################################################
 run_restore_monitor() {
     local world_id="$1"
@@ -234,8 +234,9 @@ run_restore_monitor() {
     local backup_dir="/tmp/BH_BACKUP_${world_id}_${port}"
     local log_file="$world_dir/console.log"
     local screen_server="blockheads_server_$port"
-    local player_has_joined=0
+    
     local three_min_timer_pid=""
+    local restore_timer_pid="" # <-- PID para el timer de restauración
 
     print_header "STARTING RESTORE MONITOR"
     print_status "World: $world_id"
@@ -243,7 +244,7 @@ run_restore_monitor() {
     print_status "Interval: $restore_seconds seconds"
     print_status "Backup Dir: $backup_dir"
     print_status "Log File: $log_file"
-    print_status "Monitoring for connections..."
+    print_status "Monitoring for connections and server exit..."
 
     if ! command -v inotifywait &> /dev/null; then
         print_error "inotify-tools (inotifywait) is not installed. Restore monitor cannot run."
@@ -251,7 +252,6 @@ run_restore_monitor() {
         return 1
     fi
 
-    # Asegurarse de que el log exista (el servidor tarda en crearlo)
     while [ ! -f "$log_file" ]; do
         sleep 1
     done
@@ -259,43 +259,53 @@ run_restore_monitor() {
     # Bucle principal de monitoreo
     tail -n 0 -F "$log_file" | while read -r line; do
         
-        # Trigger 2: Si un jugador se conecta, iniciar timer de 3 minutos
+        # GATILLO 1: Jugador se conecta
         if [[ "$line" =~ "Player Connected" ]]; then
-            print_status "RESTORE: Player Connected. Starting 3-minute kick timer."
-            player_has_joined=1
+            print_status "RESTORE: Player Connected."
             
-            # Iniciar temporizador de 3 minutos (180s)
+            # [NUEVO] Cancelar cualquier restauración de 30s pendiente
+            if [ -n "$restore_timer_pid" ]; then
+                if kill -0 "$restore_timer_pid" 2>/dev/null; then
+                    kill "$restore_timer_pid" 2>/dev/null
+                    print_status "RESTORE: Player joined. Cancelling pending server restore."
+                fi
+                restore_timer_pid=""
+            fi
+
+            # Cancelar timer de 3min anterior (si existía)
+            if [ -n "$three_min_timer_pid" ]; then
+                if kill -0 "$three_min_timer_pid" 2>/dev/null; then
+                    kill "$three_min_timer_pid" 2>/dev/null
+                fi
+                three_min_timer_pid=""
+            fi
+            
+            # Iniciar nuevo timer de 3 minutos
+            print_status "RESTORE: Starting 3-minute kick timer."
             (
                 sleep 180
                 print_warning "RESTORE: 3-minute limit reached. Forcing server stop and restore."
                 
-                # 1. Matar el servidor
                 if screen_session_exists "$screen_server"; then
                     screen -S "$screen_server" -X quit 2>/dev/null
                 fi
-                
-                sleep 2 # Esperar a que muera
-
-                # 3. Borrar la carpeta del mundo (COMPLETA)
+                sleep 2 
                 print_status "RESTORE: Removing current world data..."
                 rm -rf "$world_dir"
                 mkdir -p "$world_dir"
-
-                # 4. Copiar el backup
                 print_status "RESTORE: Copying backup data from $backup_dir..."
                 cp -a "$backup_dir/." "$world_dir/"
-                
                 print_success "RESTORE: 3-min restore complete. Server will restart automatically."
                 
             ) &
             three_min_timer_pid=$!
         fi
 
-        # Trigger 1: Si un jugador se desconecta Y un jugador había entrado
-        if [[ "$line" =~ "Player Disconnected" ]] && [ $player_has_joined -eq 1 ]; then
+        # GATILLO 2: Jugador se desconecta
+        if [[ "$line" =~ "Player Disconnected" ]]; then
             print_status "RESTORE: Player Disconnected."
             
-            # Cancelar el timer de 3 minutos si estaba activo
+            # Cancelar el timer de 3 minutos (ya no es necesario)
             if [ -n "$three_min_timer_pid" ]; then
                 if kill -0 "$three_min_timer_pid" 2>/dev/null; then
                     kill "$three_min_timer_pid" 2>/dev/null
@@ -303,36 +313,35 @@ run_restore_monitor() {
                 fi
                 three_min_timer_pid=""
             fi
+            
+            # NO HACER NADA MÁS. Esperar a que el servidor se apague solo.
+        fi
 
-            print_status "RESTORE: Waiting $restore_seconds seconds to restore..."
-            sleep "$restore_seconds"
+        # GATILLO 3: El servidor confirma que está vacío y se apaga
+        if [[ "$line" =~ "Exiting World." ]]; then
+            print_status "RESTORE: Server is empty. Starting $restore_seconds second restore timer..."
             
-            print_warning "RESTORE: Time's up. Killing server and restoring from backup..."
-            
-            # --- INICIO NUEVA LÓGICA DE RESTAURACIÓN ---
-            
-            # 1. Matar el servidor
-            if screen_session_exists "$screen_server"; then
-                screen -S "$screen_server" -X quit 2>/dev/null
-            fi
-            
-            # 2. Esperar a que muera
-            sleep 2 
+            # Iniciar el timer de restauración de 30s
+            (
+                sleep "$restore_seconds"
+                print_warning "RESTORE: Time's up. Restoring from backup..."
+                
+                # No es necesario matar el servidor, ya está muerto.
+                # El script "tonto" (blockheads_server_...) está esperando.
+                
+                sleep 2 # Dar tiempo a que el proceso muera completamente
+                
+                print_status "RESTORE: Removing current world data..."
+                rm -rf "$world_dir"
+                mkdir -p "$world_dir"
 
-            # 3. Borrar la carpeta del mundo (COMPLETA)
-            print_status "RESTORE: Removing current world data..."
-            rm -rf "$world_dir"
-            mkdir -p "$world_dir"
+                print_status "RESTORE: Copying backup data from $backup_dir..."
+                cp -a "$backup_dir/." "$world_dir/"
+                
+                print_success "RESTORE: Restoration complete. Server will restart automatically."
 
-            # 4. Copiar el backup
-            print_status "RESTORE: Copying backup data from $backup_dir..."
-            cp -a "$backup_dir/." "$world_dir/"
-            
-            print_success "RESTORE: Restoration complete. Server will restart automatically."
-            # --- FIN NUEVA LÓGICA ---
-            
-            # Resetear la marca para el próximo ciclo
-            player_has_joined=0
+            ) &
+            restore_timer_pid=$!
         fi
     done
 }
@@ -441,7 +450,7 @@ start_server() {
     
     # [MODIFICADO] El script de inicio ahora tiene lógica de restauración
     if [ $restore_mode -eq 1 ]; then
-        # Bucle para modo RESTORE (SIN LÓGICA DE RESTORE INTERNA)
+        # Bucle para modo RESTORE (SIN LÓGICA DE RESTORE INTERNA - "tonto")
         cat > "$start_script" << EOF
 #!/bin/bash
 cd '$PWD'
@@ -451,7 +460,7 @@ while true; do
     # Esta línea se bloquea hasta que el servidor es matado o crashea
     ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'
     
-    # El servidor murió. El MONITOR se encargó de la restauración.
+    # El servidor murió. El MONITOR se encargó de la restauración (o no).
     # Este bucle solo necesita reiniciar.
     echo "[\$(date '+%Y-%m-%d %H:%M:%S')] (RESTORE) Server stopped/killed. Restarting in 5 seconds..."
     sleep 5
@@ -495,6 +504,7 @@ EOF
     print_step "Waiting for server to start..."
     
     local wait_time=0
+    # Esperar a que el log se cree o se recree
     while [ ! -f "$log_file" ] && [ $wait_time -lt 15 ]; do
         sleep 1
         ((wait_time++))
@@ -800,28 +810,3 @@ show_usage() {
 }
 
 case "$1" in
-    start)
-        if [ -z "$2" ]; then
-            print_error "You must specify a WORLD_NAME"
-            show_usage
-            exit 1
-        fi
-        # Pasa todos los argumentos ($2, $3, $4, $5) a start_server
-        start_server "$2" "$3" "$4" "$5"
-        ;;
-    stop)
-        stop_server "$2"
-        ;;
-    status)
-        show_status "$2"
-        ;;
-    list)
-        list_servers
-        ;;
-    install-deps)
-        install_system_dependencies
-        ;;
-    help|--help|-h|*)
-        show_usage
-        ;;
-esac
