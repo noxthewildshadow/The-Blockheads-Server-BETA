@@ -224,7 +224,7 @@ cleanup_server_lists() {
 }
 
 # ##################################################################
-# ### NUEVA FUNCIÓN DE RESTAURACIÓN ###
+# ### FUNCIÓN DE RESTAURACIÓN (LÓGICA CORREGIDA) ###
 # ##################################################################
 run_restore_monitor() {
     local world_id="$1"
@@ -268,11 +268,25 @@ run_restore_monitor() {
             (
                 sleep 180
                 print_warning "RESTORE: 3-minute limit reached. Forcing server stop and restore."
-                # Matar el servidor
+                
+                # 1. Matar el servidor
                 if screen_session_exists "$screen_server"; then
                     screen -S "$screen_server" -X quit 2>/dev/null
                 fi
-                # La restauración ocurrirá en el bucle 'while true' de start_server
+                
+                sleep 2 # Esperar a que muera
+
+                # 3. Borrar la carpeta del mundo (COMPLETA)
+                print_status "RESTORE: Removing current world data..."
+                rm -rf "$world_dir"
+                mkdir -p "$world_dir"
+
+                # 4. Copiar el backup
+                print_status "RESTORE: Copying backup data from $backup_dir..."
+                cp -a "$backup_dir/." "$world_dir/"
+                
+                print_success "RESTORE: 3-min restore complete. Server will restart automatically."
+                
             ) &
             three_min_timer_pid=$!
         fi
@@ -293,12 +307,29 @@ run_restore_monitor() {
             print_status "RESTORE: Waiting $restore_seconds seconds to restore..."
             sleep "$restore_seconds"
             
-            print_warning "RESTORE: Time's up. Forcing server stop and restore."
-            # Matar el servidor
+            print_warning "RESTORE: Time's up. Killing server and restoring from backup..."
+            
+            # --- INICIO NUEVA LÓGICA DE RESTAURACIÓN ---
+            
+            # 1. Matar el servidor
             if screen_session_exists "$screen_server"; then
                 screen -S "$screen_server" -X quit 2>/dev/null
             fi
-            # La restauración ocurrirá en el bucle 'while true' de start_server
+            
+            # 2. Esperar a que muera
+            sleep 2 
+
+            # 3. Borrar la carpeta del mundo (COMPLETA)
+            print_status "RESTORE: Removing current world data..."
+            rm -rf "$world_dir"
+            mkdir -p "$world_dir"
+
+            # 4. Copiar el backup
+            print_status "RESTORE: Copying backup data from $backup_dir..."
+            cp -a "$backup_dir/." "$world_dir/"
+            
+            print_success "RESTORE: Restoration complete. Server will restart automatically."
+            # --- FIN NUEVA LÓGICA ---
             
             # Resetear la marca para el próximo ciclo
             player_has_joined=0
@@ -410,30 +441,19 @@ start_server() {
     
     # [MODIFICADO] El script de inicio ahora tiene lógica de restauración
     if [ $restore_mode -eq 1 ]; then
-        # Bucle para modo RESTORE
+        # Bucle para modo RESTORE (SIN LÓGICA DE RESTORE INTERNA)
         cat > "$start_script" << EOF
 #!/bin/bash
 cd '$PWD'
 export LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
 while true; do
     echo "[\$(date '+%Y-%m-%d %H:%M:%S')] (RESTORE) Starting server..."
-    if ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'; then
-        echo "[\$(date '+%Y-%m-%d %H:%M:%S')] (RESTORE) Server closed normally"
-    else
-        exit_code=\$?
-        echo "[\$(date '+%Y-%m-%d %H:%M:%S')] (RESTORE) Server failed with code: \$exit_code"
-    fi
+    # Esta línea se bloquea hasta que el servidor es matado o crashea
+    ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'
     
-    # --- LÓGICA DE RESTAURACIÓN ---
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] (RESTORE) Server stopped. Restoring world from backup..."
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] (RESTORE) Removing current world data..."
-    rm -rf "$log_dir"/*
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] (RESTORE) Copying backup data from $backup_dir..."
-    cp -a "$backup_dir/." "$log_dir/"
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] (RESTORE) Restoration complete."
-    # --- FIN LÓGICA ---
-    
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] (RESTORE) Restarting in 5 seconds..."
+    # El servidor murió. El MONITOR se encargó de la restauración.
+    # Este bucle solo necesita reiniciar.
+    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] (RESTORE) Server stopped/killed. Restarting in 5 seconds..."
     sleep 5
 done
 EOF
@@ -522,7 +542,7 @@ EOF
         print_step "Starting restore monitor..."
 
         # [CORRECCIÓN] Exportar TODAS las funciones necesarias, incluida run_restore_monitor
-        local functions_to_export=$(declare -f print_header print_status print_warning print_error screen_session_exists run_restore_monitor)
+        local functions_to_export=$(declare -f print_header print_status print_warning print_error print_success screen_session_exists run_restore_monitor)
 
         if screen -dmS "$SCREEN_RESTORE" bash -c "$functions_to_export; run_restore_monitor '$world_id' '$port' '$restore_seconds'"; then
             print_success "Restore monitor screen session created: $SCREEN_RESTORE"
@@ -571,7 +591,7 @@ EOF
             print_success "Port: $port"
             echo ""
             print_status "To view server console: ${CYAN}screen -r $SCREEN_SERVER${NC}"
-            print_status "To view rank patchto: ${CYAN}screen -r $SCREEN_PATCHER${NC}"
+            print_status "To view rank patcher: ${CYAN}screen -r $SCREEN_PATCHER${NC}"
         fi
         echo ""
         print_warning "To exit console without stopping server: ${YELLOW}CTRL+A, D${NC}"
