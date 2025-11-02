@@ -224,26 +224,28 @@ cleanup_server_lists() {
 }
 
 # ##################################################################
-# ### FUNCIÓN DE RESTAURACIÓN (LÓGICA CORREGIDA V4 - INMEDIATA) ###
+# ### FUNCIÓN DE RESTAURACIÓN (LÓGICA CORREGIDA V5 - COPIA DE CARPETA) ###
 # ##################################################################
 run_restore_monitor() {
     local world_id="$1"
     local port="$2"
-    ### ELIMINADO ### local restore_seconds="$3"
     local world_dir="$SAVES_DIR/$world_id"
-    local backup_dir="/tmp/BH_BACKUP_${world_id}_${port}"
+    
+    # --- ### CORRECCIÓN V5 ### ---
+    # La nueva lógica de respaldo. Debe ser idéntica a la de start_server.
+    local backup_parent_dir="/tmp/BH_BACKUPS" # Directorio contenedor
+    local backup_path_for_world="$backup_parent_dir/$world_id" # Ruta a la carpeta COPIADA
+    
     local log_file="$world_dir/console.log"
     local screen_server="blockheads_server_$port"
     local player_has_joined=0
     local three_min_timer_pid=""
-    ### ELIMINADO ### local restore_timer_pid="" # <-- ELIMINADO: Ya no hay timer de restauración
 
     print_header "STARTING RESTORE MONITOR"
     print_status "World: $world_id"
     print_status "Port: $port"
-    ### ELIMINADO ### print_status "Interval: $restore_seconds seconds"
-    print_warning "Mode: Immediate restore on player disconnect." ### MODIFICADO ###
-    print_status "Backup Dir: $backup_dir"
+    print_warning "Mode: Immediate restore on player disconnect."
+    print_status "Backup Path: $backup_path_for_world" # <- V5
     print_status "Log File: $log_file"
 
     if ! command -v inotifywait &> /dev/null; then
@@ -252,7 +254,6 @@ run_restore_monitor() {
         return 1
     fi
 
-    # ### MODIFICADO ###
     # Bucle externo para reiniciar el monitor si el servidor es restaurado.
     while true; do
         
@@ -272,30 +273,29 @@ run_restore_monitor() {
                 print_status "RESTORE: Player Connected."
                 player_has_joined=1
                 
-                ### ELIMINADO ### Bloque de "Cancelar restauración pendiente"
-                
                 # Iniciar temporizador de 3 minutos (180s)
                 print_status "RESTORE: Starting 3-minute kick timer."
                 (
                     sleep 180
                     print_warning "RESTORE (3min): 3-minute limit reached. Forcing server stop and restore."
                     
-                    # 1. Matar el servidor
                     if screen_session_exists "$screen_server"; then
                         screen -S "$screen_server" -X quit 2>/dev/null
                     fi
-                    sleep 2 # Esperar a que muera
+                    sleep 2
 
-                    # 3. Borrar la carpeta del mundo (COMPLETA)
+                    # --- ### CORRECCIÓN V5 ### ---
                     print_status "RESTORE (3min): Removing current world data ($world_dir)..."
                     rm -rf "$world_dir"
-                    mkdir -p "$world_dir"
-
-                    # 4. Copiar el backup
-                    print_status "RESTORE (3min): Copying backup data from $backup_dir..."
-                    cp -a "$backup_dir/." "$world_dir/"
                     
-                    print_success "RESTORE (3min): Restore complete. Server will restart automatically."
+                    print_status "RESTORE (3min): Copying backup folder from $backup_path_for_world..."
+                    if cp -a "$backup_path_for_world" "$SAVES_DIR/"; then
+                        print_success "RESTORE (3min): Restore complete. Server will restart automatically."
+                    else
+                        print_error "RESTORE (3min): FAILED TO COPY BACKUP. Server loop might be broken."
+                        exit 1 # Matar el monitor
+                    fi
+                    # --- ### FIN CORRECCIÓN V5 ### ---
                     
                 ) &
                 three_min_timer_pid=$!
@@ -305,7 +305,6 @@ run_restore_monitor() {
             if [[ "$line" =~ "Player Disconnected" ]] && [ $player_has_joined -eq 1 ]; then
                 print_status "RESTORE: Player Disconnected."
                 
-                # Cancelar el timer de 3 minutos si estaba activo
                 if [ -n "$three_min_timer_pid" ]; then
                     if kill -0 "$three_min_timer_pid" 2>/dev/null; then
                         kill "$three_min_timer_pid" 2>/dev/null
@@ -314,8 +313,8 @@ run_restore_monitor() {
                     three_min_timer_pid=""
                 fi
 
-                # --- ### MODIFICADO ### ---
-                # Iniciar restauración INMEDIATA (ya no en segundo plano)
+                # --- ### CORRECCIÓN V5 ### ---
+                # Iniciar restauración INMEDIATA
                 print_warning "RESTORE: Player Disconnected. Restoring server immediately."
                 
                 # 1. Matar el servidor
@@ -324,30 +323,28 @@ run_restore_monitor() {
                 fi
                 sleep 2 # Esperar a que muera
 
-                # 2. Borrar la carpeta del mundo (COMPLETA, 100% LIMPIO)
+                # 2. Borrar la carpeta del mundo (COMPLETA)
                 print_status "RESTORE: Removing current world data ($world_dir)..."
                 rm -rf "$world_dir"
-                mkdir -p "$world_dir"
 
-                # 3. Copiar el backup
-                print_status "RESTORE: Copying backup data from $backup_dir..."
-                cp -a "$backup_dir/." "$world_dir/"
+                # 3. Copiar el backup (la carpeta completa)
+                print_status "RESTORE: Copying backup folder from $backup_path_for_world..."
+                if cp -a "$backup_path_for_world" "$SAVES_DIR/"; then
+                    print_success "RESTORE: Restoration complete. Server will restart automatically."
+                else
+                    print_error "RESTORE: FAILED TO COPY BACKUP. Server will not restart correctly."
+                    # Matar el monitor para evitar bucles infinitos
+                    exit 1
+                fi
+                # --- ### FIN CORRECCIÓN V5 ### ---
                 
-                print_success "RESTORE: Restoration complete. Server will restart automatically."
-                
-                # Resetear la marca para el próximo ciclo
                 player_has_joined=0
                 
-                # ### MODIFICADO ###
-                # Romper el bucle 'tail | while'
-                # Esto hará que el 'while true' externo se reinicie
-                # y espere a que el servidor cree un nuevo log.
+                # Romper el bucle 'tail | while' para reiniciar el monitor
                 break
             fi
         done
         
-        # Pequeña pausa antes de que el bucle 'while true' intente
-        # encontrar el nuevo archivo de log
         print_status "RESTORE: Monitor loop restarting..."
         sleep 3
         
@@ -355,27 +352,21 @@ run_restore_monitor() {
 }
 
 # ##################################################################
-# ### FUNCIÓN START MODIFICADA ###
+# ### FUNCIÓN START MODIFICADA (LÓGICA V5 - COPIA DE CARPETA) ###
 # ##################################################################
 start_server() {
     local world_id="$1"
     local port
     local restore_mode=0
-    ### ELIMINADO ### local restore_seconds=0
 
-    # ### MODIFICADO ###
-    # Nueva lógica de parseo de argumentos para aceptar --restore
+    # Lógica de parseo de argumentos
     if [[ "$2" == "--restore" ]]; then
-        # Uso: ./script start MiMundo --restore (usa puerto default)
         port="$DEFAULT_PORT"
         restore_mode=1
     elif [[ "$3" == "--restore" ]]; then
-        # Uso: ./script start MiMundo 12345 --restore
         port="$2"
         restore_mode=1
     else
-        # Uso: ./script start MiMundo 12345 (normal)
-        # Uso: ./script start MiMundo (normal, usa puerto default)
         port="${2:-$DEFAULT_PORT}"
         restore_mode=0
     fi
@@ -386,7 +377,7 @@ start_server() {
     
     local SCREEN_SERVER="blockheads_server_$port"
     local SCREEN_PATCHER="blockheads_patcher_$port"
-    local SCREEN_RESTORE="blockheads_restore_$port" # Nueva sesión
+    local SCREEN_RESTORE="blockheads_restore_$port"
     
     if [ ! -f "$SERVER_BINARY" ]; then
         print_error "Server binary not found: $SERVER_BINARY"
@@ -421,7 +412,6 @@ start_server() {
         screen -S "$SCREEN_RESTORE" -X quit 2>/dev/null
     fi
     
-    # [MODIFICADO] Solo limpiar listas si NO estamos en modo restore
     if [ $restore_mode -eq 0 ]; then
         cleanup_server_lists "$world_id"
     else
@@ -430,27 +420,44 @@ start_server() {
     
     sleep 1
     
-    local log_dir="$SAVES_DIR/$world_id"
-    local log_file="$log_dir/console.log"
-    mkdir -p "$log_dir"
+    # --- ### CORRECCIÓN V5 ### ---
+    local world_dir="$SAVES_DIR/$world_id" # Ruta de la carpeta del mundo
+    local log_file="$world_dir/console.log"
+    mkdir -p "$world_dir" # Asegurarse de que exista (para el log)
     
-    # --- Lógica de Backup para /restore ---
-    local backup_dir="/tmp/BH_BACKUP_${world_id}_${port}"
+    # Nueva lógica de ruta de backup
+    local backup_parent_dir="/tmp/BH_BACKUPS" # Directorio contenedor
+    local backup_path_for_world="$backup_parent_dir/$world_id" # Ruta a la carpeta COPIADA
+    local old_backup_style_dir="/tmp/BH_BACKUP_${world_id}_${port}" # Ruta de la lógica antigua
+    
     if [ $restore_mode -eq 1 ]; then
         print_header "CREATING WORLD BACKUP FOR RESTORE"
-        if [ -d "$backup_dir" ]; then
-            print_step "Removing old backup directory..."
-            rm -rf "$backup_dir"
+        
+        # Limpiar backups de estilo antiguo (plano)
+        if [ -d "$old_backup_style_dir" ]; then
+            print_step "Removing old-style backup directory..."
+            rm -rf "$old_backup_style_dir"
         fi
-        mkdir -p "$backup_dir"
-        print_step "Copying world data to $backup_dir..."
-        if cp -a "$log_dir/." "$backup_dir/"; then
-            print_success "World backup created successfully."
+        
+        # Limpiar backup de este mundo si ya existía
+        if [ -d "$backup_path_for_world" ]; then
+            print_step "Removing previous backup at $backup_path_for_world..."
+            rm -rf "$backup_path_for_world"
+        fi
+        
+        # Asegurar que el directorio contenedor existe
+        mkdir -p "$backup_parent_dir"
+        
+        print_step "Copying world folder '$world_id' to $backup_parent_dir..."
+        # Copiamos la CARPETA, no su contenido
+        if cp -a "$world_dir" "$backup_parent_dir/"; then
+            print_success "World backup created successfully at $backup_path_for_world"
         else
             print_error "Failed to create world backup. Aborting."
             return 1
         fi
     fi
+    # --- ### FIN CORRECCIÓN V5 ### ---
 
     print_header "STARTING SERVER - WORLD: $world_id, PORT: $port"
     
@@ -465,28 +472,24 @@ start_server() {
     
     local start_script=$(mktemp)
     
-    # [MODIFICADO] El script de inicio ahora tiene lógica de restauración
+    # Script de inicio (¡Ahora usa $world_dir en lugar de $log_dir!)
     if [ $restore_mode -eq 1 ]; then
-        # Bucle para modo RESTORE (AHORA "TONTO" Y CON ESPERA)
+        # Bucle para modo RESTORE
         cat > "$start_script" << EOF
 #!/bin/bash
 cd '$PWD'
 export LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
 while true; do
-    # --- NUEVA LÓGICA DE ESPERA ---
-    # Si la carpeta del mundo NO existe (porque el monitor la borró),
-    # este bucle esperará hasta que el monitor termine de restaurarla.
-    while [ ! -d "$log_dir" ]; do
+    # Bucle de espera. Si la carpeta del mundo NO existe, espera.
+    while [ ! -d "$world_dir" ]; do
         echo "[\$(date '+%Y-%m-%d %H:%M:%S')] (RESTORE) World directory missing. Waiting for monitor to restore..."
         sleep 1
     done
-    # --- FIN LÓGICA DE ESPERA ---
 
     echo "[\$(date '+%Y-%m-%d %H:%M:%S')] (RESTORE) Starting server..."
-    # Esta línea se bloquea hasta que el servidor es matado o crashea
+    # Se bloquea hasta que el servidor es matado o crashea
     ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'
     
-    # El servidor murió. El MONITOR se encargó de la restauración.
     echo "[\$(date '+%Y-%m-%d %H:%M:%S')] (RESTORE) Server stopped/killed. Looping..."
 done
 EOF
@@ -570,14 +573,13 @@ EOF
         return 1
     fi
     
-    # [MODIFICADO] Iniciar el patcher O el monitor de restauración
+    # Iniciar el patcher O el monitor de restauración
     if [ $restore_mode -eq 1 ]; then
         print_step "Starting restore monitor..."
 
-        # [CORRECCIÓN] Exportar TODAS las funciones necesarias, incluida run_restore_monitor
+        # Exportar TODAS las funciones necesarias
         local functions_to_export=$(declare -f print_header print_status print_warning print_error print_success screen_session_exists run_restore_monitor)
 
-        # ### MODIFICADO ### - Se quitó $restore_seconds
         if screen -dmS "$SCREEN_RESTORE" bash -c "$functions_to_export; run_restore_monitor '$world_id' '$port'"; then
             print_success "Restore monitor screen session created: $SCREEN_RESTORE"
         else
@@ -632,6 +634,9 @@ EOF
     fi
 }
 
+# ##################################################################
+# ### FUNCIÓN STOP MODIFICADA (LÓGICA V5 - LIMPIEZA DE BACKUP) ###
+# ##################################################################
 stop_server() {
     local port="$1"
     
@@ -656,9 +661,14 @@ stop_server() {
         pkill -f "$SERVER_BINARY" 2>/dev/null || true
         
         rm -f world_id_*.txt 2>/dev/null || true
-        rm -rf /tmp/BH_BACKUP_* 2>/dev/null || true # Limpiar backups
         
+        # --- ### CORRECCIÓN V5 ### ---
+        # Limpiar ambos estilos de backup
+        rm -rf /tmp/BH_BACKUP_* 2>/dev/null || true 
+        rm -rf /tmp/BH_BACKUPS 2>/dev/null || true 
         print_success "All servers, patchers, and monitors stopped. Backups cleaned."
+        # --- ### FIN CORRECCIÓN V5 ### ---
+        
     else
         print_header "STOPPING SERVER ON PORT $port"
         
@@ -689,9 +699,21 @@ stop_server() {
         
         pkill -f "$SERVER_BINARY.*$port" 2>/dev/null || true
         
-        rm -f "world_id_$port.txt" 2>/dev/null || true
-        # ### MODIFICADO ### - Corregido el path del backup a limpiar
-        rm -rf "/tmp/BH_BACKUP_"*"_$port" 2>/dev/null || true 
+        # --- ### CORRECCIÓN V5 ### ---
+        # Limpiar el backup específico para este mundo
+        local world_id_file="world_id_$port.txt"
+        if [ -f "$world_id_file" ]; then
+            local world_id=$(cat "$world_id_file" 2>/dev/null)
+            if [ -n "$world_id" ]; then
+                # Limpiar backup nuevo estilo (carpeta)
+                rm -rf "/tmp/BH_BACKUPS/$world_id" 2>/dev/null || true
+                print_status "Cleaned backup for $world_id"
+            fi
+            rm -f "$world_id_file" 2>/dev/null || true
+        fi
+        # Limpiar backup estilo antiguo (plano)
+        rm -rf "/tmp/BH_BACKUP_"*"_$port" 2>/dev/null || true
+        # --- ### FIN CORRECCIÓN V5 ### ---
     fi
 }
 
@@ -784,7 +806,6 @@ install_system_dependencies() {
     if command -v apt-get &> /dev/null; then
         print_step "Installing dependencies on Debian/Ubuntu..."
         sudo apt-get update
-        # [MODIFICADO] Añadido inotify-tools
         sudo apt-get install -y screen binutils libdispatch-dev libobjc4 gnustep-base-runtime libc6 inotify-tools
     elif command -v yum &> /dev/null; then
         print_step "Installing dependencies on RHEL/CentOS..."
@@ -812,7 +833,6 @@ show_usage() {
     echo ""
     print_status "Available commands:"
     echo -e " ${GREEN}start${NC} [WORLD_NAME] [PORT] - Start server with rank patcher"
-    # ### MODIFICADO ###
     echo -e " ${GREEN}start${NC} [WORLD_NAME] [PORT] ${YELLOW}--restore${NC} - Start server in immediate restore mode"
     echo -e " ${RED}stop${NC} [PORT] - Stop server and rank patcher/monitor"
     echo -e " ${CYAN}status${NC} [PORT] - Show server status"
@@ -823,7 +843,6 @@ show_usage() {
     print_status "Examples:"
     echo -e " ${GREEN}$0 start MyWorld 12153${NC}"
     echo -e " ${GREEN}$0 start MyWorld${NC} (uses default port 12153)"
-    # ### MODIFICADO ###
     echo -e " ${GREEN}$0 start MyRestoreWorld 12154 --restore${NC} (Restores immediately when empty)"
     echo -e " ${RED}$0 stop${NC} (stops all servers)"
     echo -e " ${RED}$0 stop 12153${NC} (stops server on port 12153)"
@@ -843,7 +862,6 @@ case "$1" in
             show_usage
             exit 1
         fi
-        # ### MODIFICADO ### - Pasa los 3 argumentos relevantes a start_server
         start_server "$2" "$3" "$4"
         ;;
     stop)
