@@ -1,203 +1,227 @@
-# The BlockHeads Server - Complete Installation Guide r/theblockheads_servers
+# The BlockHeads Server - Complete Installation Guide
 
 ## Introduction
 
-This guide will help you set up your own The BlockHeads server on a Linux system. The installation process is automated and designed to be as simple as possible, even for users with limited technical experience.
+Welcome\! This guide will help you install your own The BlockHeads server on a Linux system. The process is automated to be as simple as possible, even if you don't have much technical experience.
 
 ## Prerequisites
 
-Before you begin, ensure you have:
-- A Linux server (22.04)
-- At least 2GB of RAM (4GB+ recommended for multiple players)
-- 25GB of free disk space
-- sudo/root access to the server
+Before you begin, make sure you have:
 
-## Quick Installation
+  * **A Linux Server:** Recommended: Ubuntu 22.04+ or any modern system based on Debian or Arch.
+  * **Root/Sudo Access:** Required to install programs.
+  * **`curl` Command:** The installer needs this to download itself.
+  * **Hardware:**
+      * At least 2GB of RAM (4GB+ recommended for many players).
+      * 25GB of disk space.
 
-BEFORE YOU START MAKE SURE YOU HAVE CURL INSTALLED WITH:
+-----
+
+## Installation: Step-by-Step
+
+Follow these 6 steps to get your server running.
+
+### 1\. Connect to Your Server
+
+If your server is remote (like a VPS), connect to it using SSH.
+
+```bash
+ssh your_user@SERVER_IP_ADDRESS
+```
+
+### 2\. Check if you have `curl`
+
+Most systems already have it. Check with:
 
 ```bash
 curl --version
 ```
-IF YOU DONT HAVE ANY VERSION DO THE NEXT STEPS:
+
+If you don't see a version, install it (example for Debian/Ubuntu):
 
 ```bash
 sudo apt update
-```
-
-THEN:
-
-```bash
 sudo apt install curl -y
 ```
 
-AND FINALLY CHECK AGAIN IF INSTALLED WITH:
+### 3\. Run the Installer
 
-```bash
-curl --version
-```
+This is the main command. It will download and run the installation script. It will ask for your `sudo` password.
 
-START - The script will:
-1. Install required dependencies
-2. Download the server files
-3. Set up the server manager and economy bot
-4. Apply compatibility patches
-
-## Step-by-Step Guide
-
-### 1. Connect to Your Server
-
-If you're using a remote server, connect via SSH:
-```bash
-ssh username@your-server-ip
-```
-
-### 2. Run the Installation
-
-Execute the installation command:
 ```bash
 curl -sSL https://raw.githubusercontent.com/noxthewildshadow/TheBlockHeads-Server-BETA/refs/heads/main/installer.sh | sudo bash
 ```
 
-### If the install fails use this fix installer
-```bash
-curl -sSL https://raw.githubusercontent.com/noxthewildshadow/TheBlockHeads-Server-BETA/refs/heads/main/fix-installer.sh | sudo bash
-```
+The script will automatically do the following:
 
-### 3. Create Your First World
+1.  Install all required dependencies (libraries, `screen`, etc.).
+2.  Download the The BlockHeads server files.
+3.  Download the `server_manager.sh` and `rank_patcher.sh` scripts.
+4.  Apply compatibility patches to the server binary.
 
-After installation, create your first world:
+### 4\. Create Your First World
+
+Once the installation is finished, create your world. The server binary has a tool for this:
+
 ```bash
 ./blockheads_server171 -n
 ```
 
-Follow the on-screen instructions to set up your world. When finished, press `CTRL+C` to exit.
+Follow the on-screen instructions to name and configure your world. **When finished, press `CTRL+C` to exit** and return to the terminal.
 
-### 4. Start the Server
+*To see a list of the worlds you've created, you can use: `./blockheads_server171 -l`*
 
-Start your server with your world name:
+### 5\. Start Your Server
+
+Now, use the server manager to start your world.
+
 ```bash
-./server_manager.sh start MyWorldID 12153
+./server_manager.sh start YourWorldName 12153
 ```
 
-Replace "MyWorldID" with your actual world ID.
+  * Replace `YourWorldName` with the name or ID of the world you created in step 4.
+  * `12153` is the default port. You can change it if you want.
 
-### 5. Connect to Your Server
+The manager will start the server and the security script (`rank_patcher`) in the background.
 
-Open The BlockHeads game on your device and connect using:
-- IP: Your server's IP address
-- Port: 12153 (or whatever port you specified)
+### 6\. Connect in the Game
+
+You're all set\! Open The BlockHeads on your phone or PC and connect using:
+
+  * **IP:** Your server's IP address.
+  * **Port:** `12153` (or the port you chose).
+
+-----
 
 ## Server Management
 
+Use the `server_manager.sh` script to control your server.
+
 ### Starting the Server
+
 ```bash
-./server_manager.sh start WorldID 12153
+./server_manager.sh start YourWorldName 12153
 ```
 
-### Stopping the Server
+### Stopping the Server (Safely)
+
+This will stop both the server and the security script.
+
 ```bash
-./server_manager.sh stop
+./server_manager.sh stop 12153
 ```
+
+*To stop ALL running servers, just use: `./server_manager.sh stop`*
 
 ### Checking Status
+
+Shows if the server and patcher are "RUNNING" or "STOPPED".
+
 ```bash
-./server_manager.sh status
+./server_manager.sh status 12153
 ```
 
-### Viewing All Running Servers
+### Viewing the Server Console
+
+To see the live server console (and type admin commands), use:
+
+```bash
+screen -r blockheads_server_12153
+```
+
+*To exit the console without stopping the server, press: `CTRL+A` and then `D`.*
+
+### Listing All Servers
+
+Shows all servers that are currently running in their `screen` sessions.
+
 ```bash
 ./server_manager.sh list
 ```
 
-## Economy System Features
+-----
 
-Your server includes an automated economy system with these features:
+## Important\! Back Up Your Worlds
 
-- **Login Rewards**: Players get 1 ticket every hour they're online
-- **Rank Purchases**: 
-  - MOD rank: 10 tickets
-  - ADMIN rank: 20 tickets
-- **Gift System**:
-  - Gift MOD to another player: 15 tickets
-  - Gift ADMIN to another player: 30 tickets
+Your world files are the most important thing. They are saved in the following folder:
+`~/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/`
 
-### Available Commands for Players:
-- `!tickets` - Check your ticket balance
-- `!buy_mod` - Purchase MOD rank
-- `!buy_admin` - Purchase ADMIN rank
-- `!give_mod PLAYERNAME` - Gift MOD rank to another player
-- `!give_admin PLAYERNAME` - Gift ADMIN rank to another player
-- `!economy_help` - Show economy commands
+Be sure to make regular backups of this folder.
 
-## Advanced Configuration
+-----
 
-### Running Multiple Servers
+## Security and Rank System (Rank Patcher)
 
-You can run multiple worlds on different ports:
+Your server includes a script (`rank_patcher.sh`) that automatically handles player security and ranks.
+
+  * **Player Authentication:** Verifies a player's IP. If their IP changes, the script will ask them to verify their identity with their password.
+  * **Password Protection:** All players must create a password to protect their account.
+  * **Automated Ranks:** Applies MOD/ADMIN/SUPER ranks based on the `players.log` file. (The server owner manages this; it is not a "shop").
+
+### Player Commands (in the in-game chat):
+
+  * `!psw YOUR_PASSWORD YOUR_PASSWORD`
+    (Use this the first time you join to create your password).
+
+  * `!change_psw OLD_PASSWORD NEW_PASSWORD`
+    (To change your password).
+
+  * `!ip_change YOUR_PASSWORD`
+    (Use this if the server asks you to verify your identity due to an IP change).
+
+-----
+
+## Advanced: Running Multiple Servers
+
+You can run several worlds at the same time, as long as you use different ports.
+
 ```bash
-# First server
-./server_manager.sh start WorldID1 12153
+# Server 1
+./server_manager.sh start MyWorld1 12153
 
-# Second server (in a different terminal or screen session)
-./server_manager.sh start WorldID2 12154
+# Server 2
+./server_manager.sh start MyWorld2 12154
 ```
 
-### Admin Commands
-
-Server operators can use these commands in the bot terminal:
-- `!send_ticket PLAYERNAME AMOUNT` - Give tickets to a player
-- `!set_mod PLAYERNAME` - Set a player as MOD (console only)
-- `!set_admin PLAYERNAME` - Set a player as ADMIN (console only)
+-----
 
 ## Troubleshooting
 
-### Common Issues
+1.  **"Port already in use"**
 
-1. **Port already in use**
-   ```bash
-   # Use a different port
-   ./server_manager.sh start MyWorldID 12154
-   ```
+      * This means another program (or another BH server) is already using that port.
+      * **Solution:** Choose a different port (e.g., 12154, 12155, etc.).
 
-2. **World not found**
-   - Make sure you created the world first with `./blockheads_server171 -n YOUR_WORLD_NAME`
+    <!-- end list -->
 
-3. **Permission denied errors**
-   - Ensure you're using `sudo` for installation
-   - Check file permissions with `ls -la`
+    ```bash
+    ./server_manager.sh start YourWorldName 12154
+    ```
 
-4. **Server won't start**
-   - Check if all dependencies are installed: `sudo apt-get install -y libgnustep-base1.28 libdispatch0 patchelf wget jq screen lsof`
+2.  **"World not found"**
 
-### Getting Help
+      * **Solution:** Make sure you created the world first with `./blockheads_server171 -n`.
+      * Check that you spelled the name exactly right. Use `./blockheads_server171 -l` to see the correct names.
 
-If you encounter issues:
+3.  **"Permission denied"**
 
-1. Check the troubleshooting section above
-2. Ensure your server meets the minimum requirements
-3. Check the GitHub repository for updates: https://github.com/noxthewildshadow/TheBlockHeads-Server-BETA
-4. Create an issue on GitHub if you've found a bug
+      * **Solution:** Make sure the `.sh` files are executable: `chmod +x server_manager.sh rank_patcher.sh`
 
-## Security Notes
+4.  **Server won't start (Missing Dependencies)**
 
-- Change default ports for better security
-- Regularly update your server software
-- Use a firewall to restrict access to necessary ports only
-- Consider using VPN for private servers
+      * The installer should have handled this, but if it fails, you can try reinstalling the dependencies manually using the manager:
+
+    <!-- end list -->
+
+    ```bash
+    ./server_manager.sh install-deps
+    ```
 
 ## Support
 
-For additional help:
-1. Check the GitHub repository: https://github.com/noxthewildshadow/TheBlockHeads-Server-BETA
-2. Create an issue on GitHub for bugs or problems
-3. Check existing issues for solutions to common problems
+If you still have problems:
 
-## Congratulations!
-
-You've successfully set up your own The BlockHeads server! Enjoy playing with your friends on your custom server.
-
-Remember to regularly back up your world files located in:
-`~/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/`
-
-Happy gaming!
+1.  Re-read the "Troubleshooting" section.
+2.  Visit the GitHub repository to see updates or "Issues" reported by others:
+    `https://github.com/noxthewildshadow/TheBlockHeads-Server-BETA`
+3.  If you find a new bug, create a new "Issue" on GitHub detailing the problem.
