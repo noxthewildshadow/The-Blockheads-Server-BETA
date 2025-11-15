@@ -8,11 +8,11 @@ Welcome\! This guide will help you install your own The BlockHeads server on a L
 
 Before you begin, make sure you have:
 
-  * **A Linux Server:** Recommended: Ubuntu 22.04+ or any modern system based on Debian or Arch.
+  * **Linux Server (OS):** Recommended: Ubuntu 22.04+ or any modern system based on Debian or Arch.
   * **Root/Sudo Access:** Required to install programs.
   * **`curl` Command:** The installer needs this to download itself.
   * **Hardware:**
-      * At least 2GB of RAM (4GB+ recommended for many players).
+      * At least 2GB of RAM (4GB+ recommended for many servers running).
       * 25GB of disk space.
 
 -----
@@ -21,7 +21,7 @@ Before you begin, make sure you have:
 
 Follow these 6 steps to get your server running.
 
-### 1\. Connect to Your Server
+### 1\. Connect to Your Server (ONLY IF YOU USE A VPS)
 
 If your server is remote (like a VPS), connect to it using SSH.
 
@@ -76,7 +76,7 @@ Follow the on-screen instructions to name and configure your world. **When finis
 Now, use the server manager to start your world.
 
 ```bash
-./server_manager.sh start YourWorldName 12153
+./server_manager.sh start YourWorldID 12153
 ```
 
   * Replace `YourWorldName` with the name or ID of the world you created in step 4.
@@ -100,7 +100,7 @@ Use the `server_manager.sh` script to control your server.
 ### Starting the Server
 
 ```bash
-./server_manager.sh start YourWorldName 12153
+./server_manager.sh start YourWorldID 12153
 ```
 
 ### Stopping the Server (Safely)
@@ -177,10 +177,10 @@ You can run several worlds at the same time, as long as you use different ports.
 
 ```bash
 # Server 1
-./server_manager.sh start MyWorld1 12153
+./server_manager.sh start MyWorldID1 12153
 
 # Server 2
-./server_manager.sh start MyWorld2 12154
+./server_manager.sh start MyWorldID2 12154
 ```
 
 -----
@@ -195,7 +195,7 @@ You can run several worlds at the same time, as long as you use different ports.
     <!-- end list -->
 
     ```bash
-    ./server_manager.sh start YourWorldName 12154
+    ./server_manager.sh start YourWorldID 12154
     ```
 
 2.  **"World not found"**
