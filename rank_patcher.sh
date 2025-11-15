@@ -123,7 +123,7 @@ send_server_command() {
     local screen_session="$1"
     local command="$2"
     
-    if screen -S "$screen_session" -p 0 -X stuff "$command$(printf \\r)" 2>/dev_null; then
+    if screen -S "$screen_session" -p 0 -X stuff "$command$(printf \\r)" 2>/dev/null; then
         return 0
     else
         log_debug "FAILED to send command to screen: $screen_session"
