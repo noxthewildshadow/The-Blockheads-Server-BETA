@@ -1,4 +1,4 @@
-# The BlockHeads Server - Complete Installation Guide
+# The BlockHeads Server with Exploit fixer - Complete Installation Guide
 
 ## Introduction
 
