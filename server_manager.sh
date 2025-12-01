@@ -273,35 +273,33 @@ start_server() {
         return 1
     fi
     
-    # --- MODIFICADO: Preparamos la variable del parche ---
-    local PATCH_CMD=""
+    # --- MOD: Detectar parche ---
+    local PATCH_PRELOAD=""
     if [ -f "freight_car_patch.so" ]; then
-        # Nota: Usamos una variable interna para no exportarla a todo el script
-        PATCH_CMD="LD_PRELOAD=\$PWD/freight_car_patch.so"
-        print_status "Security Patch enabled."
+        PATCH_PRELOAD="LD_PRELOAD=\$PWD/freight_car_patch.so"
+        print_status "Patch enabled."
     fi
+    # ----------------------------
 
     local start_script=$(mktemp)
     cat > "$start_script" << EOF
 #!/bin/bash
 cd '$PWD'
 export LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
-
 while true; do
     echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting server..."
-    # Ejecutamos el servidor con el parche INLINE
-    $PATCH_CMD ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'
-    
-    if [ \${PIPESTATUS[0]} -ne 0 ]; then
-        echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server failed."
-    else
+    # --- MOD: Inyeccion Inline ---
+    $PATCH_PRELOAD ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'
+    # -----------------------------
+    if [ \${PIPESTATUS[0]} -eq 0 ]; then
         echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server closed normally"
+    else
+        echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server failed/crashed."
     fi
     echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Restarting in 5 seconds..."
     sleep 5
 done
 EOF
-    # -----------------------------------------------------
     
     chmod +x "$start_script"
     
