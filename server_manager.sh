@@ -273,13 +273,13 @@ start_server() {
         return 1
     fi
     
-    # --- MOD: Detectar parche ---
-    local PATCH_PRELOAD=""
+    # --- MODIFICADO: DETECCIÓN DEL PARCHE ---
+    local PRELOAD_STR=""
     if [ -f "freight_car_patch.so" ]; then
-        PATCH_PRELOAD="LD_PRELOAD=\$PWD/freight_car_patch.so"
-        print_status "Patch enabled."
+        PRELOAD_STR="LD_PRELOAD=\$PWD/freight_car_patch.so"
+        print_status "Security Patch Enabled."
     fi
-    # ----------------------------
+    # ----------------------------------------
 
     local start_script=$(mktemp)
     cat > "$start_script" << EOF
@@ -288,9 +288,9 @@ cd '$PWD'
 export LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
 while true; do
     echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting server..."
-    # --- MOD: Inyeccion Inline ---
-    $PATCH_PRELOAD ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'
-    # -----------------------------
+    # Ejecutamos con LD_PRELOAD inline para evitar crashes en tee/sleep
+    $PRELOAD_STR ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'
+    
     if [ \${PIPESTATUS[0]} -eq 0 ]; then
         echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Server closed normally"
     else
