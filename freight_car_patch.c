@@ -31,7 +31,7 @@ id fakeCtor(id self, SEL _cmd, ...) {
 
 // Thread to apply patch after server loads classes
 static void *patchThread(void *arg) {
-    sleep(2); // wait for runtime
+    sleep(1); // wait for runtime
 
     printf("[Anti-Exploit] Searching for FreightCar class...\n");
 
