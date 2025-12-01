@@ -12,17 +12,35 @@ PURPLE='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
-print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+print_status() {
+    echo -e "${BLUE}[INFO]${NC} $1";
+}
+
+print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1";
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1";
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1";
+}
+
 print_header() {
     echo -e "${PURPLE}================================================================================${NC}"
     echo -e "${PURPLE}$1${NC}"
     echo -e "${PURPLE}================================================================================${NC}"
 }
-print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
-print_progress() { echo -e "${MAGENTA}[PROGRESS]${NC} $1"; }
+
+print_step() {
+    echo -e "${CYAN}[STEP]${NC} $1";
+}
+
+print_progress() {
+    echo -e "${MAGENTA}[PROGRESS]${NC} $1";
+}
 
 [ "$EUID" -ne 0 ] && print_error "This script requires root privileges." && exit 1
 
@@ -35,21 +53,21 @@ SERVER_BINARY="blockheads_server171"
 
 SERVER_MANAGER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/server_manager.sh"
 RANK_PATCHER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/rank_patcher.sh"
+# --- MOD: URL del nuevo parche ---
 FREIGHT_PATCH_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/freight_car_patch.c"
 
-# --- FIX: Agregadas múltiples versiones de libobjc y gnustep-devel ---
+# --- MOD: Agregado 'gobjc', 'libobjc-dev', 'build-essential' para que compile ---
 declare -a PACKAGES_DEBIAN=(
     'git' 'cmake' 'ninja-build' 'clang' 'patchelf' 'libgnustep-base-dev' 'libobjc4'
     'libgnutls28-dev' 'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev' 'zlib1g'
     'libicu-dev' 'libstdc++6' 'libgcc-s1' 'wget' 'curl' 'tar' 'grep' 'screen' 'lsof'
-    'inotify-tools' 'bc' 'build-essential' 'gobjc' 'gnustep-devel'
-    'libobjc-dev' 'libobjc-13-dev' 'libobjc-12-dev' 'libobjc-11-dev' 'libobjc-10-dev'
+    'inotify-tools' 'bc' 'build-essential' 'gobjc' 'libobjc-dev' 'libdispatch-dev'
 )
 
 declare -a PACKAGES_ARCH=(
     'base-devel' 'git' 'cmake' 'ninja' 'clang' 'patchelf' 'gnustep-base' 'gcc-libs'
     'gnutls' 'libgcrypt' 'libxml2' 'libffi' 'libnsl' 'zlib' 'icu' 'libdispatch'
-    'wget' 'curl' 'tar' 'grep' 'screen' 'lsof' 'inotify-tools' 'bc' 'gcc-objc' 'gnustep-make'
+    'wget' 'curl' 'tar' 'grep' 'screen' 'lsof' 'inotify-tools' 'bc' 'gcc-objc'
 )
 
 print_header "THE BLOCKHEADS LINUX SERVER INSTALLER"
@@ -68,15 +86,16 @@ install_packages() {
     [ ! -f /etc/os-release ] && print_error "Could not detect the operating system" && return 1
     source /etc/os-release
     case $ID in
-    debian|ubuntu|pop|kali|linuxmint)
+    debian|ubuntu|pop)
         print_step "Installing packages for Debian/Ubuntu..."
         if ! apt-get update >/dev/null 2>&1; then
             print_error "Failed to update package list"
-            # No retornamos 1, intentamos seguir
+            return 1
         fi
         for package in "${PACKAGES_DEBIAN[@]}"; do
-            # Intentamos instalar, si falla no importa, seguimos con el siguiente (redundancia de libobjc)
-            apt-get install -y "$package" >/dev/null 2>&1
+            if ! apt-get install -y "$package" >/dev/null 2>&1; then
+                print_warning "Failed to install $package"
+            fi
         done
         ;;
     arch)
@@ -111,23 +130,32 @@ download_server_files() {
         print_error "Failed to download rank patcher"
         return 1
     fi
-    print_step "Downloading Freight Car Patch source..."
+    # --- MOD: Descarga del parche ---
+    print_step "Downloading Freight Car Patch..."
     if wget --timeout=30 --tries=3 -O "freight_car_patch.c" "$FREIGHT_PATCH_URL" 2>/dev/null; then
-        print_success "Freight Car Patch source downloaded"
+        print_success "Freight Car Patch downloaded successfully"
     else
-        print_warning "Failed to download Freight Car Patch source"
+        print_warning "Failed to download Freight Car Patch"
     fi
+    # --------------------------------
     return 0
 }
 
-print_step "[1/8] Installing required packages and dependencies..."
+print_step "[1/7] Installing required packages and dependencies..."
 if ! install_packages; then
     print_warning "Falling back to basic package installation..."
-    apt-get update -y >/dev/null 2>&1
-    apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget curl tar screen lsof inotify-tools bc build-essential gobjc libobjc-dev clang >/dev/null 2>&1
+    if ! apt-get update -y >/dev/null 2>&1; then
+        print_error "Failed to update package list"
+        exit 1
+    fi
+    # --- MOD: Añadido gobjc y dependencias ---
+    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget curl tar screen lsof inotify-tools bc build-essential gobjc libobjc-dev clang >/dev/null 2>&1; then
+        print_error "Failed to install essential packages"
+        exit 1
+    fi
 fi
 
-print_step "[2/8] Downloading server archive from archive.org..."
+print_step "[2/7] Downloading server archive from archive.org..."
 print_progress "Downloading server binary (this may take a moment)..."
 if wget --timeout=30 --tries=3 --show-progress "$SERVER_URL" -O "$TEMP_FILE" 2>/dev/null; then
     print_success "Download successful from archive.org"
@@ -136,7 +164,7 @@ else
     exit 1
 fi
 
-print_step "[3/8] Extracting files..."
+print_step "[3/7] Extracting files..."
 EXTRACT_DIR="/tmp/blockheads_extract_$$"
 mkdir -p "$EXTRACT_DIR"
 
@@ -162,7 +190,7 @@ fi
 
 chmod +x "$SERVER_BINARY"
 
-print_step "[4/8] Applying comprehensive patchelf compatibility patches..."
+print_step "[4/7] Applying comprehensive patchelf compatibility patches..."
 declare -A LIBS=(
     ["libgnustep-base.so.1.24"]="$(find_library 'libgnustep-base.so' || echo 'libgnustep-base.so.1.28')"
     ["libobjc.so.4.6"]="$(find_library 'libobjc.so' || echo 'libobjc.so.4')"
@@ -188,14 +216,14 @@ done
 
 print_success "Compatibility patches applied ($COUNT/$TOTAL_LIBS libraries)"
 
-print_step "[5/8] Testing server binary..."
+print_step "[5/7] Testing server binary..."
 if ./blockheads_server171 -h >/dev/null 2>&1; then
     print_success "Server binary test passed"
 else
     print_warning "Server binary execution test failed - may need additional dependencies"
 fi
 
-print_step "[6/8] Downloading server manager and rank patcher..."
+print_step "[6/7] Downloading server manager and rank patcher..."
 if ! download_server_files; then
     print_warning "Creating basic server manager and rank patcher..."
     cat > server_manager.sh << 'EOF'
@@ -211,42 +239,32 @@ EOF
     chmod +x rank_patcher.sh
 fi
 
-# --- FIX COMPILACIÓN: Búsqueda automática de headers ---
-print_step "[7/8] Compiling Freight Car Security Patch..."
+# --- MOD: Paso Nuevo para Compilar el Parche ---
+print_step "[7/7] Compiling Freight Car Security Patch..."
 if [ -f "freight_car_patch.c" ]; then
-    print_progress "Resolving dependencies for compilation..."
+    print_progress "Compiling freight_car_patch.c to .so..."
     
-    # 1. Definir rutas estándar
-    INC_FLAGS="-I/usr/include/GNUstep"
-    
-    # 2. Buscar cabeceras de runtime si no están en sitios estándar
-    # Esto soluciona el error 'fatal error: objc/runtime.h not found'
+    # Busca donde esta el header objc/runtime.h si no esta en rutas estandar
+    # Esto soluciona tu error "fatal error: objc/runtime.h file not found"
+    EXTRA_INC=""
     RUNTIME_H=$(find /usr/lib /usr/include -name runtime.h 2>/dev/null | grep "objc/runtime.h" | head -n 1)
     if [ -n "$RUNTIME_H" ]; then
-        # Obtener el directorio padre del padre (ej: /usr/lib/gcc/x86.../include)
         BASE_INC=$(dirname $(dirname "$RUNTIME_H"))
-        INC_FLAGS="$INC_FLAGS -I$BASE_INC"
-        print_status "Found headers at: $BASE_INC"
+        EXTRA_INC="-I$BASE_INC"
     fi
+    
+    # Añadimos rutas comunes de GNUstep también
+    if [ -d "/usr/include/GNUstep" ]; then EXTRA_INC="$EXTRA_INC -I/usr/include/GNUstep"; fi
 
-    print_progress "Compiling freight_car_patch.c to .so..."
-    if clang -shared -fPIC -o freight_car_patch.so freight_car_patch.c -lobjc -ldl -lpthread $INC_FLAGS -w; then
-        print_success "Security Patch compiled successfully"
-        
-        # Inyección en server_manager.sh
-        if [ -f "server_manager.sh" ]; then
-            if ! grep -q "freight_car_patch.so" server_manager.sh; then
-                sed -i 's|\./blockheads_server171|LD_PRELOAD="$PWD/freight_car_patch.so" ./blockheads_server171|g' server_manager.sh
-                print_success "Applied patch loader to server_manager.sh"
-            fi
-        fi
+    if clang -shared -fPIC -o freight_car_patch.so freight_car_patch.c -lobjc -ldl -lpthread $EXTRA_INC -w; then
+        print_success "Freight Car Patch compiled successfully (freight_car_patch.so)"
     else
-        print_error "Failed to compile patch. Installing 'gobjc' and 'libobjc-12-dev' usually fixes this."
+        print_error "Failed to compile patch. Ensure packages installed correctly."
     fi
 else
     print_warning "freight_car_patch.c not found, skipping compilation."
 fi
-# -----------------------------------------------------
+# ------------------------------------------------
 
 print_step "[8/8] Setting ownership and permissions..."
 chown "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" "freight_car_patch.c" "freight_car_patch.so" 2>/dev/null || true
