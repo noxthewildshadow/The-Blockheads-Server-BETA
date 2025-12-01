@@ -51,14 +51,18 @@ SERVER_URL="https://web.archive.org/web/20240309015235if_/https://majicdave.com/
 TEMP_FILE="/tmp/blockheads_server171.tar.gz"
 SERVER_BINARY="blockheads_server171"
 
+# --- MODIFICADO: Agregadas URLs del nuevo parche ---
 SERVER_MANAGER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/server_manager.sh"
 RANK_PATCHER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/rank_patcher.sh"
+FREIGHT_PATCH_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/freight_car_patch.c"
+# ---------------------------------------------------
 
+# --- MODIFICADO: Agregado 'build-essential' y 'libdispatch-dev' a la lista ---
 declare -a PACKAGES_DEBIAN=(
     'git' 'cmake' 'ninja-build' 'clang' 'patchelf' 'libgnustep-base-dev' 'libobjc4'
     'libgnutls28-dev' 'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev' 'zlib1g'
     'libicu-dev' 'libstdc++6' 'libgcc-s1' 'wget' 'curl' 'tar' 'grep' 'screen' 'lsof'
-    'inotify-tools' 'bc'
+    'inotify-tools' 'bc' 'build-essential' 'libdispatch-dev'
 )
 
 declare -a PACKAGES_ARCH=(
@@ -127,23 +131,32 @@ download_server_files() {
         print_error "Failed to download rank patcher"
         return 1
     fi
+    
+    # --- MODIFICADO: Descarga del parche .c ---
+    print_step "Downloading freight car patch..."
+    if wget --timeout=30 --tries=3 -O "freight_car_patch.c" "$FREIGHT_PATCH_URL" 2>/dev/null; then
+        print_success "Freight car patch downloaded successfully"
+    else
+        print_warning "Failed to download freight car patch (file might not exist in repo yet)"
+    fi
+    # ------------------------------------------
     return 0
 }
 
-print_step "[1/7] Installing required packages and dependencies..."
+print_step "[1/8] Installing required packages and dependencies..."
 if ! install_packages; then
     print_warning "Falling back to basic package installation..."
     if ! apt-get update -y >/dev/null 2>&1; then
         print_error "Failed to update package list"
         exit 1
     fi
-    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget curl tar screen lsof inotify-tools bc >/dev/null 2>&1; then
+    if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget curl tar screen lsof inotify-tools bc clang build-essential >/dev/null 2>&1; then
         print_error "Failed to install essential packages"
         exit 1
     fi
 fi
 
-print_step "[2/7] Downloading server archive from archive.org..."
+print_step "[2/8] Downloading server archive from archive.org..."
 print_progress "Downloading server binary (this may take a moment)..."
 if wget --timeout=30 --tries=3 --show-progress "$SERVER_URL" -O "$TEMP_FILE" 2>/dev/null; then
     print_success "Download successful from archive.org"
@@ -152,7 +165,7 @@ else
     exit 1
 fi
 
-print_step "[3/7] Extracting files..."
+print_step "[3/8] Extracting files..."
 EXTRACT_DIR="/tmp/blockheads_extract_$$"
 mkdir -p "$EXTRACT_DIR"
 
@@ -178,7 +191,7 @@ fi
 
 chmod +x "$SERVER_BINARY"
 
-print_step "[4/7] Applying comprehensive patchelf compatibility patches..."
+print_step "[4/8] Applying comprehensive patchelf compatibility patches..."
 declare -A LIBS=(
     ["libgnustep-base.so.1.24"]="$(find_library 'libgnustep-base.so' || echo 'libgnustep-base.so.1.28')"
     ["libobjc.so.4.6"]="$(find_library 'libobjc.so' || echo 'libobjc.so.4')"
@@ -204,16 +217,17 @@ done
 
 print_success "Compatibility patches applied ($COUNT/$TOTAL_LIBS libraries)"
 
-print_step "[5/7] Testing server binary..."
+print_step "[5/8] Testing server binary..."
 if ./blockheads_server171 -h >/dev/null 2>&1; then
     print_success "Server binary test passed"
 else
     print_warning "Server binary execution test failed - may need additional dependencies"
 fi
 
-print_step "[6/7] Downloading server manager and rank patcher..."
+print_step "[6/8] Downloading server manager and rank patcher..."
 if ! download_server_files; then
     print_warning "Creating basic server manager and rank patcher..."
+    # (El fallback original se mantiene igual)
     cat > server_manager.sh << 'EOF'
 #!/bin/bash
 echo "Use: ./blockheads_server171 -n (to create world)"
@@ -227,9 +241,36 @@ EOF
     chmod +x rank_patcher.sh
 fi
 
-print_step "[7/7] Setting ownership and permissions..."
-chown "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" 2>/dev/null || true
-chmod 755 "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" 2>/dev/null || true
+# --- MODIFICADO: Paso nuevo para compilar e inyectar el parche .c ---
+print_step "[7/8] Compiling and Applying Freight Car Patch..."
+if [ -f "freight_car_patch.c" ]; then
+    print_progress "Compiling freight_car_patch.c to .so..."
+    # Intentamos compilar con rutas de headers comunes
+    if clang -shared -fPIC -o freight_car_patch.so freight_car_patch.c -lobjc -ldl -lpthread -I/usr/include/GNUstep -I/usr/lib/gcc/x86_64-linux-gnu/*/include -w; then
+        print_success "Patch compiled successfully (freight_car_patch.so)"
+        
+        # Ahora modificamos server_manager.sh descargado para inyectar LD_PRELOAD
+        if [ -f "server_manager.sh" ]; then
+            print_progress "Injecting LD_PRELOAD into server_manager.sh..."
+            # Usamos sed para insertar la línea de carga del parche
+            if ! grep -q "freight_car_patch.so" server_manager.sh; then
+                sed -i '/export LD_LIBRARY_PATH=/a export LD_PRELOAD="$PWD/freight_car_patch.so"' server_manager.sh
+                print_success "server_manager.sh updated to load the patch"
+            else
+                print_status "server_manager.sh already contains the patch loader"
+            fi
+        fi
+    else
+        print_error "Failed to compile patch. Ensure libobjc-dev / build-essential are installed."
+    fi
+else
+    print_warning "freight_car_patch.c not found. Skipping compilation."
+fi
+# --------------------------------------------------------------------
+
+print_step "[8/8] Setting ownership and permissions..."
+chown "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" "freight_car_patch.c" "freight_car_patch.so" 2>/dev/null || true
+chmod 755 "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" "freight_car_patch.so" 2>/dev/null || true
 
 rm -f "$TEMP_FILE"
 
