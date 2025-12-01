@@ -1,25 +1,25 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
+#include <string.h>     // strstr
+#include <unistd.h>     // sleep
 #include <dlfcn.h>
 #include <pthread.h>
 #include <objc/runtime.h>
-#include <objc/message.h>
+#include <objc/message.h> // objc_msgSend
 
-// Fake constructor to replace FreightCar init methods
+// Función fake para reemplazar constructores de FreightCar
 id fakeCtor(id self, SEL _cmd, ...) {
-    printf("[Anti-Exploit] FreightCar creation BLOCKED: %s\n", sel_getName(_cmd));
+    printf("[Anti-Exploit] FreightCar creation blocked: %s\n", sel_getName(_cmd));
 
-    // Call setNeedsRemoved:YES
+    // setNeedsRemoved:YES
     SEL selSetNeedsRemoved = sel_registerName("setNeedsRemoved:");
     IMP fnSetNeedsRemoved = class_getMethodImplementation(object_getClass(self), selSetNeedsRemoved);
     if (fnSetNeedsRemoved) {
         ((void (*)(id, SEL, BOOL))fnSetNeedsRemoved)(self, selSetNeedsRemoved, 1);
     }
 
-    // Call dealloc immediately
+    // dealloc
     SEL selDealloc = sel_registerName("dealloc");
     IMP fnDealloc = class_getMethodImplementation(object_getClass(self), selDealloc);
     if (fnDealloc) {
@@ -29,27 +29,24 @@ id fakeCtor(id self, SEL _cmd, ...) {
     return NULL;
 }
 
-// Thread to apply the patch after classes are loaded
+// Thread para parchear después de que el binario cargue todas las clases
 static void *patchThread(void *arg) {
-    sleep(2); // Wait for runtime to register classes
+    sleep(2); // espera a que el runtime registre las clases
 
     printf("[Anti-Exploit] Searching for FreightCar class...\n");
 
     int patched = 0;
-    
-    // USE OLD GNUstep API (objc_getClassList) instead of modern objc_copyClassList
+    // USAMOS LA API ANTIGUA compatible con el servidor
     unsigned int classCount = objc_getClassList(NULL, 0);
     Class *classes = malloc(sizeof(Class) * classCount);
-    if (!classes) {
-        printf("[Anti-Exploit] Memory allocation failed for class list.\n");
-        return NULL;
-    }
+    if (!classes) return NULL;
+    
     classCount = objc_getClassList(classes, classCount);
 
     for (unsigned int i = 0; i < classCount; i++) {
         const char *name = class_getName(classes[i]);
         if (name && strstr(name, "FreightCar")) {
-            printf("[Anti-Exploit] Found class: %s. Applying patch...\n", name);
+            printf("[Anti-Exploit] Found class: %s\n", name);
 
             SEL sel1 = sel_registerName("initWithWorld:dynamicWorld:atPosition:cache:saveDict:placedByClient:");
             SEL sel2 = sel_registerName("initWithWorld:dynamicWorld:cache:netData:");
@@ -60,7 +57,7 @@ static void *patchThread(void *arg) {
             if (sel3) class_replaceMethod(classes[i], sel3, (IMP)fakeCtor, "v@:*");
 
             patched = 1;
-            break; // Found it, we can stop
+            break;
         }
     }
 
