@@ -53,10 +53,10 @@ SERVER_BINARY="blockheads_server171"
 
 SERVER_MANAGER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/server_manager.sh"
 RANK_PATCHER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/rank_patcher.sh"
-# --- MODIFICACIÓN: URL del parche .c ---
+# --- NUEVO: URL del parche ---
 FREIGHT_PATCH_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/freight_car_patch.c"
 
-# --- MODIFICACIÓN: Agregados 'gobjc', 'libobjc-dev' y 'build-essential' para arreglar el error fatal ---
+# --- MODIFICADO: Se agregan dependencias 'build-essential gobjc libobjc-dev' ---
 declare -a PACKAGES_DEBIAN=(
     'git' 'cmake' 'ninja-build' 'clang' 'patchelf' 'libgnustep-base-dev' 'libobjc4'
     'libgnutls28-dev' 'libgcrypt20-dev' 'libxml2' 'libffi-dev' 'libnsl-dev' 'zlib1g'
@@ -64,7 +64,7 @@ declare -a PACKAGES_DEBIAN=(
     'inotify-tools' 'bc' 'build-essential' 'gobjc' 'libobjc-dev'
 )
 
-# --- MODIFICACIÓN: Agregado 'gcc-objc' para Arch ---
+# --- MODIFICADO: Se agrega 'gcc-objc' ---
 declare -a PACKAGES_ARCH=(
     'base-devel' 'git' 'cmake' 'ninja' 'clang' 'patchelf' 'gnustep-base' 'gcc-libs'
     'gnutls' 'libgcrypt' 'libxml2' 'libffi' 'libnsl' 'zlib' 'icu' 'libdispatch'
@@ -131,15 +131,13 @@ download_server_files() {
         print_error "Failed to download rank patcher"
         return 1
     fi
-    
-    # --- MODIFICACIÓN: Descarga del parche .c ---
-    print_step "Downloading freight car patch..."
+    # --- NUEVO: Descarga del parche .c ---
+    print_step "Downloading Freight Car Patch source..."
     if wget --timeout=30 --tries=3 -O "freight_car_patch.c" "$FREIGHT_PATCH_URL" 2>/dev/null; then
-        print_success "Freight car patch downloaded successfully"
+        print_success "Freight Car Patch source downloaded"
     else
-        print_warning "Failed to download freight car patch from repo"
+        print_warning "Failed to download Freight Car Patch source"
     fi
-    # -------------------------------------------
     return 0
 }
 
@@ -150,7 +148,7 @@ if ! install_packages; then
         print_error "Failed to update package list"
         exit 1
     fi
-    # --- MODIFICACIÓN: Agregados dependencias de compilación al fallback ---
+    # Se añaden dependencias de compilacion al fallback
     if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget curl tar screen lsof inotify-tools bc build-essential gobjc libobjc-dev clang >/dev/null 2>&1; then
         print_error "Failed to install essential packages"
         exit 1
@@ -241,37 +239,35 @@ EOF
     chmod +x rank_patcher.sh
 fi
 
-# --- MODIFICACIÓN: Compilación e inyección ---
-print_step "[7/8] Compiling and Applying Freight Car Patch..."
+# --- NUEVO BLOQUE: Compilación del parche ---
+print_step "[7/8] Compiling Freight Car Security Patch..."
 if [ -f "freight_car_patch.c" ]; then
     print_progress "Compiling freight_car_patch.c to .so..."
     
-    # Busca donde esta el header objc/runtime.h si no esta en rutas estandar
-    INCLUDE_PATH=""
+    # Intenta encontrar los headers si no están en rutas estándar
+    INC_FLAGS=""
     if [ -d "/usr/include/GNUstep" ]; then
-        INCLUDE_PATH="-I/usr/include/GNUstep"
+        INC_FLAGS="-I/usr/include/GNUstep"
     fi
-    # Agrega busqueda recursiva por si acaso
-    EXTRA_INC=$(find /usr/lib/gcc -name "include" -type d 2>/dev/null | sed 's/^/-I/')
     
-    if clang -shared -fPIC -o freight_car_patch.so freight_car_patch.c -lobjc -ldl -lpthread $INCLUDE_PATH $EXTRA_INC -w; then
-        print_success "Patch compiled successfully (freight_car_patch.so)"
+    # Compilar usando clang
+    if clang -shared -fPIC -o freight_car_patch.so freight_car_patch.c -lobjc -ldl -lpthread $INC_FLAGS -w; then
+        print_success "Security Patch compiled successfully"
         
-        # Inyectar en server_manager.sh
+        # INYECCIÓN SEGURA EN SERVER_MANAGER.SH
         if [ -f "server_manager.sh" ]; then
-             if ! grep -q "freight_car_patch.so" server_manager.sh; then
-                 # Se inyecta justo despues de export LD_LIBRARY_PATH
-                 sed -i '/export LD_LIBRARY_PATH=/a export LD_PRELOAD="$PWD/freight_car_patch.so"' server_manager.sh
-                 print_success "server_manager.sh patched to load protection"
-             fi
+            # Reemplazar la ejecución directa por la ejecución con LD_PRELOAD inline
+            # Esto evita que 'sleep' o 'tee' crasheen.
+            sed -i 's|\./blockheads_server171|LD_PRELOAD="$PWD/freight_car_patch.so" ./blockheads_server171|g' server_manager.sh
+            print_success "Applied patch loader to server_manager.sh"
         fi
     else
-        print_error "Failed to compile patch. Check if 'gobjc' and 'libobjc-dev' are installed properly."
+        print_error "Failed to compile patch. Check logs."
     fi
 else
-    print_warning "freight_car_patch.c not found. Skipping compilation."
+    print_warning "freight_car_patch.c not found, skipping compilation."
 fi
-# ---------------------------------------------
+# --------------------------------------------
 
 print_step "[8/8] Setting ownership and permissions..."
 chown "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" "freight_car_patch.c" "freight_car_patch.so" 2>/dev/null || true
