@@ -52,11 +52,10 @@ TEMP_FILE="/tmp/blockheads_server171.tar.gz"
 SERVER_BINARY="blockheads_server171"
 
 # --- CONFIGURACION DE REPOSITORIO ---
-# Usamos raw.githubusercontent para descargas directas
 REPO_RAW_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main"
 
 SERVER_MANAGER_URL="$REPO_RAW_URL/server_manager.sh"
-RANK_MANAGER_URL="$REPO_RAW_URL/rank_manager.sh" # <-- CORREGIDO
+RANK_MANAGER_URL="$REPO_RAW_URL/rank_manager.sh" 
 
 # Listas de parches para descargar desde sus carpetas especificas
 CRITICAL_PATCHES=("name_exploit.c")
@@ -129,7 +128,6 @@ download_server_files() {
     fi
     
     print_step "Downloading rank manager..."
-    # --- CORREGIDO: Ahora descarga rank_manager.sh ---
     if wget --timeout=30 --tries=3 -O "rank_manager.sh" "$RANK_MANAGER_URL" 2>/dev/null; then
         chmod +x "rank_manager.sh"
         print_success "Rank manager downloaded successfully"
@@ -138,7 +136,7 @@ download_server_files() {
         return 1
     fi
 
-    # --- Descarga de Parches Críticos (Desde carpeta critical_patches) ---
+    # --- Descarga de Parches Críticos ---
     print_step "Downloading Critical Patches..."
     for patch in "${CRITICAL_PATCHES[@]}"; do
         print_progress "Downloading $patch..."
@@ -149,7 +147,7 @@ download_server_files() {
         fi
     done
 
-    # --- Descarga de Parches Opcionales (Desde carpeta patches) ---
+    # --- Descarga de Parches Opcionales ---
     print_step "Downloading Optional Patches..."
     for patch in "${OPTIONAL_PATCHES[@]}"; do
         print_progress "Downloading $patch..."
@@ -249,10 +247,10 @@ if ! download_server_files; then
     print_warning "Download failed. Creating placeholders..."
     cat > server_manager.sh << 'EOF'
 #!/bin/bash
-echo "Basic manager."
+echo "Use: ./blockheads_server171 -n (to create world)"
+echo "Then: ./blockheads_server171 -o WORLD_NAME -p PORT"
 EOF
     chmod +x server_manager.sh
-    # Placeholder para rank manager
     cat > rank_manager.sh << 'EOF'
 #!/bin/bash
 echo "Rank manager placeholder - download failed"
@@ -260,7 +258,7 @@ EOF
     chmod +x rank_manager.sh
 fi
 
-# --- COMPILACIÓN AUTOMÁTICA ---
+# --- COMPILACIÓN AUTOMÁTICA DE PARCHES ---
 print_step "[7/8] Compiling Security Patches..."
 
 INC_FLAGS="-I/usr/include/GNUstep"
