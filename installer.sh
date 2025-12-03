@@ -53,11 +53,10 @@ SERVER_BINARY="blockheads_server171"
 
 # --- CONFIGURACION DE REPOSITORIO ---
 REPO_RAW_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main"
-
 SERVER_MANAGER_URL="$REPO_RAW_URL/server_manager.sh"
-RANK_MANAGER_URL="$REPO_RAW_URL/rank_manager.sh" 
+RANK_MANAGER_URL="$REPO_RAW_URL/rank_manager.sh"
 
-# Listas de parches para descargar desde sus carpetas especificas
+# Listas de parches
 CRITICAL_PATCHES=("name_exploit.c")
 OPTIONAL_PATCHES=("freight_car_patch.c" "portal_chest_patch.c" "portal_patch.c" "trade_portal_patch.c")
 
@@ -132,15 +131,21 @@ download_server_files() {
         chmod +x "rank_manager.sh"
         print_success "Rank manager downloaded successfully"
     else
-        print_error "Failed to download rank manager (Check URL: $RANK_MANAGER_URL)"
+        print_error "Failed to download rank manager"
         return 1
     fi
 
+    # --- CREAR CARPETA DE PARCHES ---
+    if [ ! -d "patches" ]; then
+        mkdir -p "patches"
+        print_status "Created 'patches' directory."
+    fi
+
     # --- Descarga de Parches Críticos ---
-    print_step "Downloading Critical Patches..."
+    print_step "Downloading Critical Patches to /patches..."
     for patch in "${CRITICAL_PATCHES[@]}"; do
         print_progress "Downloading $patch..."
-        if wget --timeout=30 --tries=3 -O "$patch" "$REPO_RAW_URL/critical_patches/$patch" 2>/dev/null; then
+        if wget --timeout=30 --tries=3 -O "patches/$patch" "$REPO_RAW_URL/critical_patches/$patch" 2>/dev/null; then
             print_success "$patch downloaded."
         else
             print_warning "Failed to download $patch from critical_patches/"
@@ -148,10 +153,10 @@ download_server_files() {
     done
 
     # --- Descarga de Parches Opcionales ---
-    print_step "Downloading Optional Patches..."
+    print_step "Downloading Optional Patches to /patches..."
     for patch in "${OPTIONAL_PATCHES[@]}"; do
         print_progress "Downloading $patch..."
-        if wget --timeout=30 --tries=3 -O "$patch" "$REPO_RAW_URL/patches/$patch" 2>/dev/null; then
+        if wget --timeout=30 --tries=3 -O "patches/$patch" "$REPO_RAW_URL/patches/$patch" 2>/dev/null; then
             print_success "$patch downloaded."
         else
             print_warning "Failed to download $patch from patches/"
@@ -258,8 +263,8 @@ EOF
     chmod +x rank_manager.sh
 fi
 
-# --- COMPILACIÓN AUTOMÁTICA DE PARCHES ---
-print_step "[7/8] Compiling Security Patches..."
+# --- COMPILACIÓN Y LIMPIEZA AUTOMÁTICA ---
+print_step "[7/8] Compiling Security Patches in /patches..."
 
 INC_FLAGS="-I/usr/include/GNUstep"
 RUNTIME_H=$(find /usr/lib /usr/include -name runtime.h 2>/dev/null | grep "objc/runtime.h" | head -n 1)
@@ -269,33 +274,50 @@ if [ -n "$RUNTIME_H" ]; then
 fi
 
 count_compiled=0
-for src_file in *.c; do
-    if [ -f "$src_file" ]; then
-        so_file="${src_file%.c}.so"
-        print_progress "Compiling $src_file -> $so_file..."
-        
-        # -w suprime warnings para una salida mas limpia
-        if clang -shared -fPIC -o "$so_file" "$src_file" -lobjc -ldl -lpthread $INC_FLAGS -w; then
-            print_success "Compiled: $so_file"
-            chown "$ORIGINAL_USER:$ORIGINAL_USER" "$src_file" "$so_file" 2>/dev/null || true
-            chmod 755 "$so_file" 2>/dev/null || true
-            count_compiled=$((count_compiled+1))
-        else
-            print_error "Failed to compile $src_file. Installing 'gobjc' usually fixes this."
+
+# Verificar si la carpeta patches existe
+if [ -d "patches" ]; then
+    # Iterar sobre archivos .c dentro de patches/
+    for src_file in patches/*.c; do
+        if [ -f "$src_file" ]; then
+            # Obtener nombre base (ej: patches/test.c -> test)
+            base_name=$(basename "$src_file" .c)
+            # Definir ruta salida (ej: patches/test.so)
+            so_file="patches/${base_name}.so"
+            
+            print_progress "Compiling $src_file -> $so_file..."
+            
+            if clang -shared -fPIC -o "$so_file" "$src_file" -lobjc -ldl -lpthread $INC_FLAGS -w; then
+                print_success "Compiled: $so_file"
+                
+                # -- LIMPIEZA --
+                rm -f "$src_file"
+                print_status "Deleted source: $src_file"
+                
+                # Permisos
+                chown "$ORIGINAL_USER:$ORIGINAL_USER" "$so_file" 2>/dev/null || true
+                chmod 755 "$so_file" 2>/dev/null || true
+                count_compiled=$((count_compiled+1))
+            else
+                print_error "Failed to compile $src_file. Installing 'gobjc' usually fixes this."
+            fi
         fi
-    fi
-done
+    done
+else
+    print_warning "'patches' directory not found. Skipping compilation."
+fi
 
 if [ $count_compiled -eq 0 ]; then
     print_warning "No .c patch files found to compile."
 else
-    print_success "$count_compiled security patches compiled successfully."
+    print_success "$count_compiled security patches compiled and cleaned up."
 fi
 # -----------------------------------------------------
 
 print_step "[8/8] Setting ownership and permissions..."
-chown "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_manager.sh" *.c *.so 2>/dev/null || true
-chmod 755 "$SERVER_BINARY" "server_manager.sh" "rank_manager.sh" *.so 2>/dev/null || true
+chown -R "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_manager.sh" "patches" 2>/dev/null || true
+chmod 755 "$SERVER_BINARY" "server_manager.sh" "rank_manager.sh" 2>/dev/null || true
+chmod -R 755 "patches" 2>/dev/null || true
 
 rm -f "$TEMP_FILE"
 
@@ -309,5 +331,29 @@ echo ""
 echo ""
 print_header "SERVER MANAGER INSTRUCTIONS"
 echo -e "${GREEN}1. Create a world: ${CYAN}./blockheads_server171 -n${NC}"
-echo -e "${GREEN}2. Start server: ${CYAN}./server_manager.sh start WORLD_ID YOUR_PORT${NC}"
-echo -e "${YELLOW}   (You will be asked which patches to enable)${NC}"
+print_warning "After creating the world, press CTRL+C to exit the creation process"
+echo -e "${GREEN}2. See world list: ${CYAN}./blockheads_server171 -l${NC}"
+echo -e "${GREEN}3. Start server: ${CYAN}./server_manager.sh start WORLD_ID YOUR_PORT${NC}"
+echo -e "${GREEN}4. Stop server: ${CYAN}./server_manager.sh stop${NC}"
+echo -e "${GREEN}5. Check status: ${CYAN}./server_manager.sh status${NC}"
+echo -e "${GREEN}6. Default port: ${YELLOW}12153${NC}"
+echo ""
+
+print_header "RANK PATCHER FEATURES"
+echo -e "${GREEN}The rank manager provides:${NC}"
+echo -e "${CYAN}• Player authentication with IP verification${NC}"
+echo -e "${CYAN}• Password protection for players${NC}"
+echo -e "${CYAN}• Automated rank management (ADMIN, MOD, SUPER)${NC}"
+echo -e "${CYAN}• Real-time monitoring of player lists${NC}"
+echo ""
+
+print_header "MULTI-SERVER SUPPORT"
+echo -e "${GREEN}You can run multiple servers simultaneously:${NC}"
+echo -e "${CYAN}./server_manager.sh start WorldID1 12153${NC}"
+echo -e "${CYAN}./server_manager.sh start WorldID2 12154${NC}"
+echo -e "${CYAN}./server_manager.sh start WorldID3 12155${NC}"
+echo ""
+echo -e "${YELLOW}Each server runs in its own screen session with rank manager${NC}"
+
+print_header "INSTALLATION COMPLETE"
+echo -e "${GREEN}Your Blockheads server with rank management is now ready!${NC}"
