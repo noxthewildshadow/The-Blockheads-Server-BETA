@@ -182,14 +182,14 @@ free_port() {
     fi
     
     local screen_server="blockheads_server_$port"
-    local screen_patcher="blockheads_patcher_$port"
+    local screen_manager="blockheads_manager_$port"
     
     if screen_session_exists "$screen_server"; then
         screen -S "$screen_server" -X quit 2>/dev/null
     fi
     
-    if screen_session_exists "$screen_patcher"; then
-        screen -S "$screen_patcher" -X quit 2>/dev/null
+    if screen_session_exists "$screen_manager"; then
+        screen -S "$screen_manager" -X quit 2>/dev/null
     fi
     
     sleep 2
@@ -225,7 +225,7 @@ start_server() {
     local port="${2:-$DEFAULT_PORT}"
     
     local SCREEN_SERVER="blockheads_server_$port"
-    local SCREEN_PATCHER="blockheads_patcher_$port"
+    local SCREEN_MANAGER="blockheads_manager_$port"
     
     if [ ! -f "$SERVER_BINARY" ]; then
         print_error "Server binary not found: $SERVER_BINARY"
@@ -252,8 +252,8 @@ start_server() {
         screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
     fi
     
-    if screen_session_exists "$SCREEN_PATCHER"; then
-        screen -S "$SCREEN_PATCHER" -X quit 2>/dev/null
+    if screen_session_exists "$SCREEN_MANAGER"; then
+        screen -S "$SCREEN_MANAGER" -X quit 2>/dev/null
     fi
     
     sleep 1
@@ -266,19 +266,17 @@ start_server() {
     
     echo "$world_id" > "world_id_$port.txt"
     
-    print_step "Starting server in screen session: $SCREEN_SERVER"
-    
     if ! command -v screen >/dev/null 2>&1; then
         print_error "Screen command not found. Please install screen."
         return 1
     fi
     
-    # --- MODIFICADO: GESTIÓN DE PARCHES INTERACTIVA ---
+    # --- GESTIÓN DE PARCHES INTERACTIVA ---
     local PRELOAD_STR=""
     local PATCH_LIST=""
     
-    print_status "Checking for security patches..."
-    
+    print_status "Configuring Patches..."
+
     # 1. Parche Crítico: name_exploit.so (Se carga siempre si existe)
     if [ -f "name_exploit.so" ]; then
         PATCH_LIST="$PWD/name_exploit.so"
@@ -303,9 +301,9 @@ start_server() {
                 else
                     PATCH_LIST="$PATCH_LIST:$PWD/$patch_file"
                 fi
-                print_success "Added $patch_file to launch configuration."
+                print_success "Enabled: $patch_file"
             else
-                print_status "Skipped $patch_file."
+                print_status "Skipped: $patch_file"
             fi
         fi
     done
@@ -382,53 +380,38 @@ EOF
         print_success "Server started successfully!"
     fi
     
-    print_step "Starting rank patcher..."
-    local patcher_script="./rank_patcher.sh"
+    print_step "Starting rank manager..."
+    local manager_script="./rank_manager.sh"
     
-    if [ ! -f "$patcher_script" ]; then
-        print_error "Rank patcher script not found: $patcher_script"
-        print_warning "Stopping server screen to prevent partial startup."
-        screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
+    if [ ! -f "$manager_script" ]; then
+        print_error "Rank Manager script not found: $manager_script"
         return 1
     fi
     
-    if [ ! -x "$patcher_script" ]; then
-        print_warning "Rank patcher script is not executable. Attempting to fix..."
-        chmod +x "$patcher_script"
-        if [ ! -x "$patcher_script" ]; then
-            print_error "Failed to make rank patcher script executable."
-            print_warning "Stopping server screen to prevent partial startup."
-            screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
+    if [ ! -x "$manager_script" ]; then
+        print_warning "Rank Manager script is not executable. Attempting to fix..."
+        chmod +x "$manager_script"
+        if [ ! -x "$manager_script" ]; then
+            print_error "Failed to make rank manager script executable."
             return 1
         fi
     fi
     
-    if ! screen -dmS "$SCREEN_PATCHER" bash -c "cd '$PWD' && ./rank_patcher.sh '$port'"; then
-        print_error "Failed to create rank patcher screen session (command failed)."
-        print_warning "Stopping server screen to prevent partial startup."
-        screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
+    if ! screen -dmS "$SCREEN_MANAGER" bash -c "cd '$PWD' && ./rank_manager.sh '$port'"; then
+        print_error "Failed to create rank manager screen session."
         return 1
     fi
     
-    print_step "Verifying rank patcher status..."
-    sleep 2
-    
-    if ! screen_session_exists "$SCREEN_PATCHER"; then
-        print_error "Rank patcher screen session terminated immediately."
-        print_error "This likely means '$patcher_script' failed on launch."
-        print_error "Please check '$patcher_script' for errors."
-        print_warning "Stopping server screen to prevent partial startup."
-        screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
-        return 1
-    fi
-    
-    print_success "Rank patcher screen session created: $SCREEN_PATCHER"
-    print_header "SERVER AND RANK PATCHER STARTED SUCCESSFULLY!"
+    print_success "Rank Manager screen session created: $SCREEN_MANAGER"
+    print_header "SERVER AND RANK MANAGER STARTED SUCCESSFULLY!"
     print_success "World: $world_id"
     print_success "Port: $port"
+    if [ -n "$PRELOAD_LIST" ]; then
+        print_status "Active Patches: $PRELOAD_LIST"
+    fi
     echo ""
     print_status "To view server console: ${CYAN}screen -r $SCREEN_SERVER${NC}"
-    print_status "To view rank patcher: ${CYAN}screen -r $SCREEN_PATCHER${NC}"
+    print_status "To view rank manager: ${CYAN}screen -r $SCREEN_MANAGER${NC}"
     echo ""
     print_warning "To exit console without stopping server: ${YELLOW}CTRL+A, D${NC}"
 }
@@ -444,21 +427,21 @@ stop_server() {
             print_success "Stopped server: $server_session"
         done
         
-        for patcher_session in $(screen -list | grep "blockheads_patcher_" | awk -F. '{print $1}'); do
-            screen -S "$patcher_session" -X quit 2>/dev/null
-            print_success "Stopped rank patcher: $patcher_session"
+        for manager_session in $(screen -list | grep "blockheads_manager_" | awk -F. '{print $1}'); do
+            screen -S "$manager_session" -X quit 2>/dev/null
+            print_success "Stopped rank manager: $manager_session"
         done
         
         pkill -f "$SERVER_BINARY" 2>/dev/null || true
         
         rm -f world_id_*.txt 2>/dev/null || true
         
-        print_success "All servers and rank patchers stopped."
+        print_success "All servers and rank managers stopped."
     else
         print_header "STOPPING SERVER ON PORT $port"
         
         local screen_server="blockheads_server_$port"
-        local screen_patcher="blockheads_patcher_$port"
+        local screen_manager="blockheads_manager_$port"
         
         if screen_session_exists "$screen_server"; then
             screen -S "$screen_server" -X quit 2>/dev/null
@@ -467,11 +450,11 @@ stop_server() {
             print_warning "Server was not running on port $port."
         fi
         
-        if screen_session_exists "$screen_patcher"; then
-            screen -S "$screen_patcher" -X quit 2>/dev/null
-            print_success "Rank patcher stopped on port $port."
+        if screen_session_exists "$screen_manager"; then
+            screen -S "$screen_manager" -X quit 2>/dev/null
+            print_success "Rank manager stopped on port $port."
         else
-            print_warning "Rank patcher was not running on port $port."
+            print_warning "Rank manager was not running on port $port."
         fi
         
         pkill -f "$SERVER_BINARY.*$port" 2>/dev/null || true
@@ -513,10 +496,10 @@ show_status() {
                     print_error "Server on port $server_port: STOPPED"
                 fi
                 
-                if screen_session_exists "blockheads_patcher_$server_port"; then
-                    print_success "Rank patcher on port $server_port: RUNNING"
+                if screen_session_exists "blockheads_manager_$server_port"; then
+                    print_success "Rank manager on port $server_port: RUNNING"
                 else
-                    print_error "Rank patcher on port $server_port: STOPPED"
+                    print_error "Rank manager on port $server_port: STOPPED"
                 fi
                 
                 if [ -f "world_id_$server_port.txt" ]; then
@@ -535,10 +518,10 @@ show_status() {
             print_error "Server: STOPPED"
         fi
         
-        if screen_session_exists "blockheads_patcher_$port"; then
-            print_success "Rank patcher: RUNNING"
+        if screen_session_exists "blockheads_manager_$port"; then
+            print_success "Rank manager: RUNNING"
         else
-            print_error "Rank patcher: STOPPED"
+            print_error "Rank manager: STOPPED"
         fi
         
         if [ -f "world_id_$port.txt" ]; then
@@ -547,7 +530,7 @@ show_status() {
             
             if screen_session_exists "blockheads_server_$port"; then
                 print_status "To view console: ${CYAN}screen -r blockheads_server_$port${NC}"
-                print_status "To view rank patcher: ${CYAN}screen -r blockheads_patcher_$port${NC}"
+                print_status "To view rank manager: ${CYAN}screen -r blockheads_manager_$port${NC}"
             fi
         else
             print_warning "World: Not configured for port $port"
@@ -587,8 +570,8 @@ show_usage() {
     print_status "Usage: $0 [command]"
     echo ""
     print_status "Available commands:"
-    echo -e " ${GREEN}start${NC} [WORLD_NAME] [PORT] - Start server with rank patcher"
-    echo -e " ${RED}stop${NC} [PORT] - Stop server and rank patcher"
+    echo -e " ${GREEN}start${NC} [WORLD_NAME] [PORT] - Start server with rank manager"
+    echo -e " ${RED}stop${NC} [PORT] - Stop server and rank manager"
     echo -e " ${CYAN}status${NC} [PORT] - Show server status"
     echo -e " ${YELLOW}list${NC} - List all running servers"
     echo -e " ${MAGENTA}install-deps${NC} - Install system dependencies"
