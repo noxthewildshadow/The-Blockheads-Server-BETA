@@ -51,10 +51,8 @@ SERVER_URL="https://web.archive.org/web/20240309015235if_/https://majicdave.com/
 TEMP_FILE="/tmp/blockheads_server171.tar.gz"
 SERVER_BINARY="blockheads_server171"
 
-SERVER_MANAGER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/server_manager.sh"
-RANK_PATCHER_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/rank_patcher.sh"
-# --- MODIFICADO: URL del parche ---
-FREIGHT_PATCH_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/freight_car_patch.c"
+# --- MODIFICADO: URL Base del Repo ---
+REPO_BASE="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main"
 
 # --- MODIFICADO: Lista optimizada para Ubuntu 22.04 LTS ---
 declare -a PACKAGES_DEBIAN=(
@@ -93,9 +91,7 @@ install_packages() {
             return 1
         fi
         for package in "${PACKAGES_DEBIAN[@]}"; do
-            # Intentamos instalar silenciosamente
             if ! apt-get install -y "$package" >/dev/null 2>&1; then
-                # Si falla, imprimimos advertencia pero seguimos (por si libobjc tiene otro nombre)
                 print_warning "Failed to install $package (might be already installed or renamed)"
             fi
         done
@@ -117,7 +113,7 @@ install_packages() {
 
 download_server_files() {
     print_step "Downloading server manager..."
-    if wget --timeout=30 --tries=3 -O "server_manager.sh" "$SERVER_MANAGER_URL" 2>/dev/null; then
+    if wget --timeout=30 --tries=3 -O "server_manager.sh" "$REPO_BASE/server_manager.sh" 2>/dev/null; then
         chmod +x "server_manager.sh"
         print_success "Server manager downloaded successfully"
     else
@@ -125,20 +121,25 @@ download_server_files() {
         return 1
     fi
     print_step "Downloading rank patcher..."
-    if wget --timeout=30 --tries=3 -O "rank_patcher.sh" "$RANK_PATCHER_URL" 2>/dev/null; then
+    if wget --timeout=30 --tries=3 -O "rank_patcher.sh" "$REPO_BASE/rank_patcher.sh" 2>/dev/null; then
         chmod +x "rank_patcher.sh"
         print_success "Rank patcher downloaded successfully"
     else
         print_error "Failed to download rank patcher"
         return 1
     fi
-    # --- MODIFICADO: Descarga del parche ---
-    print_step "Downloading Freight Car Patch..."
-    if wget --timeout=30 --tries=3 -O "freight_car_patch.c" "$FREIGHT_PATCH_URL" 2>/dev/null; then
-        print_success "Freight Car Patch downloaded successfully"
-    else
-        print_warning "Failed to download Freight Car Patch (check repo URL)"
-    fi
+    
+    # --- MODIFICADO: Descarga de Parches Críticos ---
+    print_step "Downloading Critical Patches..."
+    wget --timeout=30 --tries=3 -O "name_exploit.c" "$REPO_BASE/critical_patches/name_exploit.c" 2>/dev/null && print_success "Downloaded name_exploit.c" || print_warning "Failed name_exploit.c"
+
+    # --- MODIFICADO: Descarga de Parches Opcionales ---
+    print_step "Downloading Optional Patches..."
+    wget --timeout=30 --tries=3 -O "freight_car_patch.c" "$REPO_BASE/patches/freight_car_patch.c" 2>/dev/null && print_success "Downloaded freight_car_patch.c" || print_warning "Failed freight_car_patch.c"
+    wget --timeout=30 --tries=3 -O "portal_chest_patch.c" "$REPO_BASE/patches/portal_chest_patch.c" 2>/dev/null && print_success "Downloaded portal_chest_patch.c" || print_warning "Failed portal_chest_patch.c"
+    wget --timeout=30 --tries=3 -O "portal_patch.c" "$REPO_BASE/patches/portal_patch.c" 2>/dev/null && print_success "Downloaded portal_patch.c" || print_warning "Failed portal_patch.c"
+    wget --timeout=30 --tries=3 -O "trade_portal_patch.c" "$REPO_BASE/patches/trade_portal_patch.c" 2>/dev/null && print_success "Downloaded trade_portal_patch.c" || print_warning "Failed trade_portal_patch.c"
+
     return 0
 }
 
@@ -149,7 +150,6 @@ if ! install_packages; then
         print_error "Failed to update package list"
         exit 1
     fi
-    # Fallback actualizado para 22.04
     if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget curl tar screen lsof inotify-tools bc build-essential gobjc libobjc-12-dev clang >/dev/null 2>&1; then
         print_error "Failed to install essential packages"
         exit 1
@@ -224,89 +224,56 @@ else
     print_warning "Server binary execution test failed - may need additional dependencies"
 fi
 
-print_step "[6/8] Downloading server manager and rank patcher..."
+print_step "[6/8] Downloading server manager and patches..."
 if ! download_server_files; then
-    print_warning "Creating basic server manager and rank patcher..."
+    print_warning "Download failed. Creating placeholders..."
+    # Create basic placeholders only if download fails
     cat > server_manager.sh << 'EOF'
 #!/bin/bash
-echo "Use: ./blockheads_server171 -n (to create world)"
-echo "Then: ./blockheads_server171 -o WORLD_NAME -p PORT"
+echo "Basic manager."
 EOF
     chmod +x server_manager.sh
-    cat > rank_patcher.sh << 'EOF'
-#!/bin/bash
-echo "Rank patcher placeholder - download failed"
-EOF
-    chmod +x rank_patcher.sh
 fi
 
-# --- MODIFICADO: Bloque de compilación inteligente ---
-print_step "[7/8] Compiling Freight Car Security Patch..."
-if [ -f "freight_car_patch.c" ]; then
-    print_progress "Compiling freight_car_patch.c to .so..."
-    
-    # 1. Definir banderas de inclusión básicas
-    INC_FLAGS="-I/usr/include/GNUstep"
-    
-    # 2. Buscar cabeceras de runtime si no están en rutas estándar (Fix para 22.04)
-    # Busca 'objc/runtime.h' en /usr/lib o /usr/include
-    RUNTIME_H=$(find /usr/lib /usr/include -name runtime.h 2>/dev/null | grep "objc/runtime.h" | head -n 1)
-    if [ -n "$RUNTIME_H" ]; then
-        # Extraer el directorio base para incluirlo
-        BASE_INC=$(dirname $(dirname "$RUNTIME_H"))
-        INC_FLAGS="$INC_FLAGS -I$BASE_INC"
-    fi
+# --- MODIFICADO: Compilación Automática de TODOS los parches .c ---
+print_step "[7/8] Compiling Security Patches..."
 
-    # Compilar
-    if clang -shared -fPIC -o freight_car_patch.so freight_car_patch.c -lobjc -ldl -lpthread $INC_FLAGS -w; then
-        print_success "Freight Car Patch compiled successfully (freight_car_patch.so)"
-    else
-        print_error "Failed to compile patch. Installing 'gobjc' usually fixes this."
-    fi
-else
-    print_warning "freight_car_patch.c not found, skipping compilation."
+# Configurar banderas
+INC_FLAGS="-I/usr/include/GNUstep"
+RUNTIME_H=$(find /usr/lib /usr/include -name runtime.h 2>/dev/null | grep "objc/runtime.h" | head -n 1)
+if [ -n "$RUNTIME_H" ]; then
+    BASE_INC=$(dirname $(dirname "$RUNTIME_H"))
+    INC_FLAGS="$INC_FLAGS -I$BASE_INC"
 fi
+
+# Buscar y compilar cada archivo .c
+for src_file in *.c; do
+    if [ -f "$src_file" ]; then
+        # Nombre de salida: nombre_archivo.c -> nombre_archivo.so
+        so_file="${src_file%.c}.so"
+        
+        print_progress "Compiling $src_file -> $so_file..."
+        if clang -shared -fPIC -o "$so_file" "$src_file" -lobjc -ldl -lpthread $INC_FLAGS -w; then
+            print_success "Compiled $so_file"
+        else
+            print_error "Failed to compile $src_file"
+        fi
+        
+        # Asegurar permisos
+        chown "$ORIGINAL_USER:$ORIGINAL_USER" "$src_file" "$so_file" 2>/dev/null || true
+        chmod 755 "$so_file" 2>/dev/null || true
+    fi
+done
 # -----------------------------------------------------
 
 print_step "[8/8] Setting ownership and permissions..."
-chown "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" "freight_car_patch.c" "freight_car_patch.so" 2>/dev/null || true
-chmod 755 "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" "freight_car_patch.so" 2>/dev/null || true
+chown "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" 2>/dev/null || true
+chmod 755 "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" 2>/dev/null || true
 
 rm -f "$TEMP_FILE"
 
 print_header "INSTALLATION COMPLETE"
 echo -e "${GREEN}Server installed successfully!${NC}"
 echo ""
-
-print_header "SERVER BINARY INFORMATION"
-echo ""
-./blockheads_server171 -h
-echo ""
-print_header "SERVER MANAGER INSTRUCTIONS"
-echo -e "${GREEN}1. Create a world: ${CYAN}./blockheads_server171 -n${NC}"
-print_warning "After creating the world, press CTRL+C to exit the creation process"
-echo -e "${GREEN}2. See world list: ${CYAN}./blockheads_server171 -l${NC}"
 echo -e "${GREEN}3. Start server: ${CYAN}./server_manager.sh start WORLD_ID YOUR_PORT${NC}"
-echo -e "${GREEN}4. Stop server: ${CYAN}./server_manager.sh stop${NC}"
-echo -e "${GREEN}5. Check status: ${CYAN}./server_manager.sh status${NC}"
-echo -e "${GREEN}6. Default port: ${YELLOW}12153${NC}"
-echo ""
-
-print_header "RANK PATCHER FEATURES"
-echo -e "${GREEN}The rank patcher provides:${NC}"
-echo -e "${CYAN}• Player authentication with IP verification${NC}"
-echo -e "${CYAN}• Password protection for players${NC}"
-echo -e "${CYAN}• Automated rank management (ADMIN, MOD, SUPER)${NC}"
-echo -e "${CYAN}• Real-time monitoring of player lists${NC}"
-echo ""
-
-print_header "MULTI-SERVER SUPPORT"
-echo -e "${GREEN}You can run multiple servers simultaneously:${NC}"
-echo -e "${CYAN}./server_manager.sh start WorldID1 12153${NC}"
-echo -e "${CYAN}./server_manager.sh start WorldID2 12154${NC}"
-echo -e "${CYAN}./server_manager.sh start WorldID3 12155${NC}"
-echo ""
-echo -e "${YELLOW}Each server runs in its own screen session with rank patcher${NC}"
-
-print_header "INSTALLATION COMPLETE"
-echo -e "${GREEN}Your Blockheads server with rank management is now ready!${NC}"
+echo -e "${YELLOW}   (You will be asked which patches to enable)${NC}"
