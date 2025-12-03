@@ -52,11 +52,13 @@ TEMP_FILE="/tmp/blockheads_server171.tar.gz"
 SERVER_BINARY="blockheads_server171"
 
 # --- CONFIGURACION DE REPOSITORIO ---
+# Usamos raw.githubusercontent para descargas directas
 REPO_RAW_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main"
-SERVER_MANAGER_URL="$REPO_RAW_URL/server_manager.sh"
-RANK_PATCHER_URL="$REPO_RAW_URL/rank_patcher.sh"
 
-# Listas de parches para descargar
+SERVER_MANAGER_URL="$REPO_RAW_URL/server_manager.sh"
+RANK_MANAGER_URL="$REPO_RAW_URL/rank_manager.sh" # <-- CORREGIDO
+
+# Listas de parches para descargar desde sus carpetas especificas
 CRITICAL_PATCHES=("name_exploit.c")
 OPTIONAL_PATCHES=("freight_car_patch.c" "portal_chest_patch.c" "portal_patch.c" "trade_portal_patch.c")
 
@@ -126,34 +128,35 @@ download_server_files() {
         return 1
     fi
     
-    print_step "Downloading rank patcher..."
-    if wget --timeout=30 --tries=3 -O "rank_patcher.sh" "$RANK_PATCHER_URL" 2>/dev/null; then
-        chmod +x "rank_patcher.sh"
-        print_success "Rank patcher downloaded successfully"
+    print_step "Downloading rank manager..."
+    # --- CORREGIDO: Ahora descarga rank_manager.sh ---
+    if wget --timeout=30 --tries=3 -O "rank_manager.sh" "$RANK_MANAGER_URL" 2>/dev/null; then
+        chmod +x "rank_manager.sh"
+        print_success "Rank manager downloaded successfully"
     else
-        print_error "Failed to download rank patcher"
+        print_error "Failed to download rank manager (Check URL: $RANK_MANAGER_URL)"
         return 1
     fi
 
-    # --- MODIFICADO: Descarga de Parches Críticos ---
+    # --- Descarga de Parches Críticos (Desde carpeta critical_patches) ---
     print_step "Downloading Critical Patches..."
     for patch in "${CRITICAL_PATCHES[@]}"; do
         print_progress "Downloading $patch..."
         if wget --timeout=30 --tries=3 -O "$patch" "$REPO_RAW_URL/critical_patches/$patch" 2>/dev/null; then
             print_success "$patch downloaded."
         else
-            print_warning "Failed to download $patch"
+            print_warning "Failed to download $patch from critical_patches/"
         fi
     done
 
-    # --- MODIFICADO: Descarga de Parches Opcionales ---
+    # --- Descarga de Parches Opcionales (Desde carpeta patches) ---
     print_step "Downloading Optional Patches..."
     for patch in "${OPTIONAL_PATCHES[@]}"; do
         print_progress "Downloading $patch..."
         if wget --timeout=30 --tries=3 -O "$patch" "$REPO_RAW_URL/patches/$patch" 2>/dev/null; then
             print_success "$patch downloaded."
         else
-            print_warning "Failed to download $patch"
+            print_warning "Failed to download $patch from patches/"
         fi
     done
     
@@ -241,26 +244,25 @@ else
     print_warning "Server binary execution test failed - may need additional dependencies"
 fi
 
-print_step "[6/8] Downloading server manager and rank patcher..."
+print_step "[6/8] Downloading server manager and patches..."
 if ! download_server_files; then
-    print_warning "Creating basic server manager and rank patcher..."
+    print_warning "Download failed. Creating placeholders..."
     cat > server_manager.sh << 'EOF'
 #!/bin/bash
-echo "Use: ./blockheads_server171 -n (to create world)"
-echo "Then: ./blockheads_server171 -o WORLD_NAME -p PORT"
+echo "Basic manager."
 EOF
     chmod +x server_manager.sh
-    cat > rank_patcher.sh << 'EOF'
+    # Placeholder para rank manager
+    cat > rank_manager.sh << 'EOF'
 #!/bin/bash
-echo "Rank patcher placeholder - download failed"
+echo "Rank manager placeholder - download failed"
 EOF
-    chmod +x rank_patcher.sh
+    chmod +x rank_manager.sh
 fi
 
-# --- MODIFICADO: Compilación inteligente de TODOS los parches encontrados ---
+# --- COMPILACIÓN AUTOMÁTICA ---
 print_step "[7/8] Compiling Security Patches..."
 
-# Configurar flags de compilación
 INC_FLAGS="-I/usr/include/GNUstep"
 RUNTIME_H=$(find /usr/lib /usr/include -name runtime.h 2>/dev/null | grep "objc/runtime.h" | head -n 1)
 if [ -n "$RUNTIME_H" ]; then
@@ -268,13 +270,13 @@ if [ -n "$RUNTIME_H" ]; then
     INC_FLAGS="$INC_FLAGS -I$BASE_INC"
 fi
 
-# Buscar y compilar todos los archivos .c en el directorio actual
 count_compiled=0
 for src_file in *.c; do
     if [ -f "$src_file" ]; then
         so_file="${src_file%.c}.so"
         print_progress "Compiling $src_file -> $so_file..."
         
+        # -w suprime warnings para una salida mas limpia
         if clang -shared -fPIC -o "$so_file" "$src_file" -lobjc -ldl -lpthread $INC_FLAGS -w; then
             print_success "Compiled: $so_file"
             chown "$ORIGINAL_USER:$ORIGINAL_USER" "$src_file" "$so_file" 2>/dev/null || true
@@ -294,8 +296,8 @@ fi
 # -----------------------------------------------------
 
 print_step "[8/8] Setting ownership and permissions..."
-chown "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" *.c *.so 2>/dev/null || true
-chmod 755 "$SERVER_BINARY" "server_manager.sh" "rank_patcher.sh" *.so 2>/dev/null || true
+chown "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_manager.sh" *.c *.so 2>/dev/null || true
+chmod 755 "$SERVER_BINARY" "server_manager.sh" "rank_manager.sh" *.so 2>/dev/null || true
 
 rm -f "$TEMP_FILE"
 
@@ -309,29 +311,5 @@ echo ""
 echo ""
 print_header "SERVER MANAGER INSTRUCTIONS"
 echo -e "${GREEN}1. Create a world: ${CYAN}./blockheads_server171 -n${NC}"
-print_warning "After creating the world, press CTRL+C to exit the creation process"
-echo -e "${GREEN}2. See world list: ${CYAN}./blockheads_server171 -l${NC}"
-echo -e "${GREEN}3. Start server: ${CYAN}./server_manager.sh start WORLD_ID YOUR_PORT${NC}"
-echo -e "${GREEN}4. Stop server: ${CYAN}./server_manager.sh stop${NC}"
-echo -e "${GREEN}5. Check status: ${CYAN}./server_manager.sh status${NC}"
-echo -e "${GREEN}6. Default port: ${YELLOW}12153${NC}"
-echo ""
-
-print_header "RANK PATCHER FEATURES"
-echo -e "${GREEN}The rank patcher provides:${NC}"
-echo -e "${CYAN}• Player authentication with IP verification${NC}"
-echo -e "${CYAN}• Password protection for players${NC}"
-echo -e "${CYAN}• Automated rank management (ADMIN, MOD, SUPER)${NC}"
-echo -e "${CYAN}• Real-time monitoring of player lists${NC}"
-echo ""
-
-print_header "MULTI-SERVER SUPPORT"
-echo -e "${GREEN}You can run multiple servers simultaneously:${NC}"
-echo -e "${CYAN}./server_manager.sh start WorldID1 12153${NC}"
-echo -e "${CYAN}./server_manager.sh start WorldID2 12154${NC}"
-echo -e "${CYAN}./server_manager.sh start WorldID3 12155${NC}"
-echo ""
-echo -e "${YELLOW}Each server runs in its own screen session with rank patcher${NC}"
-
-print_header "INSTALLATION COMPLETE"
-echo -e "${GREEN}Your Blockheads server with rank management is now ready!${NC}"
+echo -e "${GREEN}2. Start server: ${CYAN}./server_manager.sh start WORLD_ID YOUR_PORT${NC}"
+echo -e "${YELLOW}   (You will be asked which patches to enable)${NC}"
