@@ -1,8 +1,8 @@
 /*
- * The Blockheads Server - Trade Portal Blocker (ID 210)
- * * Target: Trade Portal (Level - ANY).
- * * Logic: Hooks TradePortal class but filters strictly by ID 210.
- * * Safety: Uses surgical removal to prevent core dumps and ghost blocks.
+ * The Blockheads Server - Trade Portal Blocker (FIXED)
+ * Target: Trade Portal (Level - ANY).
+ * Logic: Hooks TradePortal class but filters strictly by ID 210.
+ * Fix: Uses "Soft Delete" during load to prevent crashes.
  */
 
 #define _GNU_SOURCE
@@ -17,17 +17,17 @@
 #include <objc/message.h>
 
 // Config
-#define TARGET_CLASS "TradePortal" // We hook this class
-#define BANNED_ID    210           // Specific ID for Trade Portal
+#define TARGET_CLASS "TradePortal" 
+#define BANNED_ID    210           
 
 // Selectors
 #define SEL_PLACE  "initWithWorld:dynamicWorld:atPosition:cache:item:flipped:saveDict:placedByClient:clientName:"
 #define SEL_LOAD   "initWithWorld:dynamicWorld:saveDict:cache:"
 #define SEL_UPDATE "update:accurateDT:isSimulation:" 
-#define SEL_DROP   "destroyItemType"      // ID Check 1
-#define SEL_OBJ    "objectType"           // ID Check 2
-#define SEL_MACRO  "removeFromMacroBlock" // Map Cleanup
-#define SEL_FLAG   "setNeedsRemoved:"     // Memory Cleanup
+#define SEL_DROP   "destroyItemType"      
+#define SEL_OBJ    "objectType"           
+#define SEL_MACRO  "removeFromMacroBlock" 
+#define SEL_FLAG   "setNeedsRemoved:"     
 
 // Func types
 typedef id (*PlaceFunc)(id, SEL, id, id, long long, id, id, unsigned char, id, id, id);
@@ -45,7 +45,6 @@ static UpdateFunc original_update = NULL;
 // Helpers
 // -----------------------------------------------------------------------------
 
-// Get ID from item in hand
 int get_item_id(id item) {
     if (!item) return 0;
     SEL s = sel_registerName("itemType");
@@ -57,7 +56,6 @@ int get_item_id(id item) {
     return 0;
 }
 
-// Get Deep ID from placed block
 int get_deep_id(id block) {
     if (!block) return 0;
     Class cls = object_getClass(block);
@@ -80,8 +78,13 @@ int get_deep_id(id block) {
     return foundID;
 }
 
-// Surgical Removal (No crashes, no ghosts)
-void safe_remove(id block) {
+// -----------------------------------------------------------------------------
+// CLEANUP LOGIC
+// -----------------------------------------------------------------------------
+
+// METHOD A: Full Nuke (Map + Memory)
+// Use only for UPDATE or POST-PLACE
+void safe_remove_fully(id block) {
     if (!block) return;
     Class cls = object_getClass(block);
 
@@ -99,9 +102,24 @@ void safe_remove(id block) {
     }
 }
 
+// METHOD B: Soft Delete (Memory Only)
+// Use only for LOAD
+void mark_for_removal_only(id block) {
+    if (!block) return;
+    Class cls = object_getClass(block);
+
+    SEL sFlag = sel_registerName(SEL_FLAG);
+    if (class_getInstanceMethod(cls, sFlag)) {
+        BoolFunc f = (BoolFunc)method_getImplementation(class_getInstanceMethod(cls, sFlag));
+        f(block, sFlag, 1); 
+    }
+}
+
 // -----------------------------------------------------------------------------
+// HOOKS
+// -----------------------------------------------------------------------------
+
 // HOOK 1: Placement
-// -----------------------------------------------------------------------------
 id hook_TP_Place(id self, SEL _cmd, id world, id dynWorld, long long pos, id cache, id item, unsigned char flipped, id saveDict, id client, id clientName) {
     
     // Prevent creation if item is banned
@@ -109,7 +127,7 @@ id hook_TP_Place(id self, SEL _cmd, id world, id dynWorld, long long pos, id cac
         int id = get_item_id(item);
         if (id == BANNED_ID) {
             printf("[TradeBlocker] Blocked Trade Portal placement (ID %d).\n", id);
-            return NULL; 
+            return NULL; // Return NULL prevents creation completely
         }
     }
 
@@ -119,9 +137,7 @@ id hook_TP_Place(id self, SEL _cmd, id world, id dynWorld, long long pos, id cac
     return NULL;
 }
 
-// -----------------------------------------------------------------------------
-// HOOK 2: Load (Disk)
-// -----------------------------------------------------------------------------
+// HOOK 2: Load (Disk) - THE CRASH FIX
 id hook_TP_Load(id self, SEL _cmd, id world, id dynWorld, id saveDict, id cache) {
     
     id obj = NULL;
@@ -133,23 +149,23 @@ id hook_TP_Load(id self, SEL _cmd, id world, id dynWorld, id saveDict, id cache)
     if (obj) {
         int id = get_deep_id(obj);
         if (id == BANNED_ID) {
-            printf("[TradeBlocker] Found existing Trade Portal (ID %d). Deleting...\n", id);
-            safe_remove(obj);
-            return obj; // Return obj to avoid engine errors
+            printf("[TradeBlocker] Found existing Trade Portal (ID %d) on load. Scheduling removal.\n", id);
+            // CRITICAL: Use Soft Delete (Memory only)
+            mark_for_removal_only(obj);
+            return obj; 
         }
     }
     return obj;
 }
 
-// -----------------------------------------------------------------------------
 // HOOK 3: Update (Active Scan)
-// -----------------------------------------------------------------------------
 void hook_TP_Update(id self, SEL _cmd, float dt, bool isSim) {
     
     int id = get_deep_id(self);
     
     if (id == BANNED_ID) {
-        safe_remove(self);
+        // Safe to use Full Nuke in update loop
+        safe_remove_fully(self);
         return;
     }
 
@@ -162,7 +178,7 @@ void hook_TP_Update(id self, SEL _cmd, float dt, bool isSim) {
 // Init
 // -----------------------------------------------------------------------------
 static void *patchThread(void *arg) {
-    printf("[TradeBlocker] Loading ID-Filtered Patch...\n");
+    printf("[TradeBlocker] Loading ID-Filtered Patch v2 (Anti-Crash)...\n");
     sleep(2); 
 
     Class targetClass = objc_getClass(TARGET_CLASS);
