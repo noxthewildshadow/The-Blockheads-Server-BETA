@@ -22,6 +22,7 @@ print_header() {
 
 SERVER_BINARY="./blockheads_server171"
 DEFAULT_PORT=12153
+PATCHES_DIR="patches"
 
 install_dependencies() {
     print_header "INSTALLING REQUIRED DEPENDENCIES"
@@ -182,14 +183,14 @@ free_port() {
     fi
     
     local screen_server="blockheads_server_$port"
-    local screen_manager="blockheads_manager_$port"
+    local screen_patcher="blockheads_manager_$port" # Usamos manager en lugar de patcher por consistencia
     
     if screen_session_exists "$screen_server"; then
         screen -S "$screen_server" -X quit 2>/dev/null
     fi
     
-    if screen_session_exists "$screen_manager"; then
-        screen -S "$screen_manager" -X quit 2>/dev/null
+    if screen_session_exists "$screen_patcher"; then
+        screen -S "$screen_patcher" -X quit 2>/dev/null
     fi
     
     sleep 2
@@ -266,54 +267,64 @@ start_server() {
     
     echo "$world_id" > "world_id_$port.txt"
     
+    print_step "Starting server in screen session: $SCREEN_SERVER"
+    
     if ! command -v screen >/dev/null 2>&1; then
         print_error "Screen command not found. Please install screen."
         return 1
     fi
     
-    # --- GESTIÓN DE PARCHES INTERACTIVA ---
+    # ==========================================================================
+    # MODIFICACIÓN: GESTIÓN DE PARCHES (Patches Management)
+    # ==========================================================================
     local PRELOAD_STR=""
     local PATCH_LIST=""
     
-    print_status "Configuring Patches..."
-
-    # 1. Parche Crítico: name_exploit.so (Se carga siempre si existe)
-    if [ -f "name_exploit.so" ]; then
-        PATCH_LIST="$PWD/name_exploit.so"
-        print_success "Critical Patch [name_exploit] enabled automatically."
-    else
-        print_warning "Critical Patch [name_exploit.so] NOT FOUND. Your server is vulnerable to admin exploits."
-    fi
-    
-    # 2. Parches Opcionales: Escaneo y pregunta
-    for patch_file in *.so; do
-        # Saltar name_exploit porque ya lo manejamos
-        if [ "$patch_file" == "name_exploit.so" ]; then continue; fi
+    # Verificar si la carpeta patches existe
+    if [ -d "$PATCHES_DIR" ]; then
+        print_status "Scanning '$PATCHES_DIR' for security patches..."
         
-        # Si el archivo existe, preguntar al usuario
-        if [ -f "$patch_file" ]; then
-            echo -n -e "${YELLOW}Enable optional patch [${patch_file}]? (y/N): ${NC}"
+        # 1. Parche Crítico: name_exploit.so (Se carga automáticamente si existe)
+        if [ -f "$PATCHES_DIR/name_exploit.so" ]; then
+            PATCH_LIST="$PWD/$PATCHES_DIR/name_exploit.so"
+            print_success "Critical Patch [name_exploit] enabled automatically."
+        else
+            print_warning "Critical Patch [name_exploit.so] MISSING in $PATCHES_DIR!"
+        fi
+        
+        # 2. Parches Opcionales: Preguntar al usuario
+        for patch_path in "$PATCHES_DIR"/*.so; do
+            [ ! -f "$patch_path" ] && continue
+            patch_name=$(basename "$patch_path")
+            
+            # Saltar name_exploit porque ya lo procesamos arriba
+            if [ "$patch_name" == "name_exploit.so" ]; then continue; fi
+            
+            # Preguntar
+            echo -n -e "${YELLOW}Enable optional patch [${patch_name}]? (y/N): ${NC}"
             read answer < /dev/tty
             
             if [[ "$answer" =~ ^[Yy]$ ]]; then
                 if [ -z "$PATCH_LIST" ]; then
-                    PATCH_LIST="$PWD/$patch_file"
+                    PATCH_LIST="$PWD/$patch_path"
                 else
-                    PATCH_LIST="$PATCH_LIST:$PWD/$patch_file"
+                    PATCH_LIST="$PATCH_LIST:$PWD/$patch_path"
                 fi
-                print_success "Enabled: $patch_file"
+                print_success "Enabled: $patch_name"
             else
-                print_status "Skipped: $patch_file"
+                print_status "Skipped: $patch_name"
             fi
-        fi
-    done
+        done
+    else
+        print_warning "Patches directory '$PATCHES_DIR' not found. No patches loaded."
+    fi
     
-    # Construir variable de entorno
+    # Construir la variable de entorno final
     if [ -n "$PATCH_LIST" ]; then
         PRELOAD_STR="LD_PRELOAD=\"$PATCH_LIST\""
-        print_status "Final Patch Configuration: $PATCH_LIST"
+        print_status "Patches Loaded: $PATCH_LIST"
     fi
-    # --------------------------------------------------
+    # ==========================================================================
 
     local start_script=$(mktemp)
     cat > "$start_script" << EOF
@@ -322,6 +333,7 @@ cd '$PWD'
 export LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
 while true; do
     echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting server..."
+    # Inyectamos los parches aqui
     $PRELOAD_STR ./blockheads_server171 -o '$world_id' -p $port 2>&1 | tee -a '$log_file'
     
     if [ \${PIPESTATUS[0]} -eq 0 ]; then
@@ -380,11 +392,13 @@ EOF
         print_success "Server started successfully!"
     fi
     
-    print_step "Starting rank manager..."
-    local manager_script="./rank_manager.sh"
+    print_step "Starting Rank Manager..."
+    local manager_script="./rank_manager.sh" # Nombre actualizado
     
     if [ ! -f "$manager_script" ]; then
         print_error "Rank Manager script not found: $manager_script"
+        print_warning "Stopping server screen to prevent partial startup."
+        screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
         return 1
     fi
     
@@ -393,22 +407,42 @@ EOF
         chmod +x "$manager_script"
         if [ ! -x "$manager_script" ]; then
             print_error "Failed to make rank manager script executable."
+            print_warning "Stopping server screen to prevent partial startup."
+            screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
             return 1
         fi
     fi
     
     if ! screen -dmS "$SCREEN_MANAGER" bash -c "cd '$PWD' && ./rank_manager.sh '$port'"; then
-        print_error "Failed to create rank manager screen session."
+        print_error "Failed to create rank manager screen session (command failed)."
+        print_warning "Stopping server screen to prevent partial startup."
+        screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
         return 1
     fi
     
-    print_success "Rank Manager screen session created: $SCREEN_MANAGER"
+    print_step "Verifying rank manager status..."
+    sleep 2
+    
+    if ! screen_session_exists "$SCREEN_MANAGER"; then
+        print_error "Rank manager screen session terminated immediately."
+        print_error "This likely means '$manager_script' failed on launch."
+        print_error "Please check '$manager_script' for errors."
+        print_warning "Stopping server screen to prevent partial startup."
+        screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
+        return 1
+    fi
+    
+    print_success "Rank manager screen session created: $SCREEN_MANAGER"
     print_header "SERVER AND RANK MANAGER STARTED SUCCESSFULLY!"
     print_success "World: $world_id"
     print_success "Port: $port"
-    if [ -n "$PRELOAD_LIST" ]; then
-        print_status "Active Patches: $PRELOAD_LIST"
+    
+    if [ -n "$PATCH_LIST" ]; then
+        print_status "Active Security Patches: $PATCH_LIST"
+    else
+        print_warning "No security patches loaded."
     fi
+
     echo ""
     print_status "To view server console: ${CYAN}screen -r $SCREEN_SERVER${NC}"
     print_status "To view rank manager: ${CYAN}screen -r $SCREEN_MANAGER${NC}"
