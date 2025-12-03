@@ -1,8 +1,7 @@
 /*
- * Portal Chest Blocker
+ * Portal Chest Blocker (FIXED)
  * Blocks ID 1074 (Portal Chest).
- * Prevents placement & nukes existing ones on load.
- * No ghost blocks.
+ * Fix: Uses "Soft Delete" during load to prevent crashes.
  */
 
 #define _GNU_SOURCE
@@ -24,17 +23,19 @@
 #define SEL_LOAD   "initWithWorld:dynamicWorld:saveDict:cache:"
 #define SEL_DROP   "destroyItemType"
 #define SEL_REMOVE "remove:" 
+#define SEL_FLAG   "setNeedsRemoved:"
 
 // Func types
 typedef id (*PlaceFunc)(id, SEL, id, id, long long, id, id, unsigned char, id, id, id);
 typedef id (*LoadFunc)(id, SEL, id, id, id, id);
 typedef int (*DropFunc)(id, SEL);
-typedef void (*RemoveFunc)(id, SEL, unsigned char); 
+typedef void (*RemoveFunc)(id, SEL, unsigned char);
+typedef void (*FlagFunc)(id, SEL, unsigned char);
 
 static PlaceFunc original_place = NULL;
 static LoadFunc original_load = NULL;
 
-// Get item ID safely (bypassing objc_msgSend)
+// Helper: Get item ID from item object
 int get_item_id(id item) {
     if (!item) return 0;
     SEL s = sel_registerName("itemType");
@@ -46,7 +47,7 @@ int get_item_id(id item) {
     return 0;
 }
 
-// Get block ID by checking what it drops
+// Helper: Get block ID from block object
 int get_block_drop_id(id block) {
     if (!block) return 0;
     SEL s = sel_registerName(SEL_DROP);
@@ -58,71 +59,94 @@ int get_block_drop_id(id block) {
     return 0;
 }
 
-// Nuke the block cleanly (updates map + clients)
-void safe_remove_block(id block) {
-    if (!block) return;
+// -----------------------------------------------------------------------------
+// CLEANUP LOGIC
+// -----------------------------------------------------------------------------
 
+// METHOD A: Full Nuke (Map + Memory)
+// Use this ONLY when placing items or updating live items.
+void safe_remove_fully(id block) {
+    if (!block) return;
     SEL sRemove = sel_registerName(SEL_REMOVE);
     Method mRemove = class_getInstanceMethod(object_getClass(block), sRemove);
-    
     if (mRemove) {
         RemoveFunc f = (RemoveFunc)method_getImplementation(mRemove);
-        f(block, sRemove, 1); // 1 = YES (Update clients/map)
+        f(block, sRemove, 1); // 1 = YES
     }
 }
+
+// METHOD B: Soft Delete (Memory Only)
+// Use this ONLY during "initWithWorld" (Loading) to avoid crash.
+void mark_for_removal_only(id block) {
+    if (!block) return;
+    SEL sFlag = sel_registerName(SEL_FLAG);
+    Method mFlag = class_getInstanceMethod(object_getClass(block), sFlag);
+    if (mFlag) {
+        FlagFunc f = (FlagFunc)method_getImplementation(mFlag);
+        f(block, sFlag, 1); // setNeedsRemoved:YES
+    }
+}
+
+// -----------------------------------------------------------------------------
+// HOOKS
+// -----------------------------------------------------------------------------
 
 // HOOK: Player placing block
 id hook_ChestPlace(id self, SEL _cmd, id world, id dynWorld, long long pos, id cache, id item, unsigned char flipped, id saveDict, id client, id clientName) {
     
-    // Let it spawn first. Fixes ghost blocks.
+    // Let it spawn first
     id newObj = NULL;
     if (original_place) {
         newObj = original_place(self, _cmd, world, dynWorld, pos, cache, item, flipped, saveDict, client, clientName);
     }
 
-    // Is it the bad item?
+    // Check immediately after spawn
     if (newObj && item) {
         int id = get_item_id(item);
         if (id == BLOCKED_ITEM_ID) {
             printf("[Anti-Exploit] Blocked Portal Chest placement. Nuking it.\n");
-            safe_remove_block(newObj);
+            // Safe to use Full Nuke here because the engine just finished placing it
+            safe_remove_fully(newObj);
         }
     }
 
     return newObj;
 }
 
-// HOOK: Server loading map (Cleanup)
+// HOOK: Server loading map (THE CRASH FIX)
 id hook_ChestLoad(id self, SEL _cmd, id world, id dynWorld, id saveDict, id cache) {
     
-    // Load it up
+    // Load normally
     id loadedChest = NULL;
     if (original_load) {
         loadedChest = original_load(self, _cmd, world, dynWorld, saveDict, cache);
     }
 
-    // Check & destroy
+    // Check & Soft Delete
     if (loadedChest) {
         int dropID = get_block_drop_id(loadedChest);
 
         if (dropID == BLOCKED_ITEM_ID) {
-            printf("[Anti-Exploit] Found existing Portal Chest. Deleting...\n");
-            safe_remove_block(loadedChest);
-            return loadedChest; // Return it so the engine cleans it up properly
+            printf("[Anti-Exploit] Found existing Portal Chest during load. Scheduling removal.\n");
+            // CRITICAL: Only mark memory, do not touch map yet
+            mark_for_removal_only(loadedChest); 
+            return loadedChest; 
         }
     }
 
     return loadedChest;
 }
 
+// -----------------------------------------------------------------------------
 // Init
+// -----------------------------------------------------------------------------
 static void *patchThread(void *arg) {
-    printf("[Anti-Exploit] Loading Portal Chest patch...\n");
+    printf("[Anti-Exploit] Loading Portal Chest patch v2 (Anti-Crash)...\n");
     sleep(2); 
 
     Class targetClass = objc_getClass(TARGET_CLASS);
     if (!targetClass) {
-        printf("[Anti-Exploit] ERROR: Class not found.\n");
+        printf("[Anti-Exploit] ERROR: Chest Class not found.\n");
         return NULL;
     }
 
