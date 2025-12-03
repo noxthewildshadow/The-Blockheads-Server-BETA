@@ -1,4 +1,4 @@
-# UPDATING (NOT WORKING ATM) The BlockHeads Server with Exploit fixer - Complete Installation Guide
+# The BlockHeads Server with EXPLOIT FIXES - Complete Installation Guide
 
 ## Introduction
 
