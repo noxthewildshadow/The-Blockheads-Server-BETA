@@ -1,7 +1,8 @@
 /*
- * Portal Chest Blocker (FIXED)
- * Blocks ID 1074 (Portal Chest).
- * Fix: Uses "Soft Delete" during load to prevent crashes.
+ * Portal Chest Patcher (Item Recovery)
+ * Target Class: Chest
+ * Target ID: 1074 (Portal Chest)
+ * Detects placement or load of Portal Chests, spawns the item back, and removes the object.
  */
 
 #define _GNU_SOURCE
@@ -14,159 +15,187 @@
 #include <objc/runtime.h>
 #include <objc/message.h>
 
-// Config
-#define TARGET_CLASS "Chest"
-#define BLOCKED_ITEM_ID 1074
+// --- Configuration ---
+#define TARGET_CLASS_NAME "Chest"
+#define BLOCKED_ITEM_ID   1074
 
-// Selectors
+// --- Selectors ---
 #define SEL_PLACE  "initWithWorld:dynamicWorld:atPosition:cache:item:flipped:saveDict:placedByClient:clientName:"
 #define SEL_LOAD   "initWithWorld:dynamicWorld:saveDict:cache:"
+#define SEL_POS    "pos"
+#define SEL_TYPE   "itemType"
 #define SEL_DROP   "destroyItemType"
-#define SEL_REMOVE "remove:" 
+#define SEL_SPAWN  "createFreeBlockAtPosition:ofType:dataA:dataB:subItems:dynamicObjectSaveDict:hovers:playSound:priorityBlockhead:"
+#define SEL_REMOVE "remove:"
 #define SEL_FLAG   "setNeedsRemoved:"
 
-// Func types
+// --- Function Prototypes ---
 typedef id (*PlaceFunc)(id, SEL, id, id, long long, id, id, unsigned char, id, id, id);
 typedef id (*LoadFunc)(id, SEL, id, id, id, id);
-typedef int (*DropFunc)(id, SEL);
-typedef void (*RemoveFunc)(id, SEL, unsigned char);
-typedef void (*FlagFunc)(id, SEL, unsigned char);
+typedef int (*IntReturnFunc)(id, SEL);
+typedef long long (*PosReturnFunc)(id, SEL);
+typedef void (*VoidFunc)(id, SEL, BOOL);
+typedef id (*SpawnFunc)(id, SEL, long long, int, int, int, id, id, BOOL, BOOL, id);
 
-static PlaceFunc original_place = NULL;
-static LoadFunc original_load = NULL;
+// --- Global Storage for Original Methods ---
+static PlaceFunc real_Chest_InitPlace = NULL;
+static LoadFunc  real_Chest_InitLoad  = NULL;
 
-// Helper: Get item ID from item object
-int get_item_id(id item) {
-    if (!item) return 0;
-    SEL s = sel_registerName("itemType");
-    Method m = class_getInstanceMethod(object_getClass(item), s);
-    if (m) {
-        int (*f)(id, SEL) = (int (*)(id, SEL))method_getImplementation(m);
-        return f(item, s);
-    }
+// -----------------------------------------------------------------------------
+// HELPER FUNCTIONS
+// -----------------------------------------------------------------------------
+
+// Retrieves itemType from an object
+int GetItemID(id obj) {
+    if (!obj) return 0;
+    SEL sel = sel_registerName(SEL_TYPE);
+    IMP method = class_getMethodImplementation(object_getClass(obj), sel);
+    if (method) return ((IntReturnFunc)method)(obj, sel);
     return 0;
 }
 
-// Helper: Get block ID from block object
-int get_block_drop_id(id block) {
-    if (!block) return 0;
-    SEL s = sel_registerName(SEL_DROP);
-    Method m = class_getInstanceMethod(object_getClass(block), s);
-    if (m) {
-        DropFunc f = (DropFunc)method_getImplementation(m);
-        return f(block, s);
-    }
+// Retrieves destroyItemType (drop ID) from a block
+int GetDropID(id obj) {
+    if (!obj) return 0;
+    SEL sel = sel_registerName(SEL_DROP);
+    IMP method = class_getMethodImplementation(object_getClass(obj), sel);
+    if (method) return ((IntReturnFunc)method)(obj, sel);
     return 0;
 }
 
-// -----------------------------------------------------------------------------
-// CLEANUP LOGIC
-// -----------------------------------------------------------------------------
+// Retrieves position directly from the object
+long long GetPosition(id obj) {
+    if (!obj) return -1;
+    SEL sel = sel_registerName(SEL_POS);
+    IMP method = class_getMethodImplementation(object_getClass(obj), sel);
+    if (method) return ((PosReturnFunc)method)(obj, sel);
+    return -1;
+}
 
-// METHOD A: Full Nuke (Map + Memory)
-// Use this ONLY when placing items or updating live items.
-void safe_remove_fully(id block) {
-    if (!block) return;
-    SEL sRemove = sel_registerName(SEL_REMOVE);
-    Method mRemove = class_getInstanceMethod(object_getClass(block), sRemove);
-    if (mRemove) {
-        RemoveFunc f = (RemoveFunc)method_getImplementation(mRemove);
-        f(block, sRemove, 1); // 1 = YES
+// Spawns a FreeBlock (Item Drop) at the specified position
+void SpawnDroppedItem(id dynWorld, long long pos) {
+    if (!dynWorld || pos == -1) return;
+
+    SEL sel = sel_registerName(SEL_SPAWN);
+    IMP method = class_getMethodImplementation(object_getClass(dynWorld), sel);
+
+    if (method) {
+        // Args: pos, type, dataA, dataB, subItems, saveDict, hovers, playSound, priorityBlockhead
+        ((SpawnFunc)method)(dynWorld, sel, pos, BLOCKED_ITEM_ID, 0, 0, nil, nil, 1, 0, nil);
+        printf("[Anti-Exploit] Item recovery successful at pos %lld.\n", pos);
+    } else {
+        printf("[Anti-Exploit] ERROR: Failed to locate spawn method in DynamicWorld.\n");
     }
 }
 
-// METHOD B: Soft Delete (Memory Only)
-// Use this ONLY during "initWithWorld" (Loading) to avoid crash.
-void mark_for_removal_only(id block) {
-    if (!block) return;
-    SEL sFlag = sel_registerName(SEL_FLAG);
-    Method mFlag = class_getInstanceMethod(object_getClass(block), sFlag);
-    if (mFlag) {
-        FlagFunc f = (FlagFunc)method_getImplementation(mFlag);
-        f(block, sFlag, 1); // setNeedsRemoved:YES
-    }
+// Hard delete: remove:YES
+void ForceRemoveObject(id obj) {
+    if (!obj) return;
+    SEL sel = sel_registerName(SEL_REMOVE);
+    IMP method = class_getMethodImplementation(object_getClass(obj), sel);
+    if (method) ((VoidFunc)method)(obj, sel, 1);
+}
+
+// Soft delete: setNeedsRemoved:YES (Safe for load time)
+void SoftRemoveObject(id obj) {
+    if (!obj) return;
+    SEL sel = sel_registerName(SEL_FLAG);
+    IMP method = class_getMethodImplementation(object_getClass(obj), sel);
+    if (method) ((VoidFunc)method)(obj, sel, 1);
 }
 
 // -----------------------------------------------------------------------------
-// HOOKS
+// HOOK IMPLEMENTATIONS
 // -----------------------------------------------------------------------------
 
-// HOOK: Player placing block
-id hook_ChestPlace(id self, SEL _cmd, id world, id dynWorld, long long pos, id cache, id item, unsigned char flipped, id saveDict, id client, id clientName) {
-    
-    // Let it spawn first
+// Hook: Player placing a chest
+id Hook_Chest_InitPlace(id self, SEL _cmd, id world, id dynWorld, long long pos, id cache, id item, unsigned char flipped, id saveDict, id client, id clientName) {
+    // Call original constructor first
     id newObj = NULL;
-    if (original_place) {
-        newObj = original_place(self, _cmd, world, dynWorld, pos, cache, item, flipped, saveDict, client, clientName);
+    if (real_Chest_InitPlace) {
+        newObj = real_Chest_InitPlace(self, _cmd, world, dynWorld, pos, cache, item, flipped, saveDict, client, clientName);
     }
 
-    // Check immediately after spawn
+    // Inspect creation
     if (newObj && item) {
-        int id = get_item_id(item);
-        if (id == BLOCKED_ITEM_ID) {
-            printf("[Anti-Exploit] Blocked Portal Chest placement. Nuking it.\n");
-            // Safe to use Full Nuke here because the engine just finished placing it
-            safe_remove_fully(newObj);
+        if (GetItemID(item) == BLOCKED_ITEM_ID) {
+            printf("[Anti-Exploit] Blocked Portal Chest placement. Returning item to player.\n");
+            
+            // 1. Remove the illegal block immediately
+            ForceRemoveObject(newObj);
+            
+            // 2. Spawn the item back
+            SpawnDroppedItem(dynWorld, pos);
         }
     }
 
     return newObj;
 }
 
-// HOOK: Server loading map (THE CRASH FIX)
-id hook_ChestLoad(id self, SEL _cmd, id world, id dynWorld, id saveDict, id cache) {
-    
-    // Load normally
-    id loadedChest = NULL;
-    if (original_load) {
-        loadedChest = original_load(self, _cmd, world, dynWorld, saveDict, cache);
+// Hook: Server loading chests from save file
+id Hook_Chest_InitLoad(id self, SEL _cmd, id world, id dynWorld, id saveDict, id cache) {
+    // Call original constructor first
+    id loadedObj = NULL;
+    if (real_Chest_InitLoad) {
+        loadedObj = real_Chest_InitLoad(self, _cmd, world, dynWorld, saveDict, cache);
     }
 
-    // Check & Soft Delete
-    if (loadedChest) {
-        int dropID = get_block_drop_id(loadedChest);
+    // Inspect loaded object
+    if (loadedObj) {
+        if (GetDropID(loadedObj) == BLOCKED_ITEM_ID) {
+            long long pos = GetPosition(loadedObj);
 
-        if (dropID == BLOCKED_ITEM_ID) {
-            printf("[Anti-Exploit] Found existing Portal Chest during load. Scheduling removal.\n");
-            // CRITICAL: Only mark memory, do not touch map yet
-            mark_for_removal_only(loadedChest); 
-            return loadedChest; 
+            if (pos != -1) {
+                printf("[Anti-Exploit] Existing Portal Chest detected at %lld. Converting to drop.\n", pos);
+                SpawnDroppedItem(dynWorld, pos);
+            } else {
+                printf("[Anti-Exploit] Existing Portal Chest detected, but position unreadable. Deleting only.\n");
+            }
+
+            // Mark for soft removal (safer during load loop)
+            SoftRemoveObject(loadedObj);
+            return loadedObj;
         }
     }
 
-    return loadedChest;
+    return loadedObj;
 }
 
 // -----------------------------------------------------------------------------
-// Init
+// INITIALIZATION
 // -----------------------------------------------------------------------------
-static void *patchThread(void *arg) {
-    printf("[Anti-Exploit] Loading Portal Chest patch v2 (Anti-Crash)...\n");
-    sleep(2); 
 
-    Class targetClass = objc_getClass(TARGET_CLASS);
+static void *patchThread(void *arg) {
+    printf("[Anti-Exploit] Initializing Portal Chest Patch (Recovery Mode)...\n");
+    
+    // Wait for runtime to settle
+    sleep(2);
+
+    Class targetClass = objc_getClass(TARGET_CLASS_NAME);
     if (!targetClass) {
-        printf("[Anti-Exploit] ERROR: Chest Class not found.\n");
+        printf("[Anti-Exploit] ERROR: Class '%s' not found!\n", TARGET_CLASS_NAME);
         return NULL;
     }
 
-    // Install Placement Hook
-    SEL sPlace = sel_registerName(SEL_PLACE);
-    Method mPlace = class_getInstanceMethod(targetClass, sPlace);
+    // Apply Placement Hook
+    SEL selPlace = sel_registerName(SEL_PLACE);
+    Method mPlace = class_getInstanceMethod(targetClass, selPlace);
     if (mPlace) {
-        original_place = (PlaceFunc)method_getImplementation(mPlace);
-        method_setImplementation(mPlace, (IMP)hook_ChestPlace);
+        real_Chest_InitPlace = (PlaceFunc)method_getImplementation(mPlace);
+        method_setImplementation(mPlace, (IMP)Hook_Chest_InitPlace);
+        printf("[Anti-Exploit] Hooked: Placement Constructor.\n");
     }
 
-    // Install Load Hook
-    SEL sLoad = sel_registerName(SEL_LOAD);
-    Method mLoad = class_getInstanceMethod(targetClass, sLoad);
+    // Apply Load Hook
+    SEL selLoad = sel_registerName(SEL_LOAD);
+    Method mLoad = class_getInstanceMethod(targetClass, selLoad);
     if (mLoad) {
-        original_load = (LoadFunc)method_getImplementation(mLoad);
-        method_setImplementation(mLoad, (IMP)hook_ChestLoad);
+        real_Chest_InitLoad = (LoadFunc)method_getImplementation(mLoad);
+        method_setImplementation(mLoad, (IMP)Hook_Chest_InitLoad);
+        printf("[Anti-Exploit] Hooked: Load Constructor.\n");
     }
 
-    printf("[Anti-Exploit] Portal Chests (ID %d) are blocked.\n", BLOCKED_ITEM_ID);
+    printf("[Anti-Exploit] Portal Chest Blocker is active.\n");
     return NULL;
 }
 
