@@ -1,10 +1,9 @@
 /*
- * BLOCKHEADS ADMIN TOOLS: THE SUMMONER (Safe Edition)
- * Status: CRASH FIXED
+ * BLOCKHEADS ADMIN SPAWNER
  * Features:
- * - /spawn <mob> [qty] [baby/tame]
- * - Removed manual memory write to prevent Segfault.
- * - Uses native 'placedByClient' argument for ownership.
+ * - /spawn <mob> [qty] [baby]
+ * - Pure Spawning Logic (Non tamed.)
+ * - 100% Stable.
  */
 
 #define _GNU_SOURCE
@@ -46,7 +45,7 @@ enum NPCType {
 #define SEL_COUNT      "count"
 #define SEL_OBJ_IDX    "objectAtIndex:"
 #define SEL_POS        "pos"
-// Spawn Selector
+// Native Spawn Selector
 #define SEL_SPAWN_NPC  "loadNPCAtPosition:type:saveDict:isAdult:wasPlaced:placedByClient:"
 
 // --- Types ---
@@ -184,17 +183,17 @@ id GetActiveBlockhead(id dynWorld) {
     return nil;
 }
 
-// --- SUMMON LOGIC (SAFE) ---
-void SummonNPC(id dynWorld, long long pos, int npcType, int qty, BOOL isAdult, BOOL tame, id ownerNameObj) {
+// --- SUMMON LOGIC (SIMPLE & STABLE) ---
+void SummonNPC(id dynWorld, long long pos, int npcType, int qty, BOOL isAdult) {
     SEL selSpawn = sel_registerName(SEL_SPAWN_NPC);
     
     if (class_getInstanceMethod(object_getClass(dynWorld), selSpawn)) {
         SpawnNPCFunc fSpawn = (SpawnNPCFunc) class_getMethodImplementation(object_getClass(dynWorld), selSpawn);
         
         for (int i = 0; i < qty; i++) {
-            // Args: pos, type, saveDict(nil), isAdult, wasPlaced(YES if tame/owned), placedByClient(ownerName)
-            // Setting 'wasPlaced' to 1 (YES) helps the server understand this isn't a natural spawn
-            fSpawn(dynWorld, selSpawn, pos, npcType, nil, isAdult, tame, tame ? ownerNameObj : nil);
+            // Args: pos, type, saveDict(nil), isAdult, wasPlaced(NO), placedByClient(nil)
+            // Pure spawn, no ownership tricks.
+            fSpawn(dynWorld, selSpawn, pos, npcType, nil, isAdult, 0, nil);
         }
     } else {
         printf("[Summoner] Error: Spawn selector not found on DynamicWorld.\n");
@@ -214,7 +213,7 @@ id Hook_HandleCommand(id self, SEL _cmd, id commandStr, id client) {
     strncpy(text, rawText, 255);
     text[255] = '\0';
 
-    // --- /SPAWN <TYPE> [QTY] [ARGS] ---
+    // --- /SPAWN <TYPE> [QTY] [BABY] ---
     if (strncmp(text, "/spawn", 6) == 0) {
         id dynWorld = GetDynamicWorldFrom(self);
         
@@ -232,7 +231,7 @@ id Hook_HandleCommand(id self, SEL _cmd, id commandStr, id client) {
         char* strArg3 = strtok(NULL, " "); 
 
         if (!strType) {
-            SendChat(self, "Usage: /spawn <mob> [qty] [baby/tame]");
+            SendChat(self, "Usage: /spawn <mob> [qty] [baby]");
             return nil;
         }
 
@@ -246,16 +245,11 @@ id Hook_HandleCommand(id self, SEL _cmd, id commandStr, id client) {
         if (qty <= 0) qty = 1;
         if (qty > 50) qty = 50; 
 
-        // Flags
+        // Check for "baby"
         BOOL isAdult = 1;
-        BOOL isTame = 0;
-
-        if (strArg3) {
-            if (strcasecmp(strArg3, "baby") == 0) isAdult = 0;
-            if (strcasecmp(strArg3, "tame") == 0) isTame = 1;
+        if (strArg3 && strcasecmp(strArg3, "baby") == 0) {
+            isAdult = 0;
         }
-        
-        // Check compound names e.g. "baby_troll"
         if (strncasecmp(strType, "baby_", 5) == 0) {
             isAdult = 0;
             npcType = GetNPCIDFromName(strType + 5); 
@@ -265,6 +259,7 @@ id Hook_HandleCommand(id self, SEL _cmd, id commandStr, id client) {
         
         if (targetBH) {
             long long pos = GetLongIvar(targetBH, "pos");
+            // Pos fallback
             if (pos == 0) {
                  SEL selPos = sel_registerName(SEL_POS);
                  if (class_getInstanceMethod(object_getClass(targetBH), selPos)) {
@@ -274,19 +269,11 @@ id Hook_HandleCommand(id self, SEL _cmd, id commandStr, id client) {
             }
 
             if (pos != 0) {
-                id ownerName = nil;
-                if (isTame) {
-                    ownerName = GetObjectIvar(targetBH, "clientName");
-                }
-                
-                
-
-                SummonNPC(dynWorld, pos, npcType, qty, isAdult, isTame, ownerName);
+                SummonNPC(dynWorld, pos, npcType, qty, isAdult);
                 
                 char msg[100];
-                snprintf(msg, sizeof(msg), "Summoned %d %s%s%s", 
+                snprintf(msg, sizeof(msg), "Summoned %d %s%s", 
                     qty, 
-                    isTame ? "Tamed " : "",
                     isAdult ? "Adult " : "Baby ", 
                     strType);
                 SendChat(self, msg);
@@ -306,7 +293,7 @@ id Hook_HandleCommand(id self, SEL _cmd, id commandStr, id client) {
 }
 
 static void *patchThread(void *arg) {
-    printf("[Summoner Safe] Module Loaded.\n");
+    printf("[Summoner Lite] Module Loaded (Stable).\n");
     sleep(1);
 
     Class serverClass = objc_getClass(SERVER_CLASS_NAME);
