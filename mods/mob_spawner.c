@@ -1,9 +1,7 @@
 /*
- * BLOCKHEADS ADMIN SPAWNER
- * Features:
- * - /spawn <mob> [qty] [baby]
- * - Pure Spawning Logic (Non tamed.)
- * - 100% Stable.
+ * SCRIPT 2: ADMIN SUMMONER
+ * Target: Mob Spawning
+ * Status: ISOLATED & STABLE
  */
 
 #define _GNU_SOURCE
@@ -22,7 +20,6 @@
 #define SERVER_CLASS_NAME "BHServer"
 #define WORLD_CLASS_NAME  "DynamicWorld"
 
-// --- NPC Types ---
 enum NPCType {
     NPC_NOTHING   = 0,
     NPC_DODO      = 1,
@@ -45,27 +42,24 @@ enum NPCType {
 #define SEL_COUNT      "count"
 #define SEL_OBJ_IDX    "objectAtIndex:"
 #define SEL_POS        "pos"
-// Native Spawn Selector
 #define SEL_SPAWN_NPC  "loadNPCAtPosition:type:saveDict:isAdult:wasPlaced:placedByClient:"
 
-// --- Types ---
+// --- Typedefs ---
 typedef id (*CmdFunc)(id, SEL, id, id);
 typedef void (*ChatFunc)(id, SEL, id, id);
-// SpawnNPCFunc: self, cmd, pos, type, saveDict, isAdult, wasPlaced, clientObj
 typedef id (*SpawnNPCFunc)(id, SEL, long long, int, id, BOOL, BOOL, id);
-
 typedef id (*ArrayFunc)(id, SEL);
 typedef id (*ObjIdxFunc)(id, SEL, unsigned long);
 typedef const char* (*StrFunc)(id, SEL);
 typedef id (*StringFactoryFunc)(id, SEL, const char*);
 
-// --- Globals ---
+// --- Global Storage (Static) ---
 static CmdFunc real_Server_HandleCmd = NULL;
 static ChatFunc real_Server_SendChat = NULL;
 
-// --- MEMORY HELPERS ---
+// --- STATIC HELPERS (Isolated) ---
 
-id GetObjectIvar(id obj, const char* ivarName) {
+static id SM_GetObjectIvar(id obj, const char* ivarName) {
     if (!obj) return nil;
     Ivar ivar = class_getInstanceVariable(object_getClass(obj), ivarName);
     if (ivar) {
@@ -75,7 +69,7 @@ id GetObjectIvar(id obj, const char* ivarName) {
     return nil;
 }
 
-int GetIntIvar(id obj, const char* ivarName) {
+static int SM_GetIntIvar(id obj, const char* ivarName) {
     if (!obj) return -1;
     Ivar ivar = class_getInstanceVariable(object_getClass(obj), ivarName);
     if (ivar) {
@@ -85,7 +79,7 @@ int GetIntIvar(id obj, const char* ivarName) {
     return -1;
 }
 
-long long GetLongIvar(id obj, const char* ivarName) {
+static long long SM_GetLongIvar(id obj, const char* ivarName) {
     if (!obj) return 0;
     Ivar ivar = class_getInstanceVariable(object_getClass(obj), ivarName);
     if (ivar) {
@@ -95,7 +89,7 @@ long long GetLongIvar(id obj, const char* ivarName) {
     return 0;
 }
 
-const char* GetStringText(id strObj) {
+static const char* SM_GetStringText(id strObj) {
     if (!strObj) return "";
     SEL sel = sel_registerName(SEL_UTF8);
     IMP method = class_getMethodImplementation(object_getClass(strObj), sel);
@@ -103,7 +97,7 @@ const char* GetStringText(id strObj) {
     return "";
 }
 
-id CreateNSString(const char* text) {
+static id SM_CreateNSString(const char* text) {
     Class cls = objc_getClass("NSString");
     if (!cls) return nil;
     SEL sel = sel_registerName(SEL_STR);
@@ -114,14 +108,14 @@ id CreateNSString(const char* text) {
     return nil;
 }
 
-void SendChat(id server, const char* msg) {
+static void SM_SendChat(id server, const char* msg) {
     if (server && real_Server_SendChat) {
-        id nsMsg = CreateNSString(msg);
+        id nsMsg = SM_CreateNSString(msg);
         real_Server_SendChat(server, sel_registerName(SEL_CHAT), nsMsg, nil);
     }
 }
 
-int GetNPCIDFromName(const char* name) {
+static int SM_GetNPCIDFromName(const char* name) {
     if (!name) return 0;
     if (strcasecmp(name, "dodo") == 0) return NPC_DODO;
     if (strcasecmp(name, "dropbear") == 0) return NPC_DROPBEAR;
@@ -137,16 +131,14 @@ int GetNPCIDFromName(const char* name) {
     return atoi(name);
 }
 
-// --- CORE: GET DYNAMIC WORLD ---
-id GetDynamicWorldFrom(id serverInstance) {
+static id SM_GetDynamicWorldFrom(id serverInstance) {
     if (!serverInstance) return nil;
-    id worldObj = GetObjectIvar(serverInstance, "world");
+    id worldObj = SM_GetObjectIvar(serverInstance, "world");
     if (!worldObj) return nil;
-    return GetObjectIvar(worldObj, "dynamicWorld");
+    return SM_GetObjectIvar(worldObj, "dynamicWorld");
 }
 
-// --- SEARCH ACTIVE PLAYER ---
-id GetActiveBlockhead(id dynWorld) {
+static id SM_GetActiveBlockhead(id dynWorld) {
     if (!dynWorld) return nil;
 
     id playerList = nil;
@@ -155,8 +147,7 @@ id GetActiveBlockhead(id dynWorld) {
         ArrayFunc fGetList = (ArrayFunc) class_getMethodImplementation(object_getClass(dynWorld), selAllNet);
         playerList = fGetList(dynWorld, selAllNet);
     }
-    if (!playerList) playerList = GetObjectIvar(dynWorld, SEL_NET_BHEADS);
-    
+    if (!playerList) playerList = SM_GetObjectIvar(dynWorld, SEL_NET_BHEADS);
     if (!playerList) return nil;
 
     SEL selCount = sel_registerName(SEL_COUNT);
@@ -169,7 +160,7 @@ id GetActiveBlockhead(id dynWorld) {
     for (int i = 0; i < count; i++) {
         id obj = fIdx(playerList, selIdx, i);
         if (obj) {
-            long long pos = GetLongIvar(obj, "pos");
+            long long pos = SM_GetLongIvar(obj, "pos");
             if (pos == 0) {
                  SEL selPos = sel_registerName(SEL_POS);
                  if (class_getInstanceMethod(object_getClass(obj), selPos)) {
@@ -183,27 +174,23 @@ id GetActiveBlockhead(id dynWorld) {
     return nil;
 }
 
-// --- SUMMON LOGIC (SIMPLE & STABLE) ---
-void SummonNPC(id dynWorld, long long pos, int npcType, int qty, BOOL isAdult) {
+static void SM_SummonNPC(id dynWorld, long long pos, int npcType, int qty, BOOL isAdult) {
     SEL selSpawn = sel_registerName(SEL_SPAWN_NPC);
-    
     if (class_getInstanceMethod(object_getClass(dynWorld), selSpawn)) {
         SpawnNPCFunc fSpawn = (SpawnNPCFunc) class_getMethodImplementation(object_getClass(dynWorld), selSpawn);
-        
         for (int i = 0; i < qty; i++) {
-            // Args: pos, type, saveDict(nil), isAdult, wasPlaced(NO), placedByClient(nil)
-            // Pure spawn, no ownership tricks.
             fSpawn(dynWorld, selSpawn, pos, npcType, nil, isAdult, 0, nil);
         }
     } else {
-        printf("[Summoner] Error: Spawn selector not found on DynamicWorld.\n");
+        printf("[Summoner] Error: Spawn selector missing.\n");
     }
 }
 
-// --- COMMAND HOOK ---
-id Hook_HandleCommand(id self, SEL _cmd, id commandStr, id client) {
-    const char* rawText = GetStringText(commandStr);
+// --- HOOK ---
+id Summoner_Hook_HandleCommand(id self, SEL _cmd, id commandStr, id client) {
+    const char* rawText = SM_GetStringText(commandStr);
     
+    // Pass if empty
     if (!rawText || strlen(rawText) == 0) {
         if (real_Server_HandleCmd) return real_Server_HandleCmd(self, _cmd, commandStr, client);
         return nil;
@@ -213,31 +200,28 @@ id Hook_HandleCommand(id self, SEL _cmd, id commandStr, id client) {
     strncpy(text, rawText, 255);
     text[255] = '\0';
 
-    // --- /SPAWN <TYPE> [QTY] [BABY] ---
     if (strncmp(text, "/spawn", 6) == 0) {
-        id dynWorld = GetDynamicWorldFrom(self);
+        id dynWorld = SM_GetDynamicWorldFrom(self);
         
         if (!dynWorld) {
-            SendChat(self, "Error: World not ready.");
+            SM_SendChat(self, "Error: World not ready.");
             return nil;
         }
 
-        char buffer[256];
-        strncpy(buffer, text, 255);
-
+        char buffer[256]; strncpy(buffer, text, 255);
         char* cmd = strtok(buffer, " ");
         char* strType = strtok(NULL, " ");
         char* strQty = strtok(NULL, " ");
         char* strArg3 = strtok(NULL, " "); 
 
         if (!strType) {
-            SendChat(self, "Usage: /spawn <mob> [qty] [baby]");
+            SM_SendChat(self, "Usage: /spawn <mob> [qty] [baby]");
             return nil;
         }
 
-        int npcType = GetNPCIDFromName(strType);
+        int npcType = SM_GetNPCIDFromName(strType);
         if (npcType == 0) {
-            SendChat(self, "Error: Unknown mob type.");
+            SM_SendChat(self, "Error: Unknown mob.");
             return nil;
         }
 
@@ -245,21 +229,16 @@ id Hook_HandleCommand(id self, SEL _cmd, id commandStr, id client) {
         if (qty <= 0) qty = 1;
         if (qty > 50) qty = 50; 
 
-        // Check for "baby"
         BOOL isAdult = 1;
-        if (strArg3 && strcasecmp(strArg3, "baby") == 0) {
-            isAdult = 0;
-        }
+        if (strArg3 && strcasecmp(strArg3, "baby") == 0) isAdult = 0;
         if (strncasecmp(strType, "baby_", 5) == 0) {
             isAdult = 0;
-            npcType = GetNPCIDFromName(strType + 5); 
+            npcType = SM_GetNPCIDFromName(strType + 5); 
         }
 
-        id targetBH = GetActiveBlockhead(dynWorld);
-        
+        id targetBH = SM_GetActiveBlockhead(dynWorld);
         if (targetBH) {
-            long long pos = GetLongIvar(targetBH, "pos");
-            // Pos fallback
+            long long pos = SM_GetLongIvar(targetBH, "pos");
             if (pos == 0) {
                  SEL selPos = sel_registerName(SEL_POS);
                  if (class_getInstanceMethod(object_getClass(targetBH), selPos)) {
@@ -267,21 +246,14 @@ id Hook_HandleCommand(id self, SEL _cmd, id commandStr, id client) {
                      pos = fPos(targetBH, selPos);
                  }
             }
-
             if (pos != 0) {
-                SummonNPC(dynWorld, pos, npcType, qty, isAdult);
-                
-                char msg[100];
-                snprintf(msg, sizeof(msg), "Summoned %d %s%s", 
-                    qty, 
-                    isAdult ? "Adult " : "Baby ", 
-                    strType);
-                SendChat(self, msg);
+                SM_SummonNPC(dynWorld, pos, npcType, qty, isAdult);
+                SM_SendChat(self, "Spawned.");
             } else {
-                SendChat(self, "Error: Invalid player position.");
+                SM_SendChat(self, "Error: Invalid pos.");
             }
         } else {
-            SendChat(self, "Player not found.");
+            SM_SendChat(self, "Player not found.");
         }
         return nil;
     }
@@ -292,16 +264,15 @@ id Hook_HandleCommand(id self, SEL _cmd, id commandStr, id client) {
     return nil;
 }
 
-static void *patchThread(void *arg) {
-    printf("[Summoner Lite] Module Loaded (Stable).\n");
+static void *SummonerPatchThread(void *arg) {
+    printf("[Summoner] Loaded.\n");
     sleep(1);
-
     Class serverClass = objc_getClass(SERVER_CLASS_NAME);
     if (serverClass) {
         SEL selCmd = sel_registerName(SEL_CMD);
         if (class_getInstanceMethod(serverClass, selCmd)) {
             real_Server_HandleCmd = (CmdFunc)method_getImplementation(class_getInstanceMethod(serverClass, selCmd));
-            method_setImplementation(class_getInstanceMethod(serverClass, selCmd), (IMP)Hook_HandleCommand);
+            method_setImplementation(class_getInstanceMethod(serverClass, selCmd), (IMP)Summoner_Hook_HandleCommand);
         }
         SEL selChat = sel_registerName(SEL_CHAT);
         if (class_getInstanceMethod(serverClass, selChat)) {
@@ -312,7 +283,7 @@ static void *patchThread(void *arg) {
 }
 
 __attribute__((constructor))
-static void init_hook() {
+static void summoner_init() {
     pthread_t t;
-    pthread_create(&t, NULL, patchThread, NULL);
+    pthread_create(&t, NULL, SummonerPatchThread, NULL);
 }
