@@ -1,11 +1,6 @@
 /*
- * Chest Duplicator & Item Spawner (No-Cache / Always Fresh Edition)
- * Target Class: Chest
- * Target ID: 1043
- * * FIXES:
- * 1. Solves "Stop detecting player": Fetches fresh pointers every command execution.
- * 2. Solves "Crash": Removed unsafe memory writes during spawn.
- * 3. Solves "Dependency": No chest needed to initialize.
+ * Target: Chest Duplication & Item Spawning
+ * Status: ISOLATED & STABLE
  */
 
 #define _GNU_SOURCE
@@ -34,18 +29,17 @@
 #define SEL_UTF8     "UTF8String"
 #define SEL_STR      "stringWithUTF8String:"
 
-// Search Selectors
 #define SEL_ALL_NET    "allBlockheadsIncludingNet"
 #define SEL_NET_BHEADS "netBlockheads"
 #define SEL_OBJ_IDX    "objectAtIndex:"
 #define SEL_COUNT      "count"
 #define SEL_POS        "pos"
 
-// Auth Selectors
+// Auth
 #define SEL_IS_CLOUD "playerIsCloudWideAdminWithAlias:"
 #define SEL_IS_INVIS "playerIsCloudWideInvisibleAdminWithAlias:"
 
-// --- Function Prototypes ---
+// --- Typedefs ---
 typedef id (*PlaceFunc)(id, SEL, id, id, long long, id, id, unsigned char, id, id, id);
 typedef id (*CmdFunc)(id, SEL, id, id);
 typedef void (*ChatFunc)(id, SEL, id, id);
@@ -58,19 +52,15 @@ typedef id (*StringFactoryFunc)(id, SEL, const char*);
 typedef BOOL (*BoolObjArg)(id, SEL, id);
 typedef id (*ObjIdxFunc)(id, SEL, unsigned long);
 
-// --- Global Storage ---
+// --- Global Storage (Static to avoid collision) ---
 static PlaceFunc real_Chest_InitPlace = NULL;
 static CmdFunc   real_Server_HandleCmd = NULL;
 static ChatFunc  real_Server_SendChat = NULL;
-
 static id g_ServerInstance = nil; 
-
-// --- STATE ---
 static bool g_DupeEnabled = false; 
 static int  g_ExtraCount = 1;
 
-// --- C++ OVERRIDE (Inventory Logic) ---
-// Sobreescribe la validacion interna para permitir recoger cualquier item
+// --- C++ Override (Only needed in Spawner) ---
 int _Z28itemTypeIsValidInventoryItem8ItemType(int itemType) {
     if (itemType > 0) return 1;
     return 0;
@@ -81,74 +71,31 @@ int _Z23itemTypeIsValidFillItem8ItemType(int itemType) {
     return 0;
 }
 
-// --- BLOCK CONVERTER ---
-int BlockIDToItemID(int blockID) {
+// --- STATIC HELPERS (Isolated) ---
+
+static int SP_BlockIDToItemID(int blockID) {
     if (blockID > 255) return blockID;
     switch (blockID) {
-        case 1: return 1024;  // STONE
-        case 2: return 0;     // AIR
-        case 3: return 105;   // WATER -> BUCKET
-        case 4: return 1060;  // ICE
-        case 6: return 1048;  // DIRT
-        case 7: return 1051;  // SAND
-        case 8: return 1051;  // MINED_SAND
-        case 9: return 1049;  // WOOD
-        case 10: return 1024; // MINED_STONE
-        case 11: return 1026; // RED_BRICK
-        case 12: return 1027; // LIMESTONE
-        case 13: return 1027; // MINED_LIMESTONE
-        case 14: return 1029; // MARBLE
-        case 15: return 1029; // MINED_MARBLE
-        case 16: return 11;   // TIME_CRYSTAL
-        case 17: return 1035; // SAND_STONE
-        case 18: return 1035; // MINED_SAND_STONE
-        case 19: return 1037; // RED_MARBLE
-        case 20: return 1037; // MINED_RED_MARBLE
-        case 24: return 1042; // GLASS
-        case 25: return 134;  // PORTAL
-        case 26: return 1045; // GOLD_BLOCK
-        case 27: return 1048; // GRASS -> DIRT
-        case 28: return 1048; // SNOW -> DIRT
-        case 29: return 1053; // LAPIS
-        case 30: return 1053; // MINED_LAPIS
-        case 32: return 1057; // REINFORCED_PLATFORM
-        case 42: return 134;  // PORTAL_BASE
-        case 43: return 135;  // AMETHYST_PORTAL
-        case 44: return 136;  // SAPPHIRE_PORTAL
-        case 45: return 137;  // EMERALD_PORTAL
-        case 46: return 138;  // RUBY_PORTAL
-        case 47: return 139;  // DIAMOND_PORTAL
-        case 48: return 1062; // COMPOST
-        case 49: return 1062; // GRASS_COMPOST
-        case 50: return 1062; // SNOW_COMPOST
-        case 51: return 1063; // BASALT
-        case 52: return 1063; // MINED_BASALT
-        case 53: return 1066; // COPPER
-        case 54: return 1067; // TIN
-        case 55: return 1068; // BRONZE
-        case 56: return 1069; // IRON
-        case 57: return 1070; // STEEL
-        case 58: return 1075; // BLACK_SAND
-        case 59: return 1076; // BLACK_GLASS
-        case 60: return 210;  // TRADE_PORTAL
-        case 67: return 1089; // PLATINUM
-        case 68: return 1091; // TITANIUM
-        case 69: return 1090; // CARBON_FIBER
-        case 70: return 1094; // GRAVEL
-        case 71: return 1098; // AMETHYST
-        case 72: return 1099; // SAPPHIRE
-        case 73: return 1100; // EMERALD
-        case 74: return 1101; // RUBY
-        case 75: return 1102; // DIAMOND
-        case 76: return 1103; // PLASTER
-        case 77: return 1105; // LUMINOUS_PLASTER
+        case 1: return 1024; case 2: return 0; case 3: return 105; case 4: return 1060;
+        case 6: return 1048; case 7: return 1051; case 8: return 1051; case 9: return 1049;
+        case 10: return 1024; case 11: return 1026; case 12: return 1027; case 13: return 1027;
+        case 14: return 1029; case 15: return 1029; case 16: return 11; case 17: return 1035;
+        case 18: return 1035; case 19: return 1037; case 20: return 1037; case 24: return 1042;
+        case 25: return 134; case 26: return 1045; case 27: return 1048; case 28: return 1048;
+        case 29: return 1053; case 30: return 1053; case 32: return 1057; case 42: return 134;
+        case 43: return 135; case 44: return 136; case 45: return 137; case 46: return 138;
+        case 47: return 139; case 48: return 1062; case 49: return 1062; case 50: return 1062;
+        case 51: return 1063; case 52: return 1063; case 53: return 1066; case 54: return 1067;
+        case 55: return 1068; case 56: return 1069; case 57: return 1070; case 58: return 1075;
+        case 59: return 1076; case 60: return 210; case 67: return 1089; case 68: return 1091;
+        case 69: return 1090; case 70: return 1094; case 71: return 1098; case 72: return 1099;
+        case 73: return 1100; case 74: return 1101; case 75: return 1102; case 76: return 1103;
+        case 77: return 1105;
         default: return 0;
     }
 }
 
-// --- Helper Functions ---
-
-int GetItemID(id obj) {
+static int SP_GetItemID(id obj) {
     if (!obj) return 0;
     SEL sel = sel_registerName(SEL_TYPE);
     IMP method = class_getMethodImplementation(object_getClass(obj), sel);
@@ -156,7 +103,7 @@ int GetItemID(id obj) {
     return 0;
 }
 
-const char* GetStringText(id strObj) {
+static const char* SP_GetStringText(id strObj) {
     if (!strObj) return "";
     SEL sel = sel_registerName(SEL_UTF8);
     IMP method = class_getMethodImplementation(object_getClass(strObj), sel);
@@ -164,7 +111,7 @@ const char* GetStringText(id strObj) {
     return "";
 }
 
-id CreateNSString(const char* text) {
+static id SP_CreateNSString(const char* text) {
     Class cls = objc_getClass("NSString");
     if (!cls) return nil;
     SEL sel = sel_registerName(SEL_STR);
@@ -175,16 +122,14 @@ id CreateNSString(const char* text) {
     return nil;
 }
 
-void SendChat(id server, const char* msg) {
+static void SP_SendChat(id server, const char* msg) {
     if (server && real_Server_SendChat) {
-        id nsMsg = CreateNSString(msg);
+        id nsMsg = SP_CreateNSString(msg);
         real_Server_SendChat(server, sel_registerName(SEL_CHAT), nsMsg, nil);
     }
 }
 
-// --- MEMORY ACCESS ---
-
-long long GetLongIvar(id obj, const char* ivarName) {
+static long long SP_GetLongIvar(id obj, const char* ivarName) {
     if (!obj) return 0;
     Ivar ivar = class_getInstanceVariable(object_getClass(obj), ivarName);
     if (ivar) {
@@ -194,7 +139,7 @@ long long GetLongIvar(id obj, const char* ivarName) {
     return 0;
 }
 
-id GetObjectIvar(id obj, const char* ivarName) {
+static id SP_GetObjectIvar(id obj, const char* ivarName) {
     if (!obj) return nil;
     Ivar ivar = class_getInstanceVariable(object_getClass(obj), ivarName);
     if (ivar) {
@@ -204,7 +149,7 @@ id GetObjectIvar(id obj, const char* ivarName) {
     return nil;
 }
 
-int GetIntIvar(id obj, const char* ivarName) {
+static int SP_GetIntIvar(id obj, const char* ivarName) {
     if (!obj) return -1;
     Ivar ivar = class_getInstanceVariable(object_getClass(obj), ivarName);
     if (ivar) {
@@ -214,8 +159,7 @@ int GetIntIvar(id obj, const char* ivarName) {
     return -1;
 }
 
-// --- AUTH CHECKER ---
-bool IsAuthorizedName(id server, id nameObj) {
+static bool SP_IsAuthorizedName(id server, id nameObj) {
     if (!server || !nameObj) return false;
     SEL selCloud = sel_registerName(SEL_IS_CLOUD);
     SEL selInvis = sel_registerName(SEL_IS_INVIS);
@@ -232,33 +176,23 @@ bool IsAuthorizedName(id server, id nameObj) {
     return false;
 }
 
-// --- CORE: GET FRESH DYNAMIC WORLD ---
-// We fetch this EVERY time to ensure we never have a stale pointer.
-id GetDynamicWorldFrom(id serverInstance) {
+static id SP_GetDynamicWorldFrom(id serverInstance) {
     if (!serverInstance) return nil;
-    id worldObj = GetObjectIvar(serverInstance, "world");
+    id worldObj = SP_GetObjectIvar(serverInstance, "world");
     if (!worldObj) return nil;
-    return GetObjectIvar(worldObj, "dynamicWorld");
+    return SP_GetObjectIvar(worldObj, "dynamicWorld");
 }
 
-// --- SEARCH ACTIVE PLAYER (Always Fresh) ---
-id GetActiveBlockhead(id dynWorld, const char* optionalTargetName) {
+static id SP_GetActiveBlockhead(id dynWorld, const char* optionalTargetName) {
     if (!dynWorld) return nil;
 
     id playerList = nil;
-
-    // STRATEGY 1: Official Method (Safest, ensures fresh list)
     SEL selAllNet = sel_registerName(SEL_ALL_NET);
     if (class_getInstanceMethod(object_getClass(dynWorld), selAllNet)) {
         ArrayFunc fGetList = (ArrayFunc) class_getMethodImplementation(object_getClass(dynWorld), selAllNet);
         playerList = fGetList(dynWorld, selAllNet);
     }
-
-    // STRATEGY 2: Net Ivar (Fallback)
-    if (!playerList) {
-        playerList = GetObjectIvar(dynWorld, "netBlockheads");
-    }
-
+    if (!playerList) playerList = SP_GetObjectIvar(dynWorld, "netBlockheads");
     if (!playerList) return nil;
 
     SEL selCount = sel_registerName(SEL_COUNT);
@@ -273,17 +207,14 @@ id GetActiveBlockhead(id dynWorld, const char* optionalTargetName) {
     for (int i = 0; i < count; i++) {
         id obj = fIdx(playerList, selIdx, i);
         if (obj) {
-            id nameObj = GetObjectIvar(obj, "clientName");
-            int clientID = GetIntIvar(obj, "clientID");
-            const char* name = GetStringText(nameObj);
+            id nameObj = SP_GetObjectIvar(obj, "clientName");
+            int clientID = SP_GetIntIvar(obj, "clientID");
+            const char* name = SP_GetStringText(nameObj);
             
             bool isMatch = false;
-            // Name match (if provided)
             if (optionalTargetName && strlen(optionalTargetName) > 0) {
                 if (name && strcasecmp(name, optionalTargetName) == 0) isMatch = true;
-            } 
-            // Any active player
-            else {
+            } else {
                 if (clientID > 0 && name && strlen(name) > 0) isMatch = true;
             }
 
@@ -293,12 +224,10 @@ id GetActiveBlockhead(id dynWorld, const char* optionalTargetName) {
     return nil;
 }
 
-// --- SPAWN LOGIC ---
-void SpawnItemInternal(id dynWorld, id targetBlockhead, int itemID, int count, id saveDict) {
+static void SP_SpawnItemInternal(id dynWorld, id targetBlockhead, int itemID, int count, id saveDict) {
     if (!dynWorld || !targetBlockhead) return;
+    long long pos = SP_GetLongIvar(targetBlockhead, "pos");
     
-    long long pos = GetLongIvar(targetBlockhead, "pos");
-    // Retry via selector if Ivar is 0 (double check)
     if (pos == 0) {
          SEL selPos = sel_registerName(SEL_POS);
          if (class_getInstanceMethod(object_getClass(targetBlockhead), selPos)) {
@@ -306,7 +235,6 @@ void SpawnItemInternal(id dynWorld, id targetBlockhead, int itemID, int count, i
              pos = fPos(targetBlockhead, selPos);
          }
     }
-
     if (pos == 0) return;
 
     SEL sel = sel_registerName(SEL_SPAWN);
@@ -315,29 +243,24 @@ void SpawnItemInternal(id dynWorld, id targetBlockhead, int itemID, int count, i
     if (method) {
         SpawnFunc fSpawn = (SpawnFunc)method;
         for (int i = 0; i < count; i++) {
-            // Spawn normal, priority to player. No memory hacks here to avoid crashes.
             fSpawn(dynWorld, sel, pos, itemID, 1, 0, nil, saveDict, 1, 0, targetBlockhead);
         }
     }
 }
 
-// HOOK 2: Chest Placement
-id Hook_Chest_InitPlace(id self, SEL _cmd, id world, id dynWorld, long long pos, id cache, id item, unsigned char flipped, id saveDict, id client, id clientName) {
-    // Original Logic
+// --- Hooks ---
+
+id Spawner_Hook_Chest_InitPlace(id self, SEL _cmd, id world, id dynWorld, long long pos, id cache, id item, unsigned char flipped, id saveDict, id client, id clientName) {
     id newObj = NULL;
     if (real_Chest_InitPlace) {
         newObj = real_Chest_InitPlace(self, _cmd, world, dynWorld, pos, cache, item, flipped, saveDict, client, clientName);
     }
-
-    // Dupe Logic
     if (newObj && item && g_DupeEnabled) {
-        if (GetItemID(item) == TARGET_ITEM_ID) {
-            // Check auth on server instance (captured or passed)
-            if (g_ServerInstance != NULL && IsAuthorizedName(g_ServerInstance, clientName)) {
-                 // Get Fresh DynamicWorld from passed arg
-                 id targetBH = GetActiveBlockhead(dynWorld, NULL); 
+        if (SP_GetItemID(item) == TARGET_ITEM_ID) {
+            if (g_ServerInstance != NULL && SP_IsAuthorizedName(g_ServerInstance, clientName)) {
+                 id targetBH = SP_GetActiveBlockhead(dynWorld, NULL); 
                  if (targetBH) {
-                     SpawnItemInternal(dynWorld, targetBH, TARGET_ITEM_ID, 1 + g_ExtraCount, saveDict);
+                     SP_SpawnItemInternal(dynWorld, targetBH, TARGET_ITEM_ID, 1 + g_ExtraCount, saveDict);
                      SEL selRem = sel_registerName(SEL_REMOVE);
                      if (class_getInstanceMethod(object_getClass(newObj), selRem)) {
                          ((VoidBoolFunc)class_getMethodImplementation(object_getClass(newObj), selRem))(newObj, selRem, 1);
@@ -349,10 +272,9 @@ id Hook_Chest_InitPlace(id self, SEL _cmd, id world, id dynWorld, long long pos,
     return newObj;
 }
 
-// HOOK 1: Handle Command
-id Hook_HandleCommand(id self, SEL _cmd, id commandStr, id client) {
-    const char* rawText = GetStringText(commandStr);
-    g_ServerInstance = self; // Update global instance reference
+id Spawner_Hook_HandleCommand(id self, SEL _cmd, id commandStr, id client) {
+    const char* rawText = SP_GetStringText(commandStr);
+    g_ServerInstance = self; 
     
     if (!rawText || strlen(rawText) == 0) {
         if (real_Server_HandleCmd) return real_Server_HandleCmd(self, _cmd, commandStr, client);
@@ -363,75 +285,48 @@ id Hook_HandleCommand(id self, SEL _cmd, id commandStr, id client) {
     strncpy(text, rawText, 255);
     text[255] = '\0';
 
-    // /dupe
     if (strncmp(text, "/dupe", 5) == 0) {
         int newAmount = -1;
         char* token = strtok(text, " "); 
         token = strtok(NULL, " ");       
         if (token) newAmount = atoi(token);
-
-        char msgBuffer[100];
         if (newAmount > 0) {
-            g_DupeEnabled = true;
-            g_ExtraCount = newAmount;
-            snprintf(msgBuffer, sizeof(msgBuffer), "SYSTEM: Dupe ON (+%d Copies)", g_ExtraCount);
+            g_DupeEnabled = true; g_ExtraCount = newAmount;
+            SP_SendChat(self, "Dupe ON");
         } else {
-            g_DupeEnabled = !g_DupeEnabled;
-            g_ExtraCount = 1; 
-            snprintf(msgBuffer, sizeof(msgBuffer), g_DupeEnabled ? "SYSTEM: Dupe ON" : "SYSTEM: Dupe OFF");
+            g_DupeEnabled = !g_DupeEnabled; g_ExtraCount = 1; 
+            SP_SendChat(self, g_DupeEnabled ? "Dupe ON" : "Dupe OFF");
         }
-        SendChat(self, msgBuffer);
         return nil;
     }
 
-    // /item OR /block
     if (strncmp(text, "/item", 5) == 0 || strncmp(text, "/block", 6) == 0) {
-        
-        // 1. FRESH FETCH of DynamicWorld
-        id dynWorld = GetDynamicWorldFrom(self); 
-        
-        if (!dynWorld) {
-            SendChat(self, "ERROR: World not ready/accessible.");
-            return nil;
-        }
+        id dynWorld = SP_GetDynamicWorldFrom(self); 
+        if (!dynWorld) return nil;
 
-        char buffer[256];
-        strncpy(buffer, text, 255);
-        
+        char buffer[256]; strncpy(buffer, text, 255);
         char* cmdName = strtok(buffer, " "); 
         char* strID   = strtok(NULL, " ");   
         char* strCount= strtok(NULL, " ");   
         char* strName = strtok(NULL, " ");   
 
-        if (!strID) {
-            SendChat(self, "Usage: /item <ID> OR /block <ID>");
-            return nil;
-        }
+        if (!strID) { SP_SendChat(self, "Usage: /item <ID>"); return nil; }
 
         int inputID = atoi(strID);
         int finalItemID = inputID;
-
         if (strncmp(cmdName, "/block", 6) == 0) {
-            finalItemID = BlockIDToItemID(inputID);
+            finalItemID = SP_BlockIDToItemID(inputID);
             if (finalItemID == 0) finalItemID = inputID;
         }
 
         int count  = (strCount) ? atoi(strCount) : 1;
         if (count > 99) count = 99;
 
-        // 2. FRESH SEARCH for Player using the FRESH DynamicWorld
-        id targetBH = GetActiveBlockhead(dynWorld, strName);
-        
-        if (!targetBH) {
-            SendChat(self, "ERROR: No active player found.");
-            return nil;
-        }
+        id targetBH = SP_GetActiveBlockhead(dynWorld, strName);
+        if (!targetBH) { SP_SendChat(self, "Player not found."); return nil; }
 
-        char msgBuffer[128];
-        snprintf(msgBuffer, sizeof(msgBuffer), "Spawning Item %d (x%d)", finalItemID, count);
-        SendChat(self, msgBuffer);
-        
-        SpawnItemInternal(dynWorld, targetBH, finalItemID, count, nil);
+        SP_SpawnItemInternal(dynWorld, targetBH, finalItemID, count, nil);
+        SP_SendChat(self, "Spawned.");
         return nil;
     }
 
@@ -441,38 +336,34 @@ id Hook_HandleCommand(id self, SEL _cmd, id commandStr, id client) {
     return nil;
 }
 
-static void *patchThread(void *arg) {
-    printf("[System] Loading 'Freight Car Patch v8' (Final Stable)...\n");
+static void *SpawnerPatchThread(void *arg) {
+    printf("[Spawner] Loaded.\n");
     sleep(1);
-
     Class chestClass = objc_getClass(CHEST_CLASS_NAME);
     if (chestClass) {
         SEL selPlace = sel_registerName(SEL_PLACE);
         if (class_getInstanceMethod(chestClass, selPlace)) {
             real_Chest_InitPlace = (PlaceFunc)method_getImplementation(class_getInstanceMethod(chestClass, selPlace));
-            method_setImplementation(class_getInstanceMethod(chestClass, selPlace), (IMP)Hook_Chest_InitPlace);
+            method_setImplementation(class_getInstanceMethod(chestClass, selPlace), (IMP)Spawner_Hook_Chest_InitPlace);
         }
     }
-
     Class serverClass = objc_getClass(SERVER_CLASS_NAME);
     if (serverClass) {
         SEL selCmd = sel_registerName(SEL_CMD);
         if (class_getInstanceMethod(serverClass, selCmd)) {
             real_Server_HandleCmd = (CmdFunc)method_getImplementation(class_getInstanceMethod(serverClass, selCmd));
-            method_setImplementation(class_getInstanceMethod(serverClass, selCmd), (IMP)Hook_HandleCommand);
+            method_setImplementation(class_getInstanceMethod(serverClass, selCmd), (IMP)Spawner_Hook_HandleCommand);
         }
         SEL selChat = sel_registerName(SEL_CHAT);
         if (class_getInstanceMethod(serverClass, selChat)) {
             real_Server_SendChat = (ChatFunc)method_getImplementation(class_getInstanceMethod(serverClass, selChat));
         }
     }
-
-    printf("[System] Ready.\n");
     return NULL;
 }
 
 __attribute__((constructor))
-static void init_hook() {
+static void spawner_init() {
     pthread_t t;
-    pthread_create(&t, NULL, patchThread, NULL);
+    pthread_create(&t, NULL, SpawnerPatchThread, NULL);
 }
