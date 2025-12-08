@@ -1,12 +1,8 @@
 /*
- * Chest Duplicator & Item Spawner (No-Cache / Always Fresh Edition)
- * Target Class: Chest
- * Target ID: 1043
- * * FIXES:
- * 1. Solves "Stop detecting player": Fetches fresh pointers every command execution.
- * 2. Solves "Crash": Removed unsafe memory writes during spawn.
- * 3. Solves "Dependency": No chest needed to initialize.
- * 4. Solves "Conflict": Namespaced symbols.
+ * Item Spawner & Duplicator
+ * Help: /item <ID> <AMOUNT> <PLAYER_NAME>
+ * Help: /block <ID> <AMOUNT> <PLAYER_NAME>
+ * Help: /dupe
  */
 
 #define _GNU_SOURCE
@@ -20,10 +16,10 @@
 #include <objc/runtime.h>
 #include <objc/message.h>
 
-// --- Configuration ---
-#define CHEST_CLASS_NAME  "Chest"
-#define SERVER_CLASS_NAME "BHServer"
-#define TARGET_ITEM_ID    1043
+// --- Config ---
+#define TARGET_ITEM_ID    1043 
+#define SERVER_CLASS      "BHServer"
+#define CHEST_CLASS       "Chest"
 
 // --- Selectors ---
 #define SEL_PLACE    "initWithWorld:dynamicWorld:atPosition:cache:item:flipped:saveDict:placedByClient:clientName:"
@@ -34,446 +30,242 @@
 #define SEL_CHAT     "sendChatMessage:sendToClients:"
 #define SEL_UTF8     "UTF8String"
 #define SEL_STR      "stringWithUTF8String:"
+#define SEL_ALL_NET  "allBlockheadsIncludingNet"
+#define SEL_COUNT    "count"
+#define SEL_OBJ_IDX  "objectAtIndex:"
+#define SEL_NAME     "clientName"
 
-// Search Selectors
-#define SEL_ALL_NET    "allBlockheadsIncludingNet"
-#define SEL_NET_BHEADS "netBlockheads"
-#define SEL_OBJ_IDX    "objectAtIndex:"
-#define SEL_COUNT      "count"
-#define SEL_POS        "pos"
-
-// Auth Selectors
-#define SEL_IS_CLOUD "playerIsCloudWideAdminWithAlias:"
-#define SEL_IS_INVIS "playerIsCloudWideInvisibleAdminWithAlias:"
-
-// --- Function Prototypes ---
+// --- Typedefs ---
 typedef id (*PlaceFunc)(id, SEL, id, id, long long, id, id, unsigned char, id, id, id);
 typedef id (*CmdFunc)(id, SEL, id, id);
 typedef void (*ChatFunc)(id, SEL, id, id);
 typedef id (*SpawnFunc)(id, SEL, long long, int, int, int, id, id, BOOL, BOOL, id);
-typedef id (*ArrayFunc)(id, SEL);
-typedef int (*IntFunc)(id, SEL);
 typedef void (*VoidBoolFunc)(id, SEL, BOOL);
 typedef const char* (*StrFunc)(id, SEL);
 typedef id (*StringFactoryFunc)(id, SEL, const char*);
-typedef BOOL (*BoolObjArg)(id, SEL, id);
 typedef id (*ObjIdxFunc)(id, SEL, unsigned long);
 
-// --- Global Storage (Namespaced) ---
-static PlaceFunc Dupe_Real_Chest_InitPlace = NULL;
-static CmdFunc   Dupe_Real_Server_HandleCmd = NULL;
-static ChatFunc  Dupe_Real_Server_SendChat = NULL;
-
-static id Dupe_ServerInstance = nil; 
-
-// --- STATE ---
+// --- Global Storage ---
+static PlaceFunc Real_Chest_InitPlace = NULL;
+static CmdFunc   Real_Server_HandleCmd = NULL;
+static ChatFunc  Real_Server_SendChat = NULL;
 static bool g_DupeEnabled = false; 
 static int  g_ExtraCount = 1;
 
-// --- C++ OVERRIDE (Inventory Logic) ---
-// Sobreescribe la validacion interna para permitir recoger cualquier item
-int _Z28itemTypeIsValidInventoryItem8ItemType(int itemType) {
-    if (itemType > 0) return 1;
-    return 0;
-}
+// --- C++ Overrides ---
+int _Z28itemTypeIsValidInventoryItem8ItemType(int itemType) { return 1; }
+int _Z23itemTypeIsValidFillItem8ItemType(int itemType) { return 1; }
 
-int _Z23itemTypeIsValidFillItem8ItemType(int itemType) {
-    if (itemType > 0) return 1;
-    return 0;
-}
-
-// --- BLOCK CONVERTER ---
 int Dupe_BlockIDToItemID(int blockID) {
     if (blockID > 255) return blockID;
     switch (blockID) {
-        case 1: return 1024;  // STONE
-        case 2: return 0;     // AIR
-        case 3: return 105;   // WATER -> BUCKET
-        case 4: return 1060;  // ICE
-        case 6: return 1048;  // DIRT
-        case 7: return 1051;  // SAND
-        case 8: return 1051;  // MINED_SAND
-        case 9: return 1049;  // WOOD
-        case 10: return 1024; // MINED_STONE
-        case 11: return 1026; // RED_BRICK
-        case 12: return 1027; // LIMESTONE
-        case 13: return 1027; // MINED_LIMESTONE
-        case 14: return 1029; // MARBLE
-        case 15: return 1029; // MINED_MARBLE
-        case 16: return 11;   // TIME_CRYSTAL
-        case 17: return 1035; // SAND_STONE
-        case 18: return 1035; // MINED_SAND_STONE
-        case 19: return 1037; // RED_MARBLE
-        case 20: return 1037; // MINED_RED_MARBLE
-        case 24: return 1042; // GLASS
-        case 25: return 134;  // PORTAL
-        case 26: return 1045; // GOLD_BLOCK
-        case 27: return 1048; // GRASS -> DIRT
-        case 28: return 1048; // SNOW -> DIRT
-        case 29: return 1053; // LAPIS
-        case 30: return 1053; // MINED_LAPIS
-        case 32: return 1057; // REINFORCED_PLATFORM
-        case 42: return 134;  // PORTAL_BASE
-        case 43: return 135;  // AMETHYST_PORTAL
-        case 44: return 136;  // SAPPHIRE_PORTAL
-        case 45: return 137;  // EMERALD_PORTAL
-        case 46: return 138;  // RUBY_PORTAL
-        case 47: return 139;  // DIAMOND_PORTAL
-        case 48: return 1062; // COMPOST
-        case 49: return 1062; // GRASS_COMPOST
-        case 50: return 1062; // SNOW_COMPOST
-        case 51: return 1063; // BASALT
-        case 52: return 1063; // MINED_BASALT
-        case 53: return 1066; // COPPER
-        case 54: return 1067; // TIN
-        case 55: return 1068; // BRONZE
-        case 56: return 1069; // IRON
-        case 57: return 1070; // STEEL
-        case 58: return 1075; // BLACK_SAND
-        case 59: return 1076; // BLACK_GLASS
-        case 60: return 210;  // TRADE_PORTAL
-        case 67: return 1089; // PLATINUM
-        case 68: return 1091; // TITANIUM
-        case 69: return 1090; // CARBON_FIBER
-        case 70: return 1094; // GRAVEL
-        case 71: return 1098; // AMETHYST
-        case 72: return 1099; // SAPPHIRE
-        case 73: return 1100; // EMERALD
-        case 74: return 1101; // RUBY
-        case 75: return 1102; // DIAMOND
-        case 76: return 1103; // PLASTER
-        case 77: return 1105; // LUMINOUS_PLASTER
-        default: return 0;
+        case 1: return 1024; case 3: return 105; case 4: return 1060;
+        case 6: return 1048; case 25: return 134; case 59: return 1076;
+        default: return blockID;
     }
 }
 
-// --- Helper Functions (Namespaced) ---
-
-int Dupe_GetItemID(id obj) {
-    if (!obj) return 0;
-    SEL sel = sel_registerName(SEL_TYPE);
-    IMP method = class_getMethodImplementation(object_getClass(obj), sel);
-    if (method) return ((IntFunc)method)(obj, sel);
-    return 0;
-}
-
-const char* Dupe_GetStringText(id strObj) {
+// --- Helpers ---
+static const char* Dupe_GetStr(id strObj) {
     if (!strObj) return "";
     SEL sel = sel_registerName(SEL_UTF8);
-    IMP method = class_getMethodImplementation(object_getClass(strObj), sel);
-    if (method) return ((StrFunc)method)(strObj, sel);
+    if (class_getInstanceMethod(object_getClass(strObj), sel)) {
+        IMP method = class_getMethodImplementation(object_getClass(strObj), sel);
+        return method ? ((StrFunc)method)(strObj, sel) : "";
+    }
     return "";
 }
 
-id Dupe_CreateNSString(const char* text) {
+static id Dupe_AllocStr(const char* text) {
     Class cls = objc_getClass("NSString");
-    if (!cls) return nil;
     SEL sel = sel_registerName(SEL_STR);
     Method m = class_getClassMethod(cls, sel);
-    if (m) {
-        return ((StringFactoryFunc)method_getImplementation(m))((id)cls, sel, text);
-    }
-    return nil;
+    return m ? ((StringFactoryFunc)method_getImplementation(m))((id)cls, sel, text) : nil;
 }
 
-void Dupe_SendChat(id server, const char* msg) {
-    if (server && Dupe_Real_Server_SendChat) {
-        id nsMsg = Dupe_CreateNSString(msg);
-        Dupe_Real_Server_SendChat(server, sel_registerName(SEL_CHAT), nsMsg, nil);
+static void Dupe_Chat(id server, const char* msg) {
+    if (server && Real_Server_SendChat) {
+        Real_Server_SendChat(server, sel_registerName(SEL_CHAT), Dupe_AllocStr(msg), nil);
     }
 }
 
-// --- MEMORY ACCESS (Namespaced) ---
-
-long long Dupe_GetLongIvar(id obj, const char* ivarName) {
+static int Dupe_GetID(id obj) {
     if (!obj) return 0;
-    Ivar ivar = class_getInstanceVariable(object_getClass(obj), ivarName);
+    SEL sel = sel_registerName(SEL_TYPE);
+    IMP m = class_getMethodImplementation(object_getClass(obj), sel);
+    return m ? ((int (*)(id, SEL))m)(obj, sel) : 0;
+}
+
+static const char* Dupe_GetBlockheadName(id bh) {
+    if (!bh) return NULL;
+    SEL sName = sel_registerName(SEL_NAME);
+    if (class_getInstanceMethod(object_getClass(bh), sName)) {
+        IMP m = class_getMethodImplementation(object_getClass(bh), sName);
+        if (m) {
+            id s = ((id (*)(id, SEL))m)(bh, sName);
+            return Dupe_GetStr(s);
+        }
+    }
+    Ivar iv = class_getInstanceVariable(object_getClass(bh), "clientName");
+    if (iv) {
+        id str = *(id*)((char*)bh + ivar_getOffset(iv));
+        return Dupe_GetStr(str);
+    }
+    return NULL;
+}
+
+// --- Finder Logic ---
+static id Dupe_GetDynamicWorld(id server) {
+    if (!server) return nil;
+    Ivar ivar = class_getInstanceVariable(object_getClass(server), "world");
     if (ivar) {
-        ptrdiff_t offset = ivar_getOffset(ivar);
-        return *(long long*)((char*)obj + offset);
-    }
-    return 0;
-}
-
-id Dupe_GetObjectIvar(id obj, const char* ivarName) {
-    if (!obj) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(obj), ivarName);
-    if (ivar) {
-        ptrdiff_t offset = ivar_getOffset(ivar);
-        return *(id*)((char*)obj + offset);
-    }
-    return nil;
-}
-
-int Dupe_GetIntIvar(id obj, const char* ivarName) {
-    if (!obj) return -1;
-    Ivar ivar = class_getInstanceVariable(object_getClass(obj), ivarName);
-    if (ivar) {
-        ptrdiff_t offset = ivar_getOffset(ivar);
-        return *(int*)((char*)obj + offset);
-    }
-    return -1;
-}
-
-// --- AUTH CHECKER ---
-bool Dupe_IsAuthorizedName(id server, id nameObj) {
-    if (!server || !nameObj) return false;
-    SEL selCloud = sel_registerName(SEL_IS_CLOUD);
-    SEL selInvis = sel_registerName(SEL_IS_INVIS);
-      
-    Class cls = object_getClass(server);
-    if (class_getInstanceMethod(cls, selCloud)) {
-        IMP method = class_getMethodImplementation(cls, selCloud);
-        if (((BoolObjArg)method)(server, selCloud, nameObj)) return true;
-    }
-    if (class_getInstanceMethod(cls, selInvis)) {
-        IMP method = class_getMethodImplementation(cls, selInvis);
-        if (((BoolObjArg)method)(server, selInvis, nameObj)) return true;
-    }
-    return false;
-}
-
-// --- CORE: GET FRESH DYNAMIC WORLD ---
-// We fetch this EVERY time to ensure we never have a stale pointer.
-id Dupe_GetDynamicWorldFrom(id serverInstance) {
-    if (!serverInstance) return nil;
-    id worldObj = Dupe_GetObjectIvar(serverInstance, "world");
-    if (!worldObj) return nil;
-    return Dupe_GetObjectIvar(worldObj, "dynamicWorld");
-}
-
-// --- SEARCH ACTIVE PLAYER (Always Fresh) ---
-id Dupe_GetActiveBlockhead(id dynWorld, const char* optionalTargetName) {
-    if (!dynWorld) return nil;
-
-    id playerList = nil;
-
-    // STRATEGY 1: Official Method (Safest, ensures fresh list)
-    SEL selAllNet = sel_registerName(SEL_ALL_NET);
-    if (class_getInstanceMethod(object_getClass(dynWorld), selAllNet)) {
-        ArrayFunc fGetList = (ArrayFunc) class_getMethodImplementation(object_getClass(dynWorld), selAllNet);
-        playerList = fGetList(dynWorld, selAllNet);
-    }
-
-    // STRATEGY 2: Net Ivar (Fallback)
-    if (!playerList) {
-        playerList = Dupe_GetObjectIvar(dynWorld, "netBlockheads");
-    }
-
-    if (!playerList) return nil;
-
-    SEL selCount = sel_registerName(SEL_COUNT);
-    int (*fCount)(id, SEL) = (int (*)(id, SEL)) class_getMethodImplementation(object_getClass(playerList), selCount);
-    int count = fCount(playerList, selCount);
-      
-    if (count == 0) return nil;
-
-    SEL selIdx = sel_registerName(SEL_OBJ_IDX);
-    ObjIdxFunc fIdx = (ObjIdxFunc) class_getMethodImplementation(object_getClass(playerList), selIdx);
-
-    for (int i = 0; i < count; i++) {
-        id obj = fIdx(playerList, selIdx, i);
-        if (obj) {
-            id nameObj = Dupe_GetObjectIvar(obj, "clientName");
-            int clientID = Dupe_GetIntIvar(obj, "clientID");
-            const char* name = Dupe_GetStringText(nameObj);
-              
-            bool isMatch = false;
-            // Name match (if provided)
-            if (optionalTargetName && strlen(optionalTargetName) > 0) {
-                if (name && strcasecmp(name, optionalTargetName) == 0) isMatch = true;
-            } 
-            // Any active player
-            else {
-                if (clientID > 0 && name && strlen(name) > 0) isMatch = true;
-            }
-
-            if (isMatch) return obj;
+        id world = *(id*)((char*)server + ivar_getOffset(ivar));
+        if (world) {
+            Ivar ivar2 = class_getInstanceVariable(object_getClass(world), "dynamicWorld");
+            if (ivar2) return *(id*)((char*)world + ivar_getOffset(ivar2));
         }
     }
     return nil;
 }
 
-// --- SPAWN LOGIC ---
-void Dupe_SpawnItemInternal(id dynWorld, id targetBlockhead, int itemID, int count, id saveDict) {
-    if (!dynWorld || !targetBlockhead) return;
-      
-    long long pos = Dupe_GetLongIvar(targetBlockhead, "pos");
-    // Retry via selector if Ivar is 0 (double check)
-    if (pos == 0) {
-         SEL selPos = sel_registerName(SEL_POS);
-         if (class_getInstanceMethod(object_getClass(targetBlockhead), selPos)) {
-             long long (*fPos)(id, SEL) = (long long (*)(id, SEL)) class_getMethodImplementation(object_getClass(targetBlockhead), selPos);
-             pos = fPos(targetBlockhead, selPos);
-         }
+static id Dupe_FindBlockhead(id dynWorld, const char* targetName) {
+    if (!dynWorld || !targetName) return nil;
+    id list = nil;
+    SEL selAll = sel_registerName(SEL_ALL_NET);
+    IMP mAll = class_getMethodImplementation(object_getClass(dynWorld), selAll);
+    if (mAll) list = ((id (*)(id, SEL))mAll)(dynWorld, selAll);
+    
+    if (!list) {
+        Ivar ivar = class_getInstanceVariable(object_getClass(dynWorld), "netBlockheads");
+        if (ivar) list = *(id*)((char*)dynWorld + ivar_getOffset(ivar));
     }
+    if (!list) return nil;
 
+    SEL selCount = sel_registerName(SEL_COUNT);
+    IMP mCount = class_getMethodImplementation(object_getClass(list), selCount);
+    int count = mCount ? ((int (*)(id, SEL))mCount)(list, selCount) : 0;
+
+    SEL selIdx = sel_registerName(SEL_OBJ_IDX);
+    IMP mIdx = class_getMethodImplementation(object_getClass(list), selIdx);
+
+    for (int i = 0; i < count; i++) {
+        id bh = mIdx ? ((ObjIdxFunc)mIdx)(list, selIdx, i) : nil;
+        if (bh) {
+            const char* bhName = Dupe_GetBlockheadName(bh);
+            if (bhName && targetName && strcasecmp(bhName, targetName) == 0) {
+                return bh;
+            }
+        }
+    }
+    return nil;
+}
+
+static void Dupe_Spawn(id dynWorld, id targetBH, int itemID, int count, id saveDict) {
+    if (!dynWorld || !targetBH) return;
+    long long pos = 0;
+    Ivar ivar = class_getInstanceVariable(object_getClass(targetBH), "pos");
+    if (ivar) pos = *(long long*)((char*)targetBH + ivar_getOffset(ivar));
     if (pos == 0) return;
 
     SEL sel = sel_registerName(SEL_SPAWN);
-    IMP method = class_getMethodImplementation(object_getClass(dynWorld), sel);
-      
-    if (method) {
-        SpawnFunc fSpawn = (SpawnFunc)method;
-        for (int i = 0; i < count; i++) {
-            // Spawn normal, priority to player. No memory hacks here to avoid crashes.
-            fSpawn(dynWorld, sel, pos, itemID, 1, 0, nil, saveDict, 1, 0, targetBlockhead);
-        }
+    SpawnFunc f = (SpawnFunc)class_getMethodImplementation(object_getClass(dynWorld), sel);
+    if (f) {
+        for(int i=0; i<count; i++) f(dynWorld, sel, pos, itemID, 1, 0, nil, saveDict, 1, 0, targetBH);
     }
 }
 
-// HOOK 2: Chest Placement
-id Dupe_Hook_Chest_InitPlace(id self, SEL _cmd, id world, id dynWorld, long long pos, id cache, id item, unsigned char flipped, id saveDict, id client, id clientName) {
-    // Original Logic
+// --- Hooks ---
+id Dupe_Chest_Hook(id self, SEL _cmd, id world, id dynWorld, long long pos, id cache, id item, unsigned char flipped, id saveDict, id client, id clientName) {
     id newObj = NULL;
-    if (Dupe_Real_Chest_InitPlace) {
-        newObj = Dupe_Real_Chest_InitPlace(self, _cmd, world, dynWorld, pos, cache, item, flipped, saveDict, client, clientName);
-    }
+    if (Real_Chest_InitPlace) 
+        newObj = Real_Chest_InitPlace(self, _cmd, world, dynWorld, pos, cache, item, flipped, saveDict, client, clientName);
 
-    // Dupe Logic
-    if (newObj && item && g_DupeEnabled) {
-        if (Dupe_GetItemID(item) == TARGET_ITEM_ID) {
-            // Check auth on server instance (captured or passed)
-            if (Dupe_ServerInstance != NULL && Dupe_IsAuthorizedName(Dupe_ServerInstance, clientName)) {
-                 // Get Fresh DynamicWorld from passed arg
-                 id targetBH = Dupe_GetActiveBlockhead(dynWorld, NULL); 
-                 if (targetBH) {
-                     Dupe_SpawnItemInternal(dynWorld, targetBH, TARGET_ITEM_ID, 1 + g_ExtraCount, saveDict);
-                     SEL selRem = sel_registerName(SEL_REMOVE);
-                     if (class_getInstanceMethod(object_getClass(newObj), selRem)) {
-                         ((VoidBoolFunc)class_getMethodImplementation(object_getClass(newObj), selRem))(newObj, selRem, 1);
-                     }
-                 }
-            }
+    if (newObj && item && g_DupeEnabled && Dupe_GetID(item) == TARGET_ITEM_ID) {
+        const char* name = Dupe_GetStr(clientName);
+        id targetBH = Dupe_FindBlockhead(dynWorld, name);
+        if (targetBH) {
+            Dupe_Spawn(dynWorld, targetBH, TARGET_ITEM_ID, 1 + g_ExtraCount, saveDict);
+            SEL selRem = sel_registerName(SEL_REMOVE);
+            IMP mRem = class_getMethodImplementation(object_getClass(newObj), selRem);
+            if (mRem) ((VoidBoolFunc)mRem)(newObj, selRem, 1);
         }
     }
     return newObj;
 }
 
-// HOOK 1: Handle Command (Namespaced)
-id Dupe_Hook_HandleCommand(id self, SEL _cmd, id commandStr, id client) {
-    const char* rawText = Dupe_GetStringText(commandStr);
-    Dupe_ServerInstance = self; // Update global instance reference
-      
-    if (!rawText || strlen(rawText) == 0) {
-        if (Dupe_Real_Server_HandleCmd) return Dupe_Real_Server_HandleCmd(self, _cmd, commandStr, client);
-        return nil;
-    }
+id Dupe_Cmd_Hook(id self, SEL _cmd, id commandStr, id client) {
+    const char* raw = Dupe_GetStr(commandStr);
+    if (!raw || strlen(raw) == 0) 
+        return Real_Server_HandleCmd ? Real_Server_HandleCmd(self, _cmd, commandStr, client) : nil;
 
-    char text[256];
-    strncpy(text, rawText, 255);
-    text[255] = '\0';
+    char text[256]; strncpy(text, raw, 255); text[255] = 0;
 
     // /dupe
     if (strncmp(text, "/dupe", 5) == 0) {
-        int newAmount = -1;
-        char* token = strtok(text, " "); 
-        token = strtok(NULL, " ");        
-        if (token) newAmount = atoi(token);
-
-        char msgBuffer[100];
-        if (newAmount > 0) {
-            g_DupeEnabled = true;
-            g_ExtraCount = newAmount;
-            snprintf(msgBuffer, sizeof(msgBuffer), "SYSTEM: Dupe ON (+%d Copies)", g_ExtraCount);
+        char* token = strtok(text, " "); token = strtok(NULL, " ");
+        int amount = (token) ? atoi(token) : -1;
+        char msg[100];
+        if (amount > 0) {
+            g_DupeEnabled = true; g_ExtraCount = amount;
+            snprintf(msg, 100, "SYSTEM: Dupe Active (+%d copies)", g_ExtraCount);
         } else {
-            g_DupeEnabled = !g_DupeEnabled;
-            g_ExtraCount = 1; 
-            snprintf(msgBuffer, sizeof(msgBuffer), g_DupeEnabled ? "SYSTEM: Dupe ON" : "SYSTEM: Dupe OFF");
+            g_DupeEnabled = !g_DupeEnabled; g_ExtraCount = 1;
+            snprintf(msg, 100, g_DupeEnabled ? "SYSTEM: Dupe ON" : "SYSTEM: Dupe OFF");
         }
-        Dupe_SendChat(self, msgBuffer);
+        Dupe_Chat(self, msg);
         return nil;
     }
 
-    // /item OR /block
+    // /item or /block
     if (strncmp(text, "/item", 5) == 0 || strncmp(text, "/block", 6) == 0) {
-        
-        // 1. FRESH FETCH of DynamicWorld
-        id dynWorld = Dupe_GetDynamicWorldFrom(self); 
-        
-        if (!dynWorld) {
-            Dupe_SendChat(self, "ERROR: World not ready/accessible.");
-            return nil;
+        id dynWorld = Dupe_GetDynamicWorld(self);
+        char buf[256]; strncpy(buf, text, 255);
+        char *cmd = strtok(buf, " "), *sID = strtok(NULL, " "), *sCnt = strtok(NULL, " "), *sUsr = strtok(NULL, " ");
+
+        if (!sID || !sUsr) { 
+            Dupe_Chat(self, "Help: /item <ID> <AMOUNT> <PLAYER_NAME>"); 
+            return nil; 
         }
-
-        char buffer[256];
-        strncpy(buffer, text, 255);
         
-        char* cmdName = strtok(buffer, " "); 
-        char* strID   = strtok(NULL, " ");    
-        char* strCount= strtok(NULL, " ");    
-        char* strName = strtok(NULL, " ");    
-
-        if (!strID) {
-            Dupe_SendChat(self, "Usage: /item <ID> OR /block <ID>");
-            return nil;
-        }
-
-        int inputID = atoi(strID);
-        int finalItemID = inputID;
-
-        if (strncmp(cmdName, "/block", 6) == 0) {
-            finalItemID = Dupe_BlockIDToItemID(inputID);
-            if (finalItemID == 0) finalItemID = inputID;
-        }
-
-        int count  = (strCount) ? atoi(strCount) : 1;
+        int idVal = atoi(sID);
+        if (strncmp(cmd, "/block", 6) == 0) idVal = Dupe_BlockIDToItemID(idVal);
+        int count = sCnt ? atoi(sCnt) : 1;
         if (count > 99) count = 99;
 
-        // 2. FRESH SEARCH for Player using the FRESH DynamicWorld
-        id targetBH = Dupe_GetActiveBlockhead(dynWorld, strName);
-        
-        if (!targetBH) {
-            Dupe_SendChat(self, "ERROR: No active player found.");
-            return nil;
-        }
+        id bh = Dupe_FindBlockhead(dynWorld, sUsr);
 
-        char msgBuffer[128];
-        snprintf(msgBuffer, sizeof(msgBuffer), "Spawning Item %d (x%d)", finalItemID, count);
-        Dupe_SendChat(self, msgBuffer);
-        
-        Dupe_SpawnItemInternal(dynWorld, targetBH, finalItemID, count, nil);
+        if (bh) {
+            Dupe_Spawn(dynWorld, bh, idVal, count, nil);
+            char msg[128]; snprintf(msg, 128, "Spawned %d (x%d) for %s", idVal, count, sUsr);
+            Dupe_Chat(self, msg);
+        } else {
+            Dupe_Chat(self, "Error: Player name not found. Check spelling.");
+        }
         return nil;
     }
 
-    if (Dupe_Real_Server_HandleCmd) {
-        return Dupe_Real_Server_HandleCmd(self, _cmd, commandStr, client);
-    }
-    return nil;
+    return Real_Server_HandleCmd ? Real_Server_HandleCmd(self, _cmd, commandStr, client) : nil;
 }
 
-static void *Dupe_PatchThread(void *arg) {
-    printf("[System] Loading 'Freight Car Patch v8' (Final Stable)...\n");
+static void* Dupe_InitThread(void* arg) {
     sleep(1);
-
-    Class chestClass = objc_getClass(CHEST_CLASS_NAME);
-    if (chestClass) {
-        SEL selPlace = sel_registerName(SEL_PLACE);
-        if (class_getInstanceMethod(chestClass, selPlace)) {
-            Dupe_Real_Chest_InitPlace = (PlaceFunc)method_getImplementation(class_getInstanceMethod(chestClass, selPlace));
-            method_setImplementation(class_getInstanceMethod(chestClass, selPlace), (IMP)Dupe_Hook_Chest_InitPlace);
-        }
+    Class clsChest = objc_getClass(CHEST_CLASS);
+    if (clsChest) {
+        Method m = class_getInstanceMethod(clsChest, sel_registerName(SEL_PLACE));
+        Real_Chest_InitPlace = (PlaceFunc)method_getImplementation(m);
+        method_setImplementation(m, (IMP)Dupe_Chest_Hook);
     }
-
-    Class serverClass = objc_getClass(SERVER_CLASS_NAME);
-    if (serverClass) {
-        SEL selCmd = sel_registerName(SEL_CMD);
-        if (class_getInstanceMethod(serverClass, selCmd)) {
-            Dupe_Real_Server_HandleCmd = (CmdFunc)method_getImplementation(class_getInstanceMethod(serverClass, selCmd));
-            method_setImplementation(class_getInstanceMethod(serverClass, selCmd), (IMP)Dupe_Hook_HandleCommand);
-        }
-        SEL selChat = sel_registerName(SEL_CHAT);
-        if (class_getInstanceMethod(serverClass, selChat)) {
-            Dupe_Real_Server_SendChat = (ChatFunc)method_getImplementation(class_getInstanceMethod(serverClass, selChat));
-        }
+    Class clsServer = objc_getClass(SERVER_CLASS);
+    if (clsServer) {
+        Method m1 = class_getInstanceMethod(clsServer, sel_registerName(SEL_CMD));
+        Real_Server_HandleCmd = (CmdFunc)method_getImplementation(m1);
+        method_setImplementation(m1, (IMP)Dupe_Cmd_Hook);
+        Method m2 = class_getInstanceMethod(clsServer, sel_registerName(SEL_CHAT));
+        Real_Server_SendChat = (ChatFunc)method_getImplementation(m2);
     }
-
-    printf("[System] Ready.\n");
     return NULL;
 }
 
-__attribute__((constructor))
-static void Dupe_Init() {
-    pthread_t t;
-    pthread_create(&t, NULL, Dupe_PatchThread, NULL);
+__attribute__((constructor)) static void Dupe_Entry() {
+    pthread_t t; pthread_create(&t, NULL, Dupe_InitThread, NULL);
 }
