@@ -1,5 +1,5 @@
 /*
- * Item Spawner & Duplicator
+ * Item Spawner & Chest Duplicator
  * Help: /item <ID> <AMOUNT> <PLAYER_NAME>
  * Help: /block <ID> <AMOUNT> <PLAYER_NAME>
  * Help: /dupe
