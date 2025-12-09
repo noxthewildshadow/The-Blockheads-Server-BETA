@@ -16,12 +16,10 @@
 #include <objc/runtime.h>
 #include <objc/message.h>
 
-// --- Config ---
 #define TARGET_ITEM_ID    1043 
 #define SERVER_CLASS      "BHServer"
 #define CHEST_CLASS       "Chest"
 
-// --- Selectors ---
 #define SEL_PLACE    "initWithWorld:dynamicWorld:atPosition:cache:item:flipped:saveDict:placedByClient:clientName:"
 #define SEL_SPAWN    "createFreeBlockAtPosition:ofType:dataA:dataB:subItems:dynamicObjectSaveDict:hovers:playSound:priorityBlockhead:"
 #define SEL_REMOVE   "remove:"
@@ -35,7 +33,6 @@
 #define SEL_OBJ_IDX  "objectAtIndex:"
 #define SEL_NAME     "clientName"
 
-// --- Typedefs ---
 typedef id (*PlaceFunc)(id, SEL, id, id, long long, id, id, unsigned char, id, id, id);
 typedef id (*CmdFunc)(id, SEL, id, id);
 typedef void (*ChatFunc)(id, SEL, id, id);
@@ -44,28 +41,61 @@ typedef void (*VoidBoolFunc)(id, SEL, BOOL);
 typedef const char* (*StrFunc)(id, SEL);
 typedef id (*StringFactoryFunc)(id, SEL, const char*);
 typedef id (*ObjIdxFunc)(id, SEL, unsigned long);
+typedef id (*ListFunc)(id, SEL);
+typedef int (*CountFunc)(id, SEL);
 
-// --- Global Storage ---
 static PlaceFunc Real_Chest_InitPlace = NULL;
 static CmdFunc   Real_Server_HandleCmd = NULL;
 static ChatFunc  Real_Server_SendChat = NULL;
 static bool g_DupeEnabled = false; 
 static int  g_ExtraCount = 1;
 
-// --- C++ Overrides ---
 int _Z28itemTypeIsValidInventoryItem8ItemType(int itemType) { return 1; }
 int _Z23itemTypeIsValidFillItem8ItemType(int itemType) { return 1; }
 
+// Robust Block -> Item Conversion
 int Dupe_BlockIDToItemID(int blockID) {
-    if (blockID > 255) return blockID;
+    if (blockID > 255) return blockID; 
     switch (blockID) {
-        case 1: return 1024; case 3: return 105; case 4: return 1060;
-        case 6: return 1048; case 25: return 134; case 59: return 1076;
-        default: return blockID;
+        case 1: return 1024; // Stone
+        case 2: return 0;    // Air
+        case 3: return 105;  // Water
+        case 4: return 1060; // Ice
+        case 6: return 1048; // Dirt
+        case 7: return 1051; // Sand
+        case 9: return 1049; // Wood
+        case 11: return 1026; // Red Brick
+        case 12: return 1027; // Limestone
+        case 14: return 1029; // Marble
+        case 16: return 11;   // Time Crystal
+        case 17: return 1035; // Sandstone
+        case 19: return 1037; // Red Marble
+        case 24: return 1042; // Glass
+        case 25: return 134;  // Portal
+        case 26: return 1045; // Gold Block
+        case 29: return 1053; // Lapis
+        case 32: return 1057; // Reinforced Platform
+        case 48: return 1062; // Compost
+        case 51: return 1063; // Basalt
+        case 53: return 1066; // Copper
+        case 54: return 1067; // Tin
+        case 55: return 1068; // Bronze
+        case 56: return 1069; // Iron
+        case 57: return 1070; // Steel
+        case 59: return 1076; // Black Glass
+        case 60: return 210;  // Trade Portal
+        case 67: return 1089; // Platinum
+        case 68: return 1091; // Titanium
+        case 69: return 1090; // Carbon Fiber
+        case 71: return 1098; // Amethyst
+        case 72: return 1099; // Sapphire
+        case 73: return 1100; // Emerald
+        case 74: return 1101; // Ruby
+        case 75: return 1102; // Diamond
+        default: return blockID; // Unknown, return raw
     }
 }
 
-// --- Helpers ---
 static const char* Dupe_GetStr(id strObj) {
     if (!strObj) return "";
     SEL sel = sel_registerName(SEL_UTF8);
@@ -114,7 +144,26 @@ static const char* Dupe_GetBlockheadName(id bh) {
     return NULL;
 }
 
-// --- Finder Logic ---
+static id Dupe_ScanList(id list, const char* targetName) {
+    if (!list) return nil;
+    SEL sCount = sel_registerName(SEL_COUNT);
+    SEL sIdx = sel_registerName(SEL_OBJ_IDX);
+    IMP mCount = class_getMethodImplementation(object_getClass(list), sCount);
+    IMP mIdx = class_getMethodImplementation(object_getClass(list), sIdx);
+    
+    if (!mCount || !mIdx) return nil;
+
+    int count = ((CountFunc)mCount)(list, sCount);
+    for (int i = 0; i < count; i++) {
+        id bh = ((ObjIdxFunc)mIdx)(list, sIdx, i);
+        if (bh) {
+            const char* name = Dupe_GetBlockheadName(bh);
+            if (name && targetName && strcasecmp(name, targetName) == 0) return bh;
+        }
+    }
+    return nil;
+}
+
 static id Dupe_GetDynamicWorld(id server) {
     if (!server) return nil;
     Ivar ivar = class_getInstanceVariable(object_getClass(server), "world");
@@ -130,32 +179,24 @@ static id Dupe_GetDynamicWorld(id server) {
 
 static id Dupe_FindBlockhead(id dynWorld, const char* targetName) {
     if (!dynWorld || !targetName) return nil;
-    id list = nil;
-    SEL selAll = sel_registerName(SEL_ALL_NET);
-    IMP mAll = class_getMethodImplementation(object_getClass(dynWorld), selAll);
-    if (mAll) list = ((id (*)(id, SEL))mAll)(dynWorld, selAll);
-    
-    if (!list) {
-        Ivar ivar = class_getInstanceVariable(object_getClass(dynWorld), "netBlockheads");
-        if (ivar) list = *(id*)((char*)dynWorld + ivar_getOffset(ivar));
+    SEL sAll = sel_registerName(SEL_ALL_NET);
+    if (class_getInstanceMethod(object_getClass(dynWorld), sAll)) {
+        IMP m = class_getMethodImplementation(object_getClass(dynWorld), sAll);
+        id list = ((ListFunc)m)(dynWorld, sAll);
+        id res = Dupe_ScanList(list, targetName);
+        if (res) return res;
     }
-    if (!list) return nil;
-
-    SEL selCount = sel_registerName(SEL_COUNT);
-    IMP mCount = class_getMethodImplementation(object_getClass(list), selCount);
-    int count = mCount ? ((int (*)(id, SEL))mCount)(list, selCount) : 0;
-
-    SEL selIdx = sel_registerName(SEL_OBJ_IDX);
-    IMP mIdx = class_getMethodImplementation(object_getClass(list), selIdx);
-
-    for (int i = 0; i < count; i++) {
-        id bh = mIdx ? ((ObjIdxFunc)mIdx)(list, selIdx, i) : nil;
-        if (bh) {
-            const char* bhName = Dupe_GetBlockheadName(bh);
-            if (bhName && targetName && strcasecmp(bhName, targetName) == 0) {
-                return bh;
-            }
-        }
+    Ivar ivNet = class_getInstanceVariable(object_getClass(dynWorld), "netBlockheads");
+    if (ivNet) {
+        id list = *(id*)((char*)dynWorld + ivar_getOffset(ivNet));
+        id res = Dupe_ScanList(list, targetName);
+        if (res) return res;
+    }
+    Ivar ivLag = class_getInstanceVariable(object_getClass(dynWorld), "netBlockheadsWithDisconnectedClients");
+    if (ivLag) {
+        id list = *(id*)((char*)dynWorld + ivar_getOffset(ivLag));
+        id res = Dupe_ScanList(list, targetName);
+        if (res) return res;
     }
     return nil;
 }
@@ -174,7 +215,6 @@ static void Dupe_Spawn(id dynWorld, id targetBH, int itemID, int count, id saveD
     }
 }
 
-// --- Hooks ---
 id Dupe_Chest_Hook(id self, SEL _cmd, id world, id dynWorld, long long pos, id cache, id item, unsigned char flipped, id saveDict, id client, id clientName) {
     id newObj = NULL;
     if (Real_Chest_InitPlace) 
@@ -200,37 +240,67 @@ id Dupe_Cmd_Hook(id self, SEL _cmd, id commandStr, id client) {
 
     char text[256]; strncpy(text, raw, 255); text[255] = 0;
 
-    // /dupe
+    // --- /DUPE ---
     if (strncmp(text, "/dupe", 5) == 0) {
-        char* token = strtok(text, " "); token = strtok(NULL, " ");
-        int amount = (token) ? atoi(token) : -1;
-        char msg[100];
-        if (amount > 0) {
-            g_DupeEnabled = true; g_ExtraCount = amount;
-            snprintf(msg, 100, "SYSTEM: Dupe Active (+%d copies)", g_ExtraCount);
-        } else {
-            g_DupeEnabled = !g_DupeEnabled; g_ExtraCount = 1;
-            snprintf(msg, 100, g_DupeEnabled ? "SYSTEM: Dupe ON" : "SYSTEM: Dupe OFF");
+        char* token = strtok(text, " "); 
+        char* sAmount = strtok(NULL, " ");
+        char* sForce = strtok(NULL, " ");
+
+        if (!sAmount) {
+            g_DupeEnabled = !g_DupeEnabled;
+            g_ExtraCount = 1;
+            char msg[100];
+            snprintf(msg, 100, "SYSTEM: Dupe %s (Max +1)", g_DupeEnabled ? "ON" : "OFF");
+            Dupe_Chat(self, msg);
+            return nil;
         }
-        Dupe_Chat(self, msg);
+
+        int amount = atoi(sAmount);
+        bool isForce = (sForce && strcasecmp(sForce, "force") == 0);
+        int max = isForce ? 99 : 3;
+
+        if (amount > max) {
+            amount = max;
+            char warn[100];
+            snprintf(warn, 100, "Warning: Capped at %d. Use 'force' for more.", max);
+            Dupe_Chat(self, warn);
+        }
+
+        if (amount > 0) {
+            g_DupeEnabled = true;
+            g_ExtraCount = amount;
+            char msg[100];
+            snprintf(msg, 100, "SYSTEM: Dupe Active (+%d copies)", g_ExtraCount);
+            Dupe_Chat(self, msg);
+        }
         return nil;
     }
 
-    // /item or /block
+    // --- /ITEM or /BLOCK ---
     if (strncmp(text, "/item", 5) == 0 || strncmp(text, "/block", 6) == 0) {
         id dynWorld = Dupe_GetDynamicWorld(self);
         char buf[256]; strncpy(buf, text, 255);
-        char *cmd = strtok(buf, " "), *sID = strtok(NULL, " "), *sCnt = strtok(NULL, " "), *sUsr = strtok(NULL, " ");
+        char *cmd = strtok(buf, " "), *sID = strtok(NULL, " "), *sCnt = strtok(NULL, " "), *sUsr = strtok(NULL, " "), *sForce = strtok(NULL, " ");
 
         if (!sID || !sUsr) { 
-            Dupe_Chat(self, "Help: /item <ID> <AMOUNT> <PLAYER_NAME>"); 
+            Dupe_Chat(self, "Syntax: /item <ID> <QTY> <NAME> [force]"); 
             return nil; 
         }
         
         int idVal = atoi(sID);
+        // Correctly map blocks to items so they don't glitch
         if (strncmp(cmd, "/block", 6) == 0) idVal = Dupe_BlockIDToItemID(idVal);
+        
         int count = sCnt ? atoi(sCnt) : 1;
-        if (count > 99) count = 99;
+        bool isForce = (sForce && strcasecmp(sForce, "force") == 0);
+        int max = isForce ? 999 : 99;
+
+        if (count > max) {
+            count = max;
+            char warn[100];
+            snprintf(warn, 100, "Limit: %d. Use 'force' for more.", max);
+            Dupe_Chat(self, warn);
+        }
 
         id bh = Dupe_FindBlockhead(dynWorld, sUsr);
 
@@ -239,7 +309,7 @@ id Dupe_Cmd_Hook(id self, SEL _cmd, id commandStr, id client) {
             char msg[128]; snprintf(msg, 128, "Spawned %d (x%d) for %s", idVal, count, sUsr);
             Dupe_Chat(self, msg);
         } else {
-            Dupe_Chat(self, "Error: Player name not found. Check spelling.");
+            Dupe_Chat(self, "Error: Player not found.");
         }
         return nil;
     }
