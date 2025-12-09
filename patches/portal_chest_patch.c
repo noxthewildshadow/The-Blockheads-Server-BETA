@@ -34,11 +34,12 @@ typedef id (*LoadFunc)(id, SEL, id, id, id, id);
 typedef id (*SpawnFunc)(id, SEL, long long, int, int, int, id, id, BOOL, BOOL, id);
 typedef const char* (*StrFunc)(id, SEL);
 typedef id (*ObjIdxFunc)(id, SEL, unsigned long);
+typedef id (*ListFunc)(id, SEL);
+typedef int (*CountFunc)(id, SEL);
 
 static PlaceFunc Portal_Real_Place = NULL;
 static LoadFunc  Portal_Real_Load  = NULL;
 
-// --- Helpers ---
 static const char* Portal_GetStr(id str) {
     if (!str) return "";
     SEL s = sel_registerName(SEL_UTF8);
@@ -88,41 +89,53 @@ static long long Portal_GetPos(id obj) {
     return m ? ((long long (*)(id, SEL))m)(obj, s) : -1;
 }
 
-// --- Strict Finder (Name Only) ---
-static id Portal_FindBlockhead(id dynWorld, const char* name) {
-    if (!dynWorld || !name) return nil;
-    
-    id list = nil;
-    SEL sAll = sel_registerName(SEL_ALL_NET);
-    IMP mAll = class_getMethodImplementation(object_getClass(dynWorld), sAll);
-    if (mAll) list = ((id (*)(id, SEL))mAll)(dynWorld, sAll);
-    
-    if (!list) {
-        Ivar iv = class_getInstanceVariable(object_getClass(dynWorld), "netBlockheads");
-        if (iv) list = *(id*)((char*)dynWorld + ivar_getOffset(iv));
-    }
+static id Portal_ScanList(id list, const char* targetName) {
     if (!list) return nil;
-
     SEL sCount = sel_registerName(SEL_COUNT);
-    IMP mCount = class_getMethodImplementation(object_getClass(list), sCount);
-    int c = mCount ? ((int (*)(id, SEL))mCount)(list, sCount) : 0;
-
     SEL sIdx = sel_registerName(SEL_OBJ_IDX);
+    IMP mCount = class_getMethodImplementation(object_getClass(list), sCount);
     IMP mIdx = class_getMethodImplementation(object_getClass(list), sIdx);
+    
+    if (!mCount || !mIdx) return nil;
 
-    for (int i=0; i<c; i++) {
-        id bh = mIdx ? ((ObjIdxFunc)mIdx)(list, sIdx, i) : nil;
+    int count = ((CountFunc)mCount)(list, sCount);
+    for (int i = 0; i < count; i++) {
+        id bh = ((ObjIdxFunc)mIdx)(list, sIdx, i);
         if (bh) {
             const char* o = Portal_GetBlockheadName(bh);
-            if (o && strcasecmp(o, name)==0) {
-                return bh;
-            }
+            if (o && targetName && strcasecmp(o, targetName)==0) return bh;
         }
     }
     return nil;
 }
 
-// --- Action ---
+static id Portal_FindBlockhead(id dynWorld, const char* name) {
+    if (!dynWorld || !name) return nil;
+    
+    SEL sAll = sel_registerName(SEL_ALL_NET);
+    if (class_getInstanceMethod(object_getClass(dynWorld), sAll)) {
+        IMP m = class_getMethodImplementation(object_getClass(dynWorld), sAll);
+        id list = ((ListFunc)m)(dynWorld, sAll);
+        id res = Portal_ScanList(list, name);
+        if (res) return res;
+    }
+    
+    Ivar iv = class_getInstanceVariable(object_getClass(dynWorld), "netBlockheads");
+    if (iv) {
+        id list = *(id*)((char*)dynWorld + ivar_getOffset(iv));
+        id res = Portal_ScanList(list, name);
+        if (res) return res;
+    }
+
+    Ivar iv2 = class_getInstanceVariable(object_getClass(dynWorld), "netBlockheadsWithDisconnectedClients");
+    if (iv2) {
+        id list = *(id*)((char*)dynWorld + ivar_getOffset(iv2));
+        id res = Portal_ScanList(list, name);
+        if (res) return res;
+    }
+    return nil;
+}
+
 static void Portal_Recover(id dynWorld, long long pos, id targetBH) {
     if (!dynWorld || pos == -1) return;
     SEL s = sel_registerName(SEL_SPAWN);
@@ -146,7 +159,6 @@ static void Portal_SoftRemove(id obj) {
     if (m) ((void (*)(id, SEL, BOOL))m)(obj, s, 1);
 }
 
-// --- Hooks ---
 id Portal_Place_Hook(id self, SEL _cmd, id world, id dynWorld, long long pos, id cache, id item, unsigned char flipped, id saveDict, id client, id clientName) {
     id obj = NULL;
     if (Portal_Real_Place) 
@@ -154,7 +166,6 @@ id Portal_Place_Hook(id self, SEL _cmd, id world, id dynWorld, long long pos, id
 
     if (obj && item && Portal_GetID(item) == BLOCKED_ID) {
         Portal_Remove(obj); 
-        
         const char* name = Portal_GetStr(clientName);
         id bh = Portal_FindBlockhead(dynWorld, name);
         Portal_Recover(dynWorld, pos, bh);
