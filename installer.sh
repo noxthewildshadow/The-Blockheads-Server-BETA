@@ -136,47 +136,45 @@ download_server_files() {
         return 1
     fi
 
-    # --- CREAR CARPETAS ---
-    if [ ! -d "patches" ]; then
-        mkdir -p "patches"
-        print_status "Created 'patches' directory."
-    fi
-    
-    if [ ! -d "mods" ]; then
-        mkdir -p "mods"
-        print_status "Created 'mods' directory."
-    fi
+    # --- CREAR CARPETAS ORGANIZADAS ---
+    # Limpieza de carpetas antiguas si existen
+    [ -d "mods" ] && rm -rf "mods"
+
+    mkdir -p "patches/critical"
+    mkdir -p "patches/mods"
+    mkdir -p "patches/optional"
+    print_status "Created organized patches directories (critical, mods, optional)."
 
     # --- Descarga de Parches Críticos ---
-    print_step "Downloading Critical Patches to /patches..."
+    print_step "Downloading Critical Patches to patches/critical..."
     for patch in "${CRITICAL_PATCHES[@]}"; do
         print_progress "Downloading $patch..."
-        if wget --timeout=30 --tries=3 -O "patches/$patch" "$REPO_RAW_URL/critical_patches/$patch" 2>/dev/null; then
+        if wget --timeout=30 --tries=3 -O "patches/critical/$patch" "$REPO_RAW_URL/critical_patches/$patch" 2>/dev/null; then
             print_success "$patch downloaded."
         else
-            print_warning "Failed to download $patch from critical_patches/"
+            print_warning "Failed to download $patch"
         fi
     done
 
     # --- Descarga de Parches Opcionales ---
-    print_step "Downloading Optional Patches to /patches..."
+    print_step "Downloading Optional Patches to patches/optional..."
     for patch in "${OPTIONAL_PATCHES[@]}"; do
         print_progress "Downloading $patch..."
-        if wget --timeout=30 --tries=3 -O "patches/$patch" "$REPO_RAW_URL/patches/$patch" 2>/dev/null; then
+        if wget --timeout=30 --tries=3 -O "patches/optional/$patch" "$REPO_RAW_URL/patches/$patch" 2>/dev/null; then
             print_success "$patch downloaded."
         else
-            print_warning "Failed to download $patch from patches/"
+            print_warning "Failed to download $patch"
         fi
     done
 
     # --- Descarga de Mods ---
-    print_step "Downloading Mods to /mods..."
+    print_step "Downloading Mods to patches/mods..."
     for mod in "${MODS_FILES[@]}"; do
         print_progress "Downloading $mod..."
-        if wget --timeout=30 --tries=3 -O "mods/$mod" "$REPO_RAW_URL/mods/$mod" 2>/dev/null; then
+        if wget --timeout=30 --tries=3 -O "patches/mods/$mod" "$REPO_RAW_URL/mods/$mod" 2>/dev/null; then
             print_success "$mod downloaded."
         else
-            print_warning "Failed to download $mod from mods/"
+            print_warning "Failed to download $mod"
         fi
     done
     
@@ -281,7 +279,7 @@ EOF
 fi
 
 # --- COMPILACIÓN Y LIMPIEZA AUTOMÁTICA ---
-print_step "[7/8] Compiling Security Patches and Mods..."
+print_step "[7/8] Compiling Security Patches and Mods (Organized)..."
 
 INC_FLAGS="-I/usr/include/GNUstep"
 RUNTIME_H=$(find /usr/lib /usr/include -name runtime.h 2>/dev/null | grep "objc/runtime.h" | head -n 1)
@@ -292,14 +290,16 @@ fi
 
 count_compiled=0
 
-# --- Compilar Patches ---
+# Compilar recursivamente en todas las subcarpetas de patches/
 if [ -d "patches" ]; then
-    for src_file in patches/*.c; do
+    # Usamos find para buscar en critical, mods y optional automáticamente
+    while IFS= read -r src_file; do
         if [ -f "$src_file" ]; then
+            dir_name=$(dirname "$src_file")
             base_name=$(basename "$src_file" .c)
-            so_file="patches/${base_name}.so"
+            so_file="${dir_name}/${base_name}.so"
             
-            print_progress "Compiling Patch: $src_file -> $so_file..."
+            print_progress "Compiling: $src_file -> $so_file..."
             
             if clang -shared -fPIC -o "$so_file" "$src_file" -lobjc -ldl -lpthread $INC_FLAGS -w; then
                 print_success "Compiled: $so_file"
@@ -313,33 +313,9 @@ if [ -d "patches" ]; then
                 print_error "Failed to compile $src_file. Installing 'gobjc' usually fixes this."
             fi
         fi
-    done
-fi
-
-# --- Compilar Mods ---
-# Nota: Los compilamos y guardamos el .so en /patches para que el server_manager los detecte automáticamente
-if [ -d "mods" ]; then
-    for src_file in mods/*.c; do
-        if [ -f "$src_file" ]; then
-            base_name=$(basename "$src_file" .c)
-            so_file="patches/${base_name}.so" # Guardamos en patches!
-            
-            print_progress "Compiling Mod: $src_file -> $so_file..."
-            
-            if clang -shared -fPIC -o "$so_file" "$src_file" -lobjc -ldl -lpthread $INC_FLAGS -w; then
-                print_success "Compiled Mod into Patch folder: $so_file"
-                rm -f "$src_file"
-                print_status "Deleted source: $src_file"
-                
-                chown "$ORIGINAL_USER:$ORIGINAL_USER" "$so_file" 2>/dev/null || true
-                chmod 755 "$so_file" 2>/dev/null || true
-                count_compiled=$((count_compiled+1))
-            else
-                print_error "Failed to compile mod $src_file."
-            fi
-        fi
-    done
-    # Limpiamos carpeta mods vacia si queremos, pero mejor la dejamos por si acaso
+    done < <(find patches -type f -name "*.c")
+else
+    print_warning "'patches' directory not found. Skipping compilation."
 fi
 
 if [ $count_compiled -eq 0 ]; then
@@ -350,10 +326,9 @@ fi
 # -----------------------------------------------------
 
 print_step "[8/8] Setting ownership and permissions..."
-chown -R "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_manager.sh" "patches" "mods" 2>/dev/null || true
+chown -R "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_manager.sh" "patches" 2>/dev/null || true
 chmod 755 "$SERVER_BINARY" "server_manager.sh" "rank_manager.sh" 2>/dev/null || true
 chmod -R 755 "patches" 2>/dev/null || true
-chmod -R 755 "mods" 2>/dev/null || true
 
 rm -f "$TEMP_FILE"
 
