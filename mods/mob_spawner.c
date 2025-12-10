@@ -1,6 +1,7 @@
 /*
  * MOB Spawner
- * Help: /spawn <mob> <qty> <PLAYER_NAME> [baby] [force]
+ * * Commands:
+ * /spawn <mob> <qty> <PLAYER> [baby] [force]
  */
 
 #define _GNU_SOURCE
@@ -19,22 +20,23 @@
 #define SEL_CHAT     "sendChatMessage:sendToClients:"
 #define SEL_UTF8     "UTF8String"
 #define SEL_STR      "stringWithUTF8String:"
-#define SEL_ALL_NET  "allBlockheadsIncludingNet"
 #define SEL_COUNT    "count"
 #define SEL_OBJ_IDX  "objectAtIndex:"
 #define SEL_SPAWN_NPC "loadNPCAtPosition:type:saveDict:isAdult:wasPlaced:placedByClient:"
 #define SEL_NAME      "clientName"
+#define SEL_ALL_NET   "allBlockheadsIncludingNet"
 
 enum NPCType { NPC_DODO=1, NPC_DROPBEAR=2, NPC_DONKEY=3, NPC_CLOWNFISH=4, NPC_SHARK=5, NPC_CAVETROLL=6, NPC_SCORPION=7, NPC_YAK=8 };
 
+// --- TYPEDEFS ---
 typedef id (*CmdFunc)(id, SEL, id, id);
 typedef void (*ChatFunc)(id, SEL, id, id);
 typedef id (*SpawnNPCFunc)(id, SEL, long long, int, id, BOOL, BOOL, id);
 typedef const char* (*StrFunc)(id, SEL);
 typedef id (*StringFactoryFunc)(id, SEL, const char*);
-typedef id (*ObjIdxFunc)(id, SEL, unsigned long);
 typedef id (*ListFunc)(id, SEL);
 typedef int (*CountFunc)(id, SEL);
+typedef id (*ObjIdxFunc)(id, SEL, unsigned long);
 
 static CmdFunc  Summon_Real_HandleCmd = NULL;
 static ChatFunc Summon_Real_SendChat = NULL;
@@ -42,18 +44,15 @@ static ChatFunc Summon_Real_SendChat = NULL;
 static const char* Summon_GetStr(id str) {
     if (!str) return "";
     SEL sel = sel_registerName(SEL_UTF8);
-    if (class_getInstanceMethod(object_getClass(str), sel)) {
-        IMP m = class_getMethodImplementation(object_getClass(str), sel);
-        return m ? ((StrFunc)m)(str, sel) : "";
-    }
-    return "";
+    StrFunc f = (StrFunc)class_getMethodImplementation(object_getClass(str), sel);
+    return f ? f(str, sel) : "";
 }
 
 static id Summon_AllocStr(const char* txt) {
     Class cls = objc_getClass("NSString");
     SEL sel = sel_registerName(SEL_STR);
-    Method m = class_getClassMethod(cls, sel);
-    return m ? ((StringFactoryFunc)method_getImplementation(m))((id)cls, sel, txt) : nil;
+    StringFactoryFunc f = (StringFactoryFunc)method_getImplementation(class_getClassMethod(cls, sel));
+    return f ? f((id)cls, sel, txt) : nil;
 }
 
 static void Summon_Chat(id server, const char* msg) {
@@ -65,9 +64,9 @@ static const char* Summon_GetBlockheadName(id bh) {
     if (!bh) return NULL;
     SEL sName = sel_registerName(SEL_NAME);
     if (class_getInstanceMethod(object_getClass(bh), sName)) {
-        IMP m = class_getMethodImplementation(object_getClass(bh), sName);
-        if (m) {
-            id s = ((id (*)(id, SEL))m)(bh, sName);
+        StrFunc f = (StrFunc)class_getMethodImplementation(object_getClass(bh), sName);
+        if (f) {
+            id s = ((id (*)(id, SEL))f)(bh, sName);
             return Summon_GetStr(s);
         }
     }
@@ -96,14 +95,15 @@ static id Summon_ScanList(id list, const char* targetName) {
     if (!list) return nil;
     SEL sCount = sel_registerName(SEL_COUNT);
     SEL sIdx = sel_registerName(SEL_OBJ_IDX);
-    IMP mCount = class_getMethodImplementation(object_getClass(list), sCount);
-    IMP mIdx = class_getMethodImplementation(object_getClass(list), sIdx);
     
-    if (!mCount || !mIdx) return nil;
+    CountFunc fCnt = (CountFunc)class_getMethodImplementation(object_getClass(list), sCount);
+    ObjIdxFunc fIdx = (ObjIdxFunc)class_getMethodImplementation(object_getClass(list), sIdx);
 
-    int count = ((CountFunc)mCount)(list, sCount);
+    if (!fCnt || !fIdx) return nil;
+
+    int count = fCnt(list, sCount);
     for (int i = 0; i < count; i++) {
-        id bh = ((ObjIdxFunc)mIdx)(list, sIdx, i);
+        id bh = fIdx(list, sIdx, i);
         if (bh) {
             const char* name = Summon_GetBlockheadName(bh);
             if (name && targetName && strcasecmp(name, targetName) == 0) return bh;
@@ -125,25 +125,24 @@ static id Summon_GetDynamicWorld(id server) {
     return nil;
 }
 
+// --- CORE FIX: FIND PLAYER ---
 static id Summon_FindBlockhead(id dynWorld, const char* targetName) {
     if (!dynWorld || !targetName) return nil;
+    
+    // Method 1: Official Method
     SEL sAll = sel_registerName(SEL_ALL_NET);
     if (class_getInstanceMethod(object_getClass(dynWorld), sAll)) {
-        IMP m = class_getMethodImplementation(object_getClass(dynWorld), sAll);
-        id list = ((ListFunc)m)(dynWorld, sAll);
-        id res = Summon_ScanList(list, targetName);
-        if (res) return res;
+        ListFunc f = (ListFunc)class_getMethodImplementation(object_getClass(dynWorld), sAll);
+        if (f) {
+            id list = f(dynWorld, sAll);
+            if (list) return Summon_ScanList(list, targetName);
+        }
     }
+
+    // Method 2: Manual Fallback
     Ivar ivNet = class_getInstanceVariable(object_getClass(dynWorld), "netBlockheads");
     if (ivNet) {
-        id list = *(id*)((char*)dynWorld + ivar_getOffset(ivNet));
-        id res = Summon_ScanList(list, targetName);
-        if (res) return res;
-    }
-    Ivar ivLag = class_getInstanceVariable(object_getClass(dynWorld), "netBlockheadsWithDisconnectedClients");
-    if (ivLag) {
-        id list = *(id*)((char*)dynWorld + ivar_getOffset(ivLag));
-        id res = Summon_ScanList(list, targetName);
+        id res = Summon_ScanList(*(id*)((char*)dynWorld + ivar_getOffset(ivNet)), targetName);
         if (res) return res;
     }
     return nil;
@@ -162,36 +161,28 @@ id Summon_Cmd_Hook(id self, SEL _cmd, id commandStr, id client) {
         char *cmd = strtok(buf, " "), *sType = strtok(NULL, " "), *sQty = strtok(NULL, " "), *sPlayer = strtok(NULL, " "), *sArg4 = strtok(NULL, " "), *sArg5 = strtok(NULL, " ");
 
         if (!sType || !sPlayer) { 
-            Summon_Chat(self, "Syntax: /spawn <mob> <qty> <PLAYER> [baby] [force]"); 
+            Summon_Chat(self, "[HELP] Usage: /spawn <mob> <qty> <PLAYER> [baby] [force]"); 
             return nil; 
         }
         
         int type = Summon_ParseType(sType);
         if (type == 0) {
-            Summon_Chat(self, "Unknown Mob! List: dodo, dropbear, donkey, fish, shark, troll, scorpion, yak");
+            Summon_Chat(self, "[ERROR] Unknown Mob! (dodo, bear, donkey, fish, shark, troll, scorpion, yak)");
             return nil;
         }
 
         int qty = sQty ? atoi(sQty) : 1;
-        
         bool isForce = false;
         bool isBaby = false;
 
-        // Argument parser for optional flags
-        if (sArg4) {
-            if (strcasecmp(sArg4, "force") == 0) isForce = true;
-            if (strcasecmp(sArg4, "baby") == 0) isBaby = true;
-        }
-        if (sArg5) {
-            if (strcasecmp(sArg5, "force") == 0) isForce = true;
-            if (strcasecmp(sArg5, "baby") == 0) isBaby = true;
-        }
+        // Argument parsing
+        if (sArg4) { if (strcasecmp(sArg4, "force")==0) isForce=true; if (strcasecmp(sArg4, "baby")==0) isBaby=true; }
+        if (sArg5) { if (strcasecmp(sArg5, "force")==0) isForce=true; if (strcasecmp(sArg5, "baby")==0) isBaby=true; }
 
         int limit = isForce ? 99 : 10;
         if (qty > limit) {
             qty = limit;
-            char warn[100];
-            snprintf(warn, 100, "Capped at %d. Use 'force' for more.", limit);
+            char warn[100]; snprintf(warn, 100, "[WARN] Qty limited to %d. Use 'force' for more.", limit);
             Summon_Chat(self, warn);
         }
 
@@ -204,15 +195,13 @@ id Summon_Cmd_Hook(id self, SEL _cmd, id commandStr, id client) {
             SpawnNPCFunc f = (SpawnNPCFunc)class_getMethodImplementation(object_getClass(dynWorld), selS);
             
             if (f && pos != 0) {
-                // isAdult arg is inverted logic for baby
+                // isAdult param is inverted for babies
                 for(int i=0; i<qty; i++) f(dynWorld, selS, pos, type, nil, !isBaby, 0, nil);
-                
-                char msg[128]; 
-                snprintf(msg, 128, "Spawned %d %s %s", qty, (isBaby ? "Baby" : "Adult"), sType);
+                char msg[128]; snprintf(msg, 128, "[SUCCESS] Spawned %d %s(%s) for %s", qty, sType, isBaby?"Baby":"Adult", sPlayer);
                 Summon_Chat(self, msg);
             }
         } else {
-            Summon_Chat(self, "Error: Player not found.");
+            Summon_Chat(self, "[ERROR] Player not found.");
         }
         return nil;
     }
