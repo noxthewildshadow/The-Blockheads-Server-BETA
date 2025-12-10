@@ -1,5 +1,5 @@
 /*
- * Portal Chest Ban
+ * Portal Chest Ban & Refund (NO objc_msgSend VERSION)
  */
 
 #define _GNU_SOURCE
@@ -24,18 +24,21 @@
 #define SEL_REMOVE "remove:"
 #define SEL_FLAG   "setNeedsRemoved:"
 #define SEL_UTF8   "UTF8String"
-#define SEL_ALL_NET "allBlockheadsIncludingNet"
-#define SEL_COUNT   "count"
+#define SEL_COUNT  "count"
 #define SEL_OBJ_IDX "objectAtIndex:"
 #define SEL_NAME    "clientName"
+#define SEL_ALL_NET "allBlockheadsIncludingNet"
 
+// --- TYPEDEFS ---
 typedef id (*PlaceFunc)(id, SEL, id, id, long long, id, id, unsigned char, id, id, id);
 typedef id (*LoadFunc)(id, SEL, id, id, id, id);
 typedef id (*SpawnFunc)(id, SEL, long long, int, int, int, id, id, BOOL, BOOL, id);
 typedef const char* (*StrFunc)(id, SEL);
-typedef id (*ObjIdxFunc)(id, SEL, unsigned long);
+typedef int (*IntFunc)(id, SEL);
+typedef void (*VoidBoolFunc)(id, SEL, BOOL);
 typedef id (*ListFunc)(id, SEL);
 typedef int (*CountFunc)(id, SEL);
+typedef id (*ObjIdxFunc)(id, SEL, unsigned long);
 
 static PlaceFunc Portal_Real_Place = NULL;
 static LoadFunc  Portal_Real_Load  = NULL;
@@ -43,20 +46,17 @@ static LoadFunc  Portal_Real_Load  = NULL;
 static const char* Portal_GetStr(id str) {
     if (!str) return "";
     SEL s = sel_registerName(SEL_UTF8);
-    if (class_getInstanceMethod(object_getClass(str), s)) {
-        IMP m = class_getMethodImplementation(object_getClass(str), s);
-        return m ? ((StrFunc)m)(str, s) : "";
-    }
-    return "";
+    StrFunc f = (StrFunc)class_getMethodImplementation(object_getClass(str), s);
+    return f ? f(str, s) : "";
 }
 
 static const char* Portal_GetBlockheadName(id bh) {
     if (!bh) return NULL;
     SEL sName = sel_registerName(SEL_NAME);
     if (class_getInstanceMethod(object_getClass(bh), sName)) {
-        IMP m = class_getMethodImplementation(object_getClass(bh), sName);
-        if (m) {
-            id s = ((id (*)(id, SEL))m)(bh, sName);
+        StrFunc f = (StrFunc)class_getMethodImplementation(object_getClass(bh), sName);
+        if (f) {
+            id s = ((id (*)(id, SEL))f)(bh, sName);
             return Portal_GetStr(s);
         }
     }
@@ -71,36 +71,37 @@ static const char* Portal_GetBlockheadName(id bh) {
 static int Portal_GetID(id obj) {
     if (!obj) return 0;
     SEL s = sel_registerName(SEL_TYPE);
-    IMP m = class_getMethodImplementation(object_getClass(obj), s);
-    return m ? ((int (*)(id, SEL))m)(obj, s) : 0;
+    IntFunc f = (IntFunc)class_getMethodImplementation(object_getClass(obj), s);
+    return f ? f(obj, s) : 0;
 }
 
 static int Portal_GetDropID(id obj) {
     if (!obj) return 0;
     SEL s = sel_registerName(SEL_DROP);
-    IMP m = class_getMethodImplementation(object_getClass(obj), s);
-    return m ? ((int (*)(id, SEL))m)(obj, s) : 0;
+    IntFunc f = (IntFunc)class_getMethodImplementation(object_getClass(obj), s);
+    return f ? f(obj, s) : 0;
 }
 
 static long long Portal_GetPos(id obj) {
     if (!obj) return -1;
     SEL s = sel_registerName(SEL_POS);
-    IMP m = class_getMethodImplementation(object_getClass(obj), s);
-    return m ? ((long long (*)(id, SEL))m)(obj, s) : -1;
+    long long (*f)(id, SEL) = (void*)class_getMethodImplementation(object_getClass(obj), s);
+    return f ? f(obj, s) : -1;
 }
 
 static id Portal_ScanList(id list, const char* targetName) {
     if (!list) return nil;
     SEL sCount = sel_registerName(SEL_COUNT);
     SEL sIdx = sel_registerName(SEL_OBJ_IDX);
-    IMP mCount = class_getMethodImplementation(object_getClass(list), sCount);
-    IMP mIdx = class_getMethodImplementation(object_getClass(list), sIdx);
     
-    if (!mCount || !mIdx) return nil;
+    CountFunc fCnt = (CountFunc)class_getMethodImplementation(object_getClass(list), sCount);
+    ObjIdxFunc fIdx = (ObjIdxFunc)class_getMethodImplementation(object_getClass(list), sIdx);
+    
+    if (!fCnt || !fIdx) return nil;
 
-    int count = ((CountFunc)mCount)(list, sCount);
+    int count = fCnt(list, sCount);
     for (int i = 0; i < count; i++) {
-        id bh = ((ObjIdxFunc)mIdx)(list, sIdx, i);
+        id bh = fIdx(list, sIdx, i);
         if (bh) {
             const char* o = Portal_GetBlockheadName(bh);
             if (o && targetName && strcasecmp(o, targetName)==0) return bh;
@@ -109,28 +110,24 @@ static id Portal_ScanList(id list, const char* targetName) {
     return nil;
 }
 
+// --- CORE FIX: FIND PLAYER ---
 static id Portal_FindBlockhead(id dynWorld, const char* name) {
     if (!dynWorld || !name) return nil;
     
+    // Method 1
     SEL sAll = sel_registerName(SEL_ALL_NET);
     if (class_getInstanceMethod(object_getClass(dynWorld), sAll)) {
-        IMP m = class_getMethodImplementation(object_getClass(dynWorld), sAll);
-        id list = ((ListFunc)m)(dynWorld, sAll);
-        id res = Portal_ScanList(list, name);
-        if (res) return res;
-    }
-    
-    Ivar iv = class_getInstanceVariable(object_getClass(dynWorld), "netBlockheads");
-    if (iv) {
-        id list = *(id*)((char*)dynWorld + ivar_getOffset(iv));
-        id res = Portal_ScanList(list, name);
-        if (res) return res;
+        ListFunc f = (ListFunc)class_getMethodImplementation(object_getClass(dynWorld), sAll);
+        if (f) {
+            id list = f(dynWorld, sAll);
+            if (list) return Portal_ScanList(list, name);
+        }
     }
 
-    Ivar iv2 = class_getInstanceVariable(object_getClass(dynWorld), "netBlockheadsWithDisconnectedClients");
-    if (iv2) {
-        id list = *(id*)((char*)dynWorld + ivar_getOffset(iv2));
-        id res = Portal_ScanList(list, name);
+    // Method 2 (Fallback)
+    Ivar iv = class_getInstanceVariable(object_getClass(dynWorld), "netBlockheads");
+    if (iv) {
+        id res = Portal_ScanList(*(id*)((char*)dynWorld + ivar_getOffset(iv)), name);
         if (res) return res;
     }
     return nil;
@@ -148,15 +145,15 @@ static void Portal_Recover(id dynWorld, long long pos, id targetBH) {
 static void Portal_Remove(id obj) {
     if (!obj) return;
     SEL s = sel_registerName(SEL_REMOVE);
-    IMP m = class_getMethodImplementation(object_getClass(obj), s);
-    if (m) ((void (*)(id, SEL, BOOL))m)(obj, s, 1);
+    VoidBoolFunc f = (VoidBoolFunc)class_getMethodImplementation(object_getClass(obj), s);
+    if (f) f(obj, s, 1);
 }
 
 static void Portal_SoftRemove(id obj) {
     if (!obj) return;
     SEL s = sel_registerName(SEL_FLAG);
-    IMP m = class_getMethodImplementation(object_getClass(obj), s);
-    if (m) ((void (*)(id, SEL, BOOL))m)(obj, s, 1);
+    VoidBoolFunc f = (VoidBoolFunc)class_getMethodImplementation(object_getClass(obj), s);
+    if (f) f(obj, s, 1);
 }
 
 id Portal_Place_Hook(id self, SEL _cmd, id world, id dynWorld, long long pos, id cache, id item, unsigned char flipped, id saveDict, id client, id clientName) {
