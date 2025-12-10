@@ -183,7 +183,7 @@ free_port() {
     fi
     
     local screen_server="blockheads_server_$port"
-    local screen_patcher="blockheads_manager_$port" # Usamos manager en lugar de patcher por consistencia
+    local screen_patcher="blockheads_manager_$port"
     
     if screen_session_exists "$screen_server"; then
         screen -S "$screen_server" -X quit 2>/dev/null
@@ -275,7 +275,7 @@ start_server() {
     fi
     
     # ==========================================================================
-    # MODIFICACIÓN: GESTIÓN DE PARCHES (Patches Management)
+    # MODIFICACIÓN: GESTIÓN DE PARCHES (Patches Management) ORGANIZADA
     # ==========================================================================
     local PRELOAD_STR=""
     local PATCH_LIST=""
@@ -284,24 +284,23 @@ start_server() {
     if [ -d "$PATCHES_DIR" ]; then
         print_status "Scanning '$PATCHES_DIR' for security patches..."
         
-        # 1. Parche Crítico: name_exploit.so (Se carga automáticamente si existe)
-        if [ -f "$PATCHES_DIR/name_exploit.so" ]; then
-            PATCH_LIST="$PWD/$PATCHES_DIR/name_exploit.so"
+        # 1. Parche Crítico: patches/critical/name_exploit.so
+        if [ -f "$PATCHES_DIR/critical/name_exploit.so" ]; then
+            PATCH_LIST="$PWD/$PATCHES_DIR/critical/name_exploit.so"
             print_success "Critical Patch [name_exploit] enabled automatically."
         else
-            print_warning "Critical Patch [name_exploit.so] MISSING in $PATCHES_DIR!"
+            print_warning "Critical Patch [name_exploit.so] MISSING in $PATCHES_DIR/critical!"
         fi
         
-        # 2. Parches Opcionales: Preguntar al usuario
-        for patch_path in "$PATCHES_DIR"/*.so; do
+        # 2. Parches Opcionales y Mods: Buscar en 'optional' y 'mods'
+        # Activamos nullglob para que si la carpeta esta vacia no de error
+        shopt -s nullglob
+        for patch_path in "$PATCHES_DIR/optional/"*.so "$PATCHES_DIR/mods/"*.so; do
             [ ! -f "$patch_path" ] && continue
             patch_name=$(basename "$patch_path")
             
-            # Saltar name_exploit porque ya lo procesamos arriba
-            if [ "$patch_name" == "name_exploit.so" ]; then continue; fi
-            
-            # Preguntar
-            echo -n -e "${YELLOW}Enable optional patch [${patch_name}]? (y/N): ${NC}"
+            # Preguntar al usuario
+            echo -n -e "${YELLOW}Enable patch/mod [${patch_name}]? (y/N): ${NC}"
             read answer < /dev/tty
             
             if [[ "$answer" =~ ^[Yy]$ ]]; then
@@ -315,6 +314,8 @@ start_server() {
                 print_status "Skipped: $patch_name"
             fi
         done
+        shopt -u nullglob
+        
     else
         print_warning "Patches directory '$PATCHES_DIR' not found. No patches loaded."
     fi
@@ -393,7 +394,7 @@ EOF
     fi
     
     print_step "Starting Rank Manager..."
-    local manager_script="./rank_manager.sh" # Nombre actualizado
+    local manager_script="./rank_manager.sh"
     
     if [ ! -f "$manager_script" ]; then
         print_error "Rank Manager script not found: $manager_script"
