@@ -56,9 +56,10 @@ REPO_RAW_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-
 SERVER_MANAGER_URL="$REPO_RAW_URL/server_manager.sh"
 RANK_MANAGER_URL="$REPO_RAW_URL/rank_manager.sh"
 
-# Listas de parches
+# Listas de parches y mods
 CRITICAL_PATCHES=("name_exploit.c")
 OPTIONAL_PATCHES=("freight_car_patch.c" "portal_chest_patch.c" "portal_patch.c" "trade_portal_patch.c")
+MODS_FILES=("chest_dupe_plus_any_item.c" "mob_spawner.c")
 
 declare -a PACKAGES_DEBIAN=(
     'git' 'cmake' 'ninja-build' 'clang' 'patchelf' 'libgnustep-base-dev' 'libobjc4'
@@ -135,10 +136,15 @@ download_server_files() {
         return 1
     fi
 
-    # --- CREAR CARPETA DE PARCHES ---
+    # --- CREAR CARPETAS ---
     if [ ! -d "patches" ]; then
         mkdir -p "patches"
         print_status "Created 'patches' directory."
+    fi
+    
+    if [ ! -d "mods" ]; then
+        mkdir -p "mods"
+        print_status "Created 'mods' directory."
     fi
 
     # --- Descarga de Parches Críticos ---
@@ -160,6 +166,17 @@ download_server_files() {
             print_success "$patch downloaded."
         else
             print_warning "Failed to download $patch from patches/"
+        fi
+    done
+
+    # --- Descarga de Mods ---
+    print_step "Downloading Mods to /mods..."
+    for mod in "${MODS_FILES[@]}"; do
+        print_progress "Downloading $mod..."
+        if wget --timeout=30 --tries=3 -O "mods/$mod" "$REPO_RAW_URL/mods/$mod" 2>/dev/null; then
+            print_success "$mod downloaded."
+        else
+            print_warning "Failed to download $mod from mods/"
         fi
     done
     
@@ -247,7 +264,7 @@ else
     print_warning "Server binary execution test failed - may need additional dependencies"
 fi
 
-print_step "[6/8] Downloading server manager and patches..."
+print_step "[6/8] Downloading server manager, patches, and mods..."
 if ! download_server_files; then
     print_warning "Download failed. Creating placeholders..."
     cat > server_manager.sh << 'EOF'
@@ -264,7 +281,7 @@ EOF
 fi
 
 # --- COMPILACIÓN Y LIMPIEZA AUTOMÁTICA ---
-print_step "[7/8] Compiling Security Patches in /patches..."
+print_step "[7/8] Compiling Security Patches and Mods..."
 
 INC_FLAGS="-I/usr/include/GNUstep"
 RUNTIME_H=$(find /usr/lib /usr/include -name runtime.h 2>/dev/null | grep "objc/runtime.h" | head -n 1)
@@ -275,26 +292,20 @@ fi
 
 count_compiled=0
 
-# Verificar si la carpeta patches existe
+# --- Compilar Patches ---
 if [ -d "patches" ]; then
-    # Iterar sobre archivos .c dentro de patches/
     for src_file in patches/*.c; do
         if [ -f "$src_file" ]; then
-            # Obtener nombre base (ej: patches/test.c -> test)
             base_name=$(basename "$src_file" .c)
-            # Definir ruta salida (ej: patches/test.so)
             so_file="patches/${base_name}.so"
             
-            print_progress "Compiling $src_file -> $so_file..."
+            print_progress "Compiling Patch: $src_file -> $so_file..."
             
             if clang -shared -fPIC -o "$so_file" "$src_file" -lobjc -ldl -lpthread $INC_FLAGS -w; then
                 print_success "Compiled: $so_file"
-                
-                # -- LIMPIEZA --
                 rm -f "$src_file"
                 print_status "Deleted source: $src_file"
                 
-                # Permisos
                 chown "$ORIGINAL_USER:$ORIGINAL_USER" "$so_file" 2>/dev/null || true
                 chmod 755 "$so_file" 2>/dev/null || true
                 count_compiled=$((count_compiled+1))
@@ -303,21 +314,46 @@ if [ -d "patches" ]; then
             fi
         fi
     done
-else
-    print_warning "'patches' directory not found. Skipping compilation."
+fi
+
+# --- Compilar Mods ---
+# Nota: Los compilamos y guardamos el .so en /patches para que el server_manager los detecte automáticamente
+if [ -d "mods" ]; then
+    for src_file in mods/*.c; do
+        if [ -f "$src_file" ]; then
+            base_name=$(basename "$src_file" .c)
+            so_file="patches/${base_name}.so" # Guardamos en patches!
+            
+            print_progress "Compiling Mod: $src_file -> $so_file..."
+            
+            if clang -shared -fPIC -o "$so_file" "$src_file" -lobjc -ldl -lpthread $INC_FLAGS -w; then
+                print_success "Compiled Mod into Patch folder: $so_file"
+                rm -f "$src_file"
+                print_status "Deleted source: $src_file"
+                
+                chown "$ORIGINAL_USER:$ORIGINAL_USER" "$so_file" 2>/dev/null || true
+                chmod 755 "$so_file" 2>/dev/null || true
+                count_compiled=$((count_compiled+1))
+            else
+                print_error "Failed to compile mod $src_file."
+            fi
+        fi
+    done
+    # Limpiamos carpeta mods vacia si queremos, pero mejor la dejamos por si acaso
 fi
 
 if [ $count_compiled -eq 0 ]; then
-    print_warning "No .c patch files found to compile."
+    print_warning "No .c files found to compile."
 else
-    print_success "$count_compiled security patches compiled and cleaned up."
+    print_success "$count_compiled patches and mods compiled and cleaned up."
 fi
 # -----------------------------------------------------
 
 print_step "[8/8] Setting ownership and permissions..."
-chown -R "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_manager.sh" "patches" 2>/dev/null || true
+chown -R "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_manager.sh" "patches" "mods" 2>/dev/null || true
 chmod 755 "$SERVER_BINARY" "server_manager.sh" "rank_manager.sh" 2>/dev/null || true
 chmod -R 755 "patches" 2>/dev/null || true
+chmod -R 755 "mods" 2>/dev/null || true
 
 rm -f "$TEMP_FILE"
 
