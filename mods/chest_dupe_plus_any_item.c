@@ -1,9 +1,9 @@
 /*
  * Item Spawner & Chest Duplicator
- * * Commands:
- * /item <ID> <QTY> <PLAYER> [force]  -> Give items (Default Max: 99, Force: 999)
- * /block <ID> <QTY> <PLAYER> [force] -> Give blocks (Auto-converts block ID to Item ID)
- * /dupe [count] [force]              -> Enable Chest Dupe (Default Max: 3, Force: 99)
+ * Commands:
+ * /item <ID> <QTY> <PLAYER> [force]
+ * /block <ID> <QTY> <PLAYER> [force]
+ * /dupe [count] [force]
  */
 
 #define _GNU_SOURCE
@@ -36,7 +36,7 @@
 #define SEL_NAME     "clientName"
 #define SEL_ALL_NET  "allBlockheadsIncludingNet"
 
-// --- TYPEDEFS (Strict Types, NO objc_msgSend) ---
+// --- TYPEDEFS ---
 typedef id (*PlaceFunc)(id, SEL, id, id, long long, id, id, unsigned char, id, id, id);
 typedef id (*CmdFunc)(id, SEL, id, id);
 typedef void (*ChatFunc)(id, SEL, id, id);
@@ -109,7 +109,7 @@ static const char* Dupe_GetBlockheadName(id bh) {
     if (class_getInstanceMethod(object_getClass(bh), sName)) {
         StrFunc f = (StrFunc)class_getMethodImplementation(object_getClass(bh), sName);
         if (f) {
-            id s = ((id (*)(id, SEL))f)(bh, sName); // Cast needed because return is id, not char* directly
+            id s = ((id (*)(id, SEL))f)(bh, sName); 
             return Dupe_GetStr(s);
         }
     }
@@ -160,7 +160,7 @@ static id Dupe_GetDynamicWorld(id server) {
 static id Dupe_FindBlockhead(id dynWorld, const char* targetName) {
     if (!dynWorld || !targetName) return nil;
 
-    // Method 1: allBlockheadsIncludingNet (The Fix)
+    // Method 1: allBlockheadsIncludingNet
     SEL sAll = sel_registerName(SEL_ALL_NET);
     if (class_getInstanceMethod(object_getClass(dynWorld), sAll)) {
         ListFunc f = (ListFunc)class_getMethodImplementation(object_getClass(dynWorld), sAll);
@@ -227,7 +227,6 @@ id Dupe_Cmd_Hook(id self, SEL _cmd, id commandStr, id client) {
         char* sAmount = strtok(NULL, " ");
         char* sForce = strtok(NULL, " ");
 
-        // Toggle Mode
         if (!sAmount) {
             g_DupeEnabled = !g_DupeEnabled;
             g_ExtraCount = 1;
@@ -236,7 +235,6 @@ id Dupe_Cmd_Hook(id self, SEL _cmd, id commandStr, id client) {
             return nil;
         }
 
-        // Custom Count Mode
         int amount = atoi(sAmount);
         bool isForce = (sForce && strcasecmp(sForce, "force") == 0);
         int max = isForce ? 99 : 3;
