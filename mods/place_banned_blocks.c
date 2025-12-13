@@ -1,6 +1,7 @@
 /*
  * BLOCKHEADS PLACE NATURAL FORCE
- * Usage: /place <ID> | /place off (Use stone as bait)
+ * Usage: /place <ID> to Enable.
+ * /place to Disable (Toggle).
  */
 
 #define _GNU_SOURCE
@@ -107,14 +108,20 @@ id Ghost_Cmd_Hook(id self, SEL _cmd, id commandStr, id client) {
         char* token = strtok(text, " ");
         char* sID   = strtok(NULL, " ");
 
+        // LOGIC CHANGE: Toggle if no ID provided
         if (!sID) {
-            Ghost_Chat(self, "[HELP] /place <BlockType_ID> | /place off");
+            if (Ghost_Active) {
+                Ghost_Active = false;
+                Ghost_Chat(self, "[GHOST] Disabled. Building works normally.");
+            } else {
+                Ghost_Chat(self, "[HELP] Usage: /place <BlockType_ID> (e.g. /place 16)");
+            }
             return nil;
         }
 
-        if (strcmp(sID, "off") == 0) {
+        if (strcasecmp(sID, "off") == 0) {
             Ghost_Active = false;
-            Ghost_Chat(self, "[GHOST] Disabled. Building works normally.");
+            Ghost_Chat(self, "[GHOST] Disabled.");
             return nil;
         }
 
@@ -122,7 +129,7 @@ id Ghost_Cmd_Hook(id self, SEL _cmd, id commandStr, id client) {
         Ghost_Active = true;
         
         char msg[128];
-        snprintf(msg, 128, "[GHOST] Enabled. Placing 'Stone' will spawn Block ID: %d (Natural)", Ghost_TargetID);
+        snprintf(msg, 128, "[GHOST] Enabled. Placing 'Stone' will spawn Block ID: %d", Ghost_TargetID);
         Ghost_Chat(self, msg);
         
         return nil;
