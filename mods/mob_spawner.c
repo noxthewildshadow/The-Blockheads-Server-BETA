@@ -1,7 +1,6 @@
 /*
  * MOB Spawner
- * * Commands:
- * /spawn <mob> <qty> <PLAYER> [baby] [force]
+ * Commands: /spawn <mob> <qty> <PLAYER> [baby] [force]
  */
 
 #define _GNU_SOURCE
