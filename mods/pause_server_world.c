@@ -1,9 +1,6 @@
 /*
- * Server Pause World - Time Control System
- * * Commands:
- * /pause          -> Toggle Pause (Uses last selected mode).
- * /pause mode 1   -> Burst Mode (Freeze now, instant catch-up later).
- * /pause mode 2   -> Drama Mode (Freeze now, 60s freeze effect after unpause).
+ * Server Pause World
+ * Commands: /pause [mode 1|2]
  */
 
 #define _GNU_SOURCE
