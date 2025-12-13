@@ -1,8 +1,6 @@
 /*
- * The Blockheads Server - Trade Portal Blocker (FIXED)
- * Target: Trade Portal (Level - ANY).
- * Logic: Hooks TradePortal class but filters strictly by ID 210.
- * Fix: Uses "Soft Delete" during load to prevent crashes.
+ * Trade Portal Blocker (FIXED)
+ * Target: Trade Portal (ID 210)
  */
 
 #define _GNU_SOURCE
@@ -18,16 +16,16 @@
 
 // Config
 #define TARGET_CLASS "TradePortal" 
-#define BANNED_ID    210           
+#define BANNED_ID    210            
 
 // Selectors
 #define SEL_PLACE  "initWithWorld:dynamicWorld:atPosition:cache:item:flipped:saveDict:placedByClient:clientName:"
 #define SEL_LOAD   "initWithWorld:dynamicWorld:saveDict:cache:"
 #define SEL_UPDATE "update:accurateDT:isSimulation:" 
-#define SEL_DROP   "destroyItemType"      
-#define SEL_OBJ    "objectType"           
-#define SEL_MACRO  "removeFromMacroBlock" 
-#define SEL_FLAG   "setNeedsRemoved:"     
+#define SEL_DROP   "destroyItemType"       
+#define SEL_OBJ    "objectType"            
+#define SEL_MACRO  "removeFromMacroBlock"  
+#define SEL_FLAG   "setNeedsRemoved:"      
 
 // Func types
 typedef id (*PlaceFunc)(id, SEL, id, id, long long, id, id, unsigned char, id, id, id);
@@ -41,8 +39,6 @@ static PlaceFunc original_place = NULL;
 static LoadFunc original_load = NULL;
 static UpdateFunc original_update = NULL;
 
-// -----------------------------------------------------------------------------
-// Helpers
 // -----------------------------------------------------------------------------
 
 int get_item_id(id item) {
@@ -80,21 +76,16 @@ int get_deep_id(id block) {
 
 // -----------------------------------------------------------------------------
 // CLEANUP LOGIC
-// -----------------------------------------------------------------------------
 
-// METHOD A: Full Nuke (Map + Memory)
-// Use only for UPDATE or POST-PLACE
 void safe_remove_fully(id block) {
     if (!block) return;
     Class cls = object_getClass(block);
 
-    // 1. Clear Map
     SEL sMacro = sel_registerName(SEL_MACRO);
     if (class_getInstanceMethod(cls, sMacro)) {
         VoidFunc f = (VoidFunc)method_getImplementation(class_getInstanceMethod(cls, sMacro));
         f(block, sMacro);
     }
-    // 2. Flag Memory
     SEL sFlag = sel_registerName(SEL_FLAG);
     if (class_getInstanceMethod(cls, sFlag)) {
         BoolFunc f = (BoolFunc)method_getImplementation(class_getInstanceMethod(cls, sFlag));
@@ -102,8 +93,6 @@ void safe_remove_fully(id block) {
     }
 }
 
-// METHOD B: Soft Delete (Memory Only)
-// Use only for LOAD
 void mark_for_removal_only(id block) {
     if (!block) return;
     Class cls = object_getClass(block);
@@ -117,17 +106,13 @@ void mark_for_removal_only(id block) {
 
 // -----------------------------------------------------------------------------
 // HOOKS
-// -----------------------------------------------------------------------------
 
-// HOOK 1: Placement
 id hook_TP_Place(id self, SEL _cmd, id world, id dynWorld, long long pos, id cache, id item, unsigned char flipped, id saveDict, id client, id clientName) {
     
-    // Prevent creation if item is banned
     if (item) {
         int id = get_item_id(item);
         if (id == BANNED_ID) {
-            printf("[TradeBlocker] Blocked Trade Portal placement (ID %d).\n", id);
-            return NULL; // Return NULL prevents creation completely
+            return NULL;
         }
     }
 
@@ -137,7 +122,6 @@ id hook_TP_Place(id self, SEL _cmd, id world, id dynWorld, long long pos, id cac
     return NULL;
 }
 
-// HOOK 2: Load (Disk) - THE CRASH FIX
 id hook_TP_Load(id self, SEL _cmd, id world, id dynWorld, id saveDict, id cache) {
     
     id obj = NULL;
@@ -145,12 +129,9 @@ id hook_TP_Load(id self, SEL _cmd, id world, id dynWorld, id saveDict, id cache)
         obj = original_load(self, _cmd, world, dynWorld, saveDict, cache);
     }
 
-    // Clean existing map trash
     if (obj) {
         int id = get_deep_id(obj);
         if (id == BANNED_ID) {
-            printf("[TradeBlocker] Found existing Trade Portal (ID %d) on load. Scheduling removal.\n", id);
-            // CRITICAL: Use Soft Delete (Memory only)
             mark_for_removal_only(obj);
             return obj; 
         }
@@ -158,13 +139,11 @@ id hook_TP_Load(id self, SEL _cmd, id world, id dynWorld, id saveDict, id cache)
     return obj;
 }
 
-// HOOK 3: Update (Active Scan)
 void hook_TP_Update(id self, SEL _cmd, float dt, bool isSim) {
     
     int id = get_deep_id(self);
     
     if (id == BANNED_ID) {
-        // Safe to use Full Nuke in update loop
         safe_remove_fully(self);
         return;
     }
@@ -175,19 +154,12 @@ void hook_TP_Update(id self, SEL _cmd, float dt, bool isSim) {
 }
 
 // -----------------------------------------------------------------------------
-// Init
-// -----------------------------------------------------------------------------
-static void *patchThread(void *arg) {
-    printf("[TradeBlocker] Loading ID-Filtered Patch v2 (Anti-Crash)...\n");
+static void *TBlocker_InitThread(void *arg) {
     sleep(2); 
 
     Class targetClass = objc_getClass(TARGET_CLASS);
-    if (!targetClass) {
-        printf("[TradeBlocker] ERROR: Class not found.\n");
-        return NULL;
-    }
+    if (!targetClass) return NULL;
 
-    // Place Hook
     SEL sPlace = sel_registerName(SEL_PLACE);
     Method mPlace = class_getInstanceMethod(targetClass, sPlace);
     if (mPlace) {
@@ -195,7 +167,6 @@ static void *patchThread(void *arg) {
         method_setImplementation(mPlace, (IMP)hook_TP_Place);
     }
 
-    // Load Hook
     SEL sLoad = sel_registerName(SEL_LOAD);
     Method mLoad = class_getInstanceMethod(targetClass, sLoad);
     if (mLoad) {
@@ -203,7 +174,6 @@ static void *patchThread(void *arg) {
         method_setImplementation(mLoad, (IMP)hook_TP_Load);
     }
 
-    // Update Hook
     SEL sUpdate = sel_registerName(SEL_UPDATE);
     Method mUpdate = class_getInstanceMethod(targetClass, sUpdate);
     if (mUpdate) {
@@ -211,12 +181,11 @@ static void *patchThread(void *arg) {
         method_setImplementation(mUpdate, (IMP)hook_TP_Update);
     }
 
-    printf("[TradeBlocker] Active. ID %d is banned.\n", BANNED_ID);
     return NULL;
 }
 
 __attribute__((constructor))
-static void init_hook() {
+static void TBlocker_Entry() {
     pthread_t t;
-    pthread_create(&t, NULL, patchThread, NULL);
+    pthread_create(&t, NULL, TBlocker_InitThread, NULL);
 }
