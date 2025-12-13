@@ -1,7 +1,6 @@
 /*
- * Ban All New Drops - Literally clears every new drop. use with mind!
- * * Commands:
- * /ban drops
+ * Clear All New Drops
+ * Commands: /clear drops
  */
 
 #define _GNU_SOURCE
@@ -18,7 +17,7 @@
 #define BAN_SERVER_CLASS "BHServer"
 #define BAN_DYN_WORLD    "DynamicWorld"
 
-static bool g_BanDrops_Active = false;
+static bool g_ClearDrops_Active = false;
 
 typedef id (*Ban_CmdFunc)(id, SEL, id, id);
 typedef void (*Ban_ChatFunc)(id, SEL, id, id);
@@ -54,7 +53,7 @@ static void Ban_SendMsg(id server, const char* msg) {
 }
 
 id Hook_Ban_ClientDrop(id self, SEL _cmd, id data) {
-    if (g_BanDrops_Active) return nil;
+    if (g_ClearDrops_Active) return nil;
     if (Real_Ban_ClientDrop) return Real_Ban_ClientDrop(self, _cmd, data);
     return nil;
 }
@@ -62,12 +61,11 @@ id Hook_Ban_ClientDrop(id self, SEL _cmd, id data) {
 id Hook_Ban_Cmd(id self, SEL _cmd, id cmdStr, id client) {
     const char* raw = Ban_GetCStr(cmdStr);
     
-    if (raw && strncmp(raw, "/ban drops", 10) == 0) {
-        g_BanDrops_Active = !g_BanDrops_Active;
+    if (raw && strncmp(raw, "/clear drops", 12) == 0) {
+        g_ClearDrops_Active = !g_ClearDrops_Active;
         char msg[128];
-        snprintf(msg, 128, "[System] Drop Ban: %s", g_BanDrops_Active ? "ON" : "OFF");
+        snprintf(msg, 128, "[System] Clear Drops: %s", g_ClearDrops_Active ? "ON" : "OFF");
         Ban_SendMsg(self, msg);
-        printf("[BanDrops] Status: %s\n", g_BanDrops_Active ? "ON" : "OFF");
         return nil;
     }
 
@@ -100,9 +98,6 @@ static void* BanDrops_InitThread(void* arg) {
         if (mDrop) {
             Real_Ban_ClientDrop = (Ban_DropFunc)method_getImplementation(mDrop);
             method_setImplementation(mDrop, (IMP)Hook_Ban_ClientDrop);
-            printf("[BanDrops] Loaded. Use /ban drops\n");
-        } else {
-            printf("[BanDrops] Error: Drop method not found.\n");
         }
     }
     return NULL;
