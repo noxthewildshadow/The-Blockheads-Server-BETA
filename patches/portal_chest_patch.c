@@ -1,5 +1,6 @@
 /*
- * Portal Chest Ban & Refund (NO objc_msgSend VERSION)
+ * Portal Chest Ban & Refund
+ * Blocks ID 1074
  */
 
 #define _GNU_SOURCE
