@@ -1,8 +1,12 @@
-# The BlockHeads Server with EXPLOIT FIXES - Complete Installation Guide
+Aquí tienes la guía actualizada. He modificado los pasos de instalación para reflejar la URL correcta del repositorio (basada en el script anterior), he añadido una nueva sección explicando el **Sistema de Mods y Parches**, y he actualizado el paso de "Start Your Server" para explicar las nuevas preguntas interactivas (Rank Manager y selección de Mods).
+
+-----
+
+# The BlockHeads Server with EXPLOIT FIXES & MODS - Complete Installation Guide
 
 ## Introduction
 
-Welcome\! This guide will help you install your own The BlockHeads server on a Linux system. The process is automated to be as simple as possible, even if you don't have much technical experience.
+Welcome\! This guide will help you install your own private The BlockHeads server on a Linux system. This enhanced installer not only sets up the server but also includes a **Mod Loader**, **Security Patches**, and a **Rank Manager**. The process is automated to be as simple as possible.
 
 ## Prerequisites
 
@@ -12,7 +16,7 @@ Before you begin, make sure you have:
   * **Root/Sudo Access:** Required to install programs.
   * **`curl` Command:** The installer needs this to download itself.
   * **Hardware:**
-      * At least 2GB of RAM (4GB+ recommended for many servers running).
+      * At least 2GB of RAM (4GB+ recommended if running mods).
       * 25GB of disk space.
 
 -----
@@ -46,22 +50,22 @@ sudo apt install curl -y
 
 ### 3\. Run the Installer
 
-This is the main command. It will download and run the installation script. It will ask for your `sudo` password.
+This is the main command. It will download the script, compile the necessary patches/mods from source code (`.c`), and set up the environment.
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/noxthewildshadow/TheBlockHeads-Server-BETA/refs/heads/main/installer.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/installer.sh | sudo bash
 ```
 
-The script will automatically do the following:
+The script will automatically:
 
-1.  Install all required dependencies (libraries, `screen`, etc.).
-2.  Download the The BlockHeads server files.
-3.  Download the `server_manager.sh` and `rank_patcher.sh` scripts.
-4.  Apply compatibility patches to the server binary.
+1.  Install dependencies (`clang`, `make`, `screen`, etc.).
+2.  Download the server binary and fix library incompatibilities.
+3.  **Compile Mods & Patches:** It will turn the raw C code into loadable modules (`.so`).
+4.  Organize files into `patches/critical`, `patches/optional`, and `patches/mods`.
 
 ### 4\. Create Your First World
 
-Once the installation is finished, create your world. The server binary has a tool for this:
+Once the installation is finished, create your world using the binary tool:
 
 ```bash
 ./blockheads_server171 -n
@@ -69,20 +73,27 @@ Once the installation is finished, create your world. The server binary has a to
 
 Follow the on-screen instructions to name and configure your world. **When finished, press `CTRL+C` to exit** and return to the terminal.
 
-*To see a list of the worlds you've created, you can use: `./blockheads_server171 -l`*
+*To see a list of the worlds you've created, use: `./blockheads_server171 -l`*
 
-### 5\. Start Your Server
+### 5\. Start Your Server (Interactive Mode)
 
-Now, use the server manager to start your world.
+Now, use the server manager to start your world. This version is **interactive**.
 
 ```bash
 ./server_manager.sh start YourWorldID 12153
 ```
 
-  * Replace `YourWorldName` with the name or ID of the world you created in step 4.
-  * `12153` is the default port. You can change it if you want.
+  * Replace `YourWorldID` with the name of the world you created.
+  * `12153` is the default port.
 
-The manager will start the server and the security script (`rank_patcher`) in the background.
+**During startup, the script will ask you:**
+
+1.  **Start Rank Manager (Security & Ranks)? (y/N):**
+      * Type `y` to enable the password/rank system.
+      * Type `n` to run a vanilla server without the external rank manager.
+2.  **Enable patches/mods:**
+      * It will list every available mod (e.g., `chest_dupe`, `mob_spawner`) and ask if you want to load it for this session.
+      * *Note: Critical security patches (like `name_exploit`) are loaded automatically.*
 
 ### 6\. Connect in the Game
 
@@ -90,6 +101,29 @@ You're all set\! Open The BlockHeads on your phone or PC and connect using:
 
   * **IP:** Your server's IP address.
   * **Port:** `12153` (or the port you chose).
+
+-----
+
+## Mods & Patches System
+
+Your server now supports custom C-based mods and patches. These are stored in the `patches/` folder.
+
+### Critical Patches (Always Active)
+
+  * **`name_exploit`**: Prevents players from joining with invalid names, empty names, or spoofed exploit strings.
+
+### Optional Mods (Toggle on Startup)
+
+You can choose to enable these when starting the server:
+
+  * **`ban_all_new_drops`**: Prevents newly spawned items from dropping on the ground (lag reduction/anti-grief).
+  * **`chest_dupe_plus_any_item`**: Allows specific chest interaction mechanics or duplication features.
+  * **`fill_chest_with_any_id`**: Admin tool to fill chests with specific item IDs.
+  * **`mob_spawner`**: Adds mechanics to spawn mobs.
+  * **`pause_server_world`**: Can freeze the world state.
+  * **`place_banned_blocks`**: Allows admins to place blocks that are usually restricted.
+  * **`spawn_any_tree`**: Custom tree generation tools.
+  * **`freight_car_patch` / `portal_chest_patch`**: Fixes or modifies behavior for specific items to prevent crashes/exploits.
 
 -----
 
@@ -105,83 +139,50 @@ Use the `server_manager.sh` script to control your server.
 
 ### Stopping the Server (Safely)
 
-This will stop both the server and the security script.
+This stops the server, the rank manager, and cleans up the ports.
 
 ```bash
 ./server_manager.sh stop 12153
 ```
 
-*To stop ALL running servers, just use: `./server_manager.sh stop`*
+*To stop ALL running servers: `./server_manager.sh stop`*
 
 ### Checking Status
 
-Shows if the server and patcher are "RUNNING" or "STOPPED".
+Shows if servers are RUNNING or STOPPED, and if the Rank Manager is active.
 
 ```bash
 ./server_manager.sh status 12153
 ```
 
-### Viewing the Server Console
+### Viewing the Console
 
-To see the live server console (and type admin commands), use:
+To see the live server console:
 
 ```bash
 screen -r blockheads_server_12153
 ```
 
-*To exit the console without stopping the server, press: `CTRL+A` and then `D`.*
-
-### Listing All Servers
-
-Shows all servers that are currently running in their `screen` sessions.
-
-```bash
-./server_manager.sh list
-```
-
------
-
-## Important\! Back Up Your Worlds
-
-Your world files are the most important thing. They are saved in the following folder:
-`~/GNUstep/Library/ApplicationSupport/TheBlockheads/saves/`
-
-Be sure to make regular backups of this folder.
+*To exit the console without stopping the server, press: `CTRL+A` then `D`.*
 
 -----
 
 ## Security and Rank System (Rank Patcher)
 
-Your server includes a script (`rank_patcher.sh`) that automatically handles player security and ranks.
+If you chose **"Yes"** to the Rank Manager prompt during startup, the `rank_manager.sh` script is running in the background.
 
-  * **Player Authentication:** Verifies a player's IP. If their IP changes, the script will ask them to verify their identity with their password.
-  * **Password Protection:** All players must create a password to protect their account.
-  * **Automated Ranks:** Applies MOD/ADMIN/SUPER ranks based on the `players.log` file. (The server owner manages this; it is not a "shop").
+  * **Player Authentication:** Verifies IP addresses. If an IP changes, the player must verify with their password.
+  * **Password Protection:** Players must create a password (`!psw`) to play.
+  * **Auto-Kick:** Unverified players are kicked after a grace period.
 
-### Player Commands (in the in-game chat):
+### Player Commands (in-game chat):
 
   * `!psw YOUR_PASSWORD YOUR_PASSWORD`
-    (Use this the first time you join to create your password).
-
+    (Register your password).
   * `!change_psw OLD_PASSWORD NEW_PASSWORD`
-    (To change your password).
-
+    (Change password).
   * `!ip_change YOUR_PASSWORD`
-    (Use this if the server asks you to verify your identity due to an IP change).
-
------
-
-## Advanced: Running Multiple Servers
-
-You can run several worlds at the same time, as long as you use different ports.
-
-```bash
-# Server 1
-./server_manager.sh start MyWorldID1 12153
-
-# Server 2
-./server_manager.sh start MyWorldID2 12154
-```
+    (Verify identity after IP change).
 
 -----
 
@@ -189,39 +190,18 @@ You can run several worlds at the same time, as long as you use different ports.
 
 1.  **"Port already in use"**
 
-      * This means another program (or another BH server) is already using that port.
-      * **Solution:** Choose a different port (e.g., 12154, 12155, etc.).
+      * Use `./server_manager.sh stop PORT` to free it, or choose a different port (e.g., 12154).
 
-    <!-- end list -->
+2.  **"Permission denied"**
 
-    ```bash
-    ./server_manager.sh start YourWorldID 12154
-    ```
+      * Run: `chmod +x server_manager.sh rank_manager.sh installer.sh`
 
-2.  **"World not found"**
+3.  **Mods not working / Compilation errors**
 
-      * **Solution:** Make sure you created the world first with `./blockheads_server171 -n`.
-      * Check that you spelled the name exactly right. Use `./blockheads_server171 -l` to see the correct names.
-
-3.  **"Permission denied"**
-
-      * **Solution:** Make sure the `.sh` files are executable: `chmod +x server_manager.sh rank_patcher.sh`
-
-4.  **Server won't start (Missing Dependencies)**
-
-      * The installer should have handled this, but if it fails, you can try reinstalling the dependencies manually using the manager:
-
-    <!-- end list -->
-
-    ```bash
-    ./server_manager.sh install-deps
-    ```
+      * The installer tries to compile `.c` files to `.so`. If this failed, run `./server_manager.sh install-deps` to ensure you have `clang` and `make`.
+      * Check `patches/` to ensure `.so` files exist.
 
 ## Support
 
-If you still have problems:
-
-1.  Re-read the "Troubleshooting" section.
-2.  Visit the GitHub repository to see updates or "Issues" reported by others:
-    `https://github.com/noxthewildshadow/TheBlockHeads-Server-BETA`
-3.  If you find a new bug, create a new "Issue" on GitHub detailing the problem.
+Oficial discord for updates:
+`https://discord.gg/TTNCvguEmV`
