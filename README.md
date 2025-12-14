@@ -1,7 +1,3 @@
-Aquí tienes la guía actualizada. He modificado los pasos de instalación para reflejar la URL correcta del repositorio (basada en el script anterior), he añadido una nueva sección explicando el **Sistema de Mods y Parches**, y he actualizado el paso de "Start Your Server" para explicar las nuevas preguntas interactivas (Rank Manager y selección de Mods).
-
------
-
 # The BlockHeads Server with EXPLOIT FIXES & MODS - Complete Installation Guide
 
 ## Introduction
