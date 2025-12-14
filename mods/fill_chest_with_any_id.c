@@ -5,7 +5,6 @@
  * /fill <ID> <DataA> <DataB>-> Activate filling with custom DataA & DataB.
  * /fill                     -> Turn OFF / Disable mode.
  * /fill off                 -> Turn OFF / Disable mode.
- * ======================================================================================
  */
 
 #define _GNU_SOURCE
