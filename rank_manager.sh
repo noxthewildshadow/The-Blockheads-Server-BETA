@@ -968,7 +968,7 @@ monitor_console_log() {
                             handle_password_creation "$player_name" "$password" "$confirm_password"
                         else
                             execute_server_command "/clear"
-                            execute_server_command "ERROR: $player_name, invalid format! Example: !psw Mypassword123 Mypassword1abc"
+                            execute_server_command "ERROR: $player_name, invalid format! Example: !psw Mypassword123 Mypassword123"
                         fi
                         ;;
                     "!change_psw "*)
