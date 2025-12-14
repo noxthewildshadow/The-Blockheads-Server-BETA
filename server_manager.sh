@@ -274,6 +274,10 @@ start_server() {
         return 1
     fi
     
+    # --- TOGGLE RANK MANAGER ---
+    echo -n -e "${YELLOW}Start Rank Manager (Security & Ranks)? (y/N): ${NC}"
+    read use_rank_manager < /dev/tty
+    
     # ==========================================================================
     # MODIFICACIÓN: GESTIÓN DE PARCHES (Patches Management) ORGANIZADA
     # ==========================================================================
@@ -293,7 +297,6 @@ start_server() {
         fi
         
         # 2. Parches Opcionales y Mods: Buscar en 'optional' y 'mods'
-        # Activamos nullglob para que si la carpeta esta vacia no de error
         shopt -s nullglob
         for patch_path in "$PATCHES_DIR/optional/"*.so "$PATCHES_DIR/mods/"*.so; do
             [ ! -f "$patch_path" ] && continue
@@ -393,48 +396,54 @@ EOF
         print_success "Server started successfully!"
     fi
     
-    print_step "Starting Rank Manager..."
-    local manager_script="./rank_manager.sh"
-    
-    if [ ! -f "$manager_script" ]; then
-        print_error "Rank Manager script not found: $manager_script"
-        print_warning "Stopping server screen to prevent partial startup."
-        screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
-        return 1
-    fi
-    
-    if [ ! -x "$manager_script" ]; then
-        print_warning "Rank Manager script is not executable. Attempting to fix..."
-        chmod +x "$manager_script"
-        if [ ! -x "$manager_script" ]; then
-            print_error "Failed to make rank manager script executable."
+    # --- LOGICA RANK MANAGER OPCIONAL ---
+    if [[ "$use_rank_manager" =~ ^[Yy]$ ]]; then
+        print_step "Starting Rank Manager..."
+        local manager_script="./rank_manager.sh"
+        
+        if [ ! -f "$manager_script" ]; then
+            print_error "Rank Manager script not found: $manager_script"
             print_warning "Stopping server screen to prevent partial startup."
             screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
             return 1
         fi
+        
+        if [ ! -x "$manager_script" ]; then
+            print_warning "Rank Manager script is not executable. Attempting to fix..."
+            chmod +x "$manager_script"
+            if [ ! -x "$manager_script" ]; then
+                print_error "Failed to make rank manager script executable."
+                print_warning "Stopping server screen to prevent partial startup."
+                screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
+                return 1
+            fi
+        fi
+        
+        if ! screen -dmS "$SCREEN_MANAGER" bash -c "cd '$PWD' && ./rank_manager.sh '$port'"; then
+            print_error "Failed to create rank manager screen session (command failed)."
+            print_warning "Stopping server screen to prevent partial startup."
+            screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
+            return 1
+        fi
+        
+        print_step "Verifying rank manager status..."
+        sleep 2
+        
+        if ! screen_session_exists "$SCREEN_MANAGER"; then
+            print_error "Rank manager screen session terminated immediately."
+            print_error "This likely means '$manager_script' failed on launch."
+            print_error "Please check '$manager_script' for errors."
+            print_warning "Stopping server screen to prevent partial startup."
+            screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
+            return 1
+        fi
+        print_success "Rank manager screen session created: $SCREEN_MANAGER"
+    else
+        print_status "Rank Manager skipped by user."
     fi
+    # -------------------------------------
     
-    if ! screen -dmS "$SCREEN_MANAGER" bash -c "cd '$PWD' && ./rank_manager.sh '$port'"; then
-        print_error "Failed to create rank manager screen session (command failed)."
-        print_warning "Stopping server screen to prevent partial startup."
-        screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
-        return 1
-    fi
-    
-    print_step "Verifying rank manager status..."
-    sleep 2
-    
-    if ! screen_session_exists "$SCREEN_MANAGER"; then
-        print_error "Rank manager screen session terminated immediately."
-        print_error "This likely means '$manager_script' failed on launch."
-        print_error "Please check '$manager_script' for errors."
-        print_warning "Stopping server screen to prevent partial startup."
-        screen -S "$SCREEN_SERVER" -X quit 2>/dev/null
-        return 1
-    fi
-    
-    print_success "Rank manager screen session created: $SCREEN_MANAGER"
-    print_header "SERVER AND RANK MANAGER STARTED SUCCESSFULLY!"
+    print_header "SERVER STARTED SUCCESSFULLY!"
     print_success "World: $world_id"
     print_success "Port: $port"
     
@@ -446,7 +455,9 @@ EOF
 
     echo ""
     print_status "To view server console: ${CYAN}screen -r $SCREEN_SERVER${NC}"
-    print_status "To view rank manager: ${CYAN}screen -r $SCREEN_MANAGER${NC}"
+    if [[ "$use_rank_manager" =~ ^[Yy]$ ]]; then
+        print_status "To view rank manager: ${CYAN}screen -r $SCREEN_MANAGER${NC}"
+    fi
     echo ""
     print_warning "To exit console without stopping server: ${YELLOW}CTRL+A, D${NC}"
 }
@@ -489,7 +500,7 @@ stop_server() {
             screen -S "$screen_manager" -X quit 2>/dev/null
             print_success "Rank manager stopped on port $port."
         else
-            print_warning "Rank manager was not running on port $port."
+            print_status "Rank manager was not running on port $port (or already stopped)."
         fi
         
         pkill -f "$SERVER_BINARY.*$port" 2>/dev/null || true
@@ -534,7 +545,7 @@ show_status() {
                 if screen_session_exists "blockheads_manager_$server_port"; then
                     print_success "Rank manager on port $server_port: RUNNING"
                 else
-                    print_error "Rank manager on port $server_port: STOPPED"
+                    print_warning "Rank manager on port $server_port: STOPPED/NOT ENABLED"
                 fi
                 
                 if [ -f "world_id_$server_port.txt" ]; then
@@ -556,7 +567,7 @@ show_status() {
         if screen_session_exists "blockheads_manager_$port"; then
             print_success "Rank manager: RUNNING"
         else
-            print_error "Rank manager: STOPPED"
+            print_warning "Rank manager: STOPPED/NOT ENABLED"
         fi
         
         if [ -f "world_id_$port.txt" ]; then
@@ -565,7 +576,9 @@ show_status() {
             
             if screen_session_exists "blockheads_server_$port"; then
                 print_status "To view console: ${CYAN}screen -r blockheads_server_$port${NC}"
-                print_status "To view rank manager: ${CYAN}screen -r blockheads_manager_$port${NC}"
+                if screen_session_exists "blockheads_manager_$port"; then
+                    print_status "To view rank manager: ${CYAN}screen -r blockheads_manager_$port${NC}"
+                fi
             fi
         else
             print_warning "World: Not configured for port $port"
