@@ -12,35 +12,17 @@ PURPLE='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-print_status() {
-    echo -e "${BLUE}[INFO]${NC} $1";
-}
-
-print_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1";
-}
-
-print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1";
-}
-
-print_error() {
-    echo -e "${RED}[ERROR]${NC} $1";
-}
-
+print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
+print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 print_header() {
     echo -e "${PURPLE}================================================================================${NC}"
     echo -e "${PURPLE}$1${NC}"
     echo -e "${PURPLE}================================================================================${NC}"
 }
-
-print_step() {
-    echo -e "${CYAN}[STEP]${NC} $1";
-}
-
-print_progress() {
-    echo -e "${MAGENTA}[PROGRESS]${NC} $1";
-}
+print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
+print_progress() { echo -e "${MAGENTA}[PROGRESS]${NC} $1"; }
 
 [ "$EUID" -ne 0 ] && print_error "This script requires root privileges." && exit 1
 
@@ -56,10 +38,18 @@ REPO_RAW_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-
 SERVER_MANAGER_URL="$REPO_RAW_URL/server_manager.sh"
 RANK_MANAGER_URL="$REPO_RAW_URL/rank_manager.sh"
 
-# Listas de parches y mods
+# Listas de parches y mods ACTUALIZADAS SEGUN IMAGEN
 CRITICAL_PATCHES=("name_exploit.c")
 OPTIONAL_PATCHES=("freight_car_patch.c" "portal_chest_patch.c" "portal_patch.c" "trade_portal_patch.c")
-MODS_FILES=("chest_dupe_plus_any_item.c" "mob_spawner.c")
+MODS_FILES=(
+    "ban_all_new_drops.c"
+    "chest_dupe_plus_any_item.c"
+    "fill_chest_with_any_id.c"
+    "mob_spawner.c"
+    "pause_server_world.c"
+    "place_banned_blocks.c"
+    "spawn_any_tree.c"
+)
 
 declare -a PACKAGES_DEBIAN=(
     'git' 'cmake' 'ninja-build' 'clang' 'patchelf' 'libgnustep-base-dev' 'libobjc4'
@@ -137,7 +127,6 @@ download_server_files() {
     fi
 
     # --- CREAR CARPETAS ORGANIZADAS ---
-    # Limpieza de carpetas antiguas si existen
     [ -d "mods" ] && rm -rf "mods"
 
     mkdir -p "patches/critical"
@@ -292,7 +281,6 @@ count_compiled=0
 
 # Compilar recursivamente en todas las subcarpetas de patches/
 if [ -d "patches" ]; then
-    # Usamos find para buscar en critical, mods y optional automáticamente
     while IFS= read -r src_file; do
         if [ -f "$src_file" ]; then
             dir_name=$(dirname "$src_file")
