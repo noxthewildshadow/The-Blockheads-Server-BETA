@@ -38,7 +38,7 @@ REPO_RAW_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-
 SERVER_MANAGER_URL="$REPO_RAW_URL/server_manager.sh"
 RANK_MANAGER_URL="$REPO_RAW_URL/rank_manager.sh"
 
-# Listas de parches y mods ACTUALIZADAS SEGUN IMAGEN Y SOLICITUD
+# --- LISTAS ACTUALIZADAS (Super Repair es CRITICO ahora) ---
 CRITICAL_PATCHES=("name_exploit.c" "super_repair_mode.c")
 OPTIONAL_PATCHES=("freight_car_patch.c" "portal_chest_patch.c" "portal_patch.c" "trade_portal_patch.c")
 MODS_FILES=(
