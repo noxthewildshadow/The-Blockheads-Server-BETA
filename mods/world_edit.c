@@ -62,22 +62,22 @@ typedef id   (*StringFactoryFunc)(id, SEL, const char*);
 typedef void* (*TileAtWorldPosFunc)(int, int, id);
 
 // --- GLOBAL STATE ---
-static FillTileLongFunc   WE45_Real_Fill = NULL;
-static RemoveTileFunc     WE45_Real_RemTile = NULL;
-static RemoveIntFunc      WE45_Real_RemInt = NULL;
-static RemoveWaterFunc    WE45_Real_RemWater = NULL;
-static CmdFunc            WE45_Real_Cmd = NULL;
-static ChatFunc           WE45_Real_Chat = NULL;
-static TileAtWorldPosFunc WE45_CppTileAt = NULL;
+static FillTileLongFunc   WE46_Real_Fill = NULL;
+static RemoveTileFunc     WE46_Real_RemTile = NULL;
+static RemoveIntFunc      WE46_Real_RemInt = NULL;
+static RemoveWaterFunc    WE46_Real_RemWater = NULL;
+static CmdFunc            WE46_Real_Cmd = NULL;
+static ChatFunc           WE46_Real_Chat = NULL;
+static TileAtWorldPosFunc WE46_CppTileAt = NULL;
 
-static id WE45_World = NULL;
-static id WE45_Server = NULL;
-static id WE45_SafeStr = NULL;
-static int WE45_Mode = WE_OFF;
-static IntPair WE45_P1 = {0, 0};
-static IntPair WE45_P2 = {0, 0};
-static bool WE45_HasP1 = false;
-static bool WE45_HasP2 = false;
+static id WE46_World = NULL;
+static id WE46_Server = NULL;
+static id WE46_SafeStr = NULL;
+static int WE46_Mode = WE_OFF;
+static IntPair WE46_P1 = {0, 0};
+static IntPair WE46_P2 = {0, 0};
+static bool WE46_HasP1 = false;
+static bool WE46_HasP2 = false;
 
 // --- Helpers ---
 static const char* GetStr(id strObj) {
@@ -95,8 +95,8 @@ static id MkStr(const char* text) {
 }
 
 static void WE_Chat(const char* fmt, ...) {
-    if (!WE45_Server || !WE45_Real_Chat) {
-        printf("[WE45_LOG] %s\n", fmt); return;
+    if (!WE46_Server || !WE46_Real_Chat) {
+        printf("[WE46_LOG] %s\n", fmt); return;
     }
     char buffer[256];
     va_list args;
@@ -104,7 +104,7 @@ static void WE_Chat(const char* fmt, ...) {
     vsnprintf(buffer, sizeof(buffer), fmt, args);
     va_end(args);
     
-    WE45_Real_Chat(WE45_Server, sel_registerName(SEL_CHAT), MkStr(buffer), NULL);
+    WE46_Real_Chat(WE46_Server, sel_registerName(SEL_CHAT), MkStr(buffer), NULL);
 }
 
 // --- PARSER ---
@@ -138,28 +138,28 @@ static BlockDef WE_Parse(const char* input) {
 // --- Logic ---
 
 static void* WE_GetPtr(IntPair pos) {
-    if (!WE45_CppTileAt || !WE45_World) return NULL;
+    if (!WE46_CppTileAt || !WE46_World) return NULL;
     if (pos.y < 0 || pos.y > 1024) return NULL;
-    return WE45_CppTileAt(pos.x, pos.y, WE45_World);
+    return WE46_CppTileAt(pos.x, pos.y, WE46_World);
 }
 
 // SUPER DELETE
 static void WE_Nuke(IntPair pos) {
-    if (!WE45_World) return;
+    if (!WE46_World) return;
     unsigned long long packedPos = ((unsigned long long)pos.y << 32) | (unsigned int)pos.x;
-    if (WE45_Real_RemInt) WE45_Real_RemInt(WE45_World, sel_registerName(SEL_REM_INT), packedPos, nil);
-    if (WE45_Real_RemWater) WE45_Real_RemWater(WE45_World, sel_registerName(SEL_REM_WATER), packedPos);
-    if (WE45_Real_RemTile) WE45_Real_RemTile(WE45_World, sel_registerName(SEL_NUKE), pos.x, pos.y, 0, 0, NULL, false, false, true, false);
+    if (WE46_Real_RemInt) WE46_Real_RemInt(WE46_World, sel_registerName(SEL_REM_INT), packedPos, nil);
+    if (WE46_Real_RemWater) WE46_Real_RemWater(WE46_World, sel_registerName(SEL_REM_WATER), packedPos);
+    if (WE46_Real_RemTile) WE46_Real_RemTile(WE46_World, sel_registerName(SEL_NUKE), pos.x, pos.y, 0, 0, NULL, false, false, true, false);
 }
 
 // SMART PLACE
 static void WE_Place(IntPair pos, BlockDef def) {
-    if (!WE45_Real_Fill || !WE45_World) return;
-    if (!WE45_SafeStr) WE45_SafeStr = MkStr("WE");
+    if (!WE46_Real_Fill || !WE46_World) return;
+    if (!WE46_SafeStr) WE46_SafeStr = MkStr("WE");
     unsigned long long packedPos = ((unsigned long long)pos.y << 32) | (unsigned int)pos.x;
 
-    WE45_Real_Fill(WE45_World, sel_registerName(SEL_FILL_LONG), 
-                   NULL, packedPos, WE_SAFE_ID, def.dataA, 0, NULL, NULL, NULL, WE45_SafeStr);
+    WE46_Real_Fill(WE46_World, sel_registerName(SEL_FILL_LONG), 
+                   NULL, packedPos, WE_SAFE_ID, def.dataA, 0, NULL, NULL, NULL, WE46_SafeStr);
 
     void* tilePtr = WE_GetPtr(pos);
     if (tilePtr) {
@@ -170,15 +170,15 @@ static void WE_Place(IntPair pos, BlockDef def) {
 }
 
 static void WE_RunOp(int operation, BlockDef def1, BlockDef def2) {
-    if (!WE45_HasP1 || !WE45_HasP2) { WE_Chat("[WE] Error: Points not set. Use /p1 and /p2"); return; }
+    if (!WE46_HasP1 || !WE46_HasP2) { WE_Chat("[WE] Error: Points not set. Use /p1 and /p2"); return; }
     
-    int x1 = (WE45_P1.x < WE45_P2.x) ? WE45_P1.x : WE45_P2.x;
-    int x2 = (WE45_P1.x > WE45_P2.x) ? WE45_P1.x : WE45_P2.x;
-    int y1 = (WE45_P1.y < WE45_P2.y) ? WE45_P1.y : WE45_P2.y;
-    int y2 = (WE45_P1.y > WE45_P2.y) ? WE45_P1.y : WE45_P2.y;
+    int x1 = (WE46_P1.x < WE46_P2.x) ? WE46_P1.x : WE46_P2.x;
+    int x2 = (WE46_P1.x > WE46_P2.x) ? WE46_P1.x : WE46_P2.x;
+    int y1 = (WE46_P1.y < WE46_P2.y) ? WE46_P1.y : WE46_P2.y;
+    int y2 = (WE46_P1.y > WE46_P2.y) ? WE46_P1.y : WE46_P2.y;
     
     int count = 0;
-    if (!WE45_CppTileAt) { WE_Chat("[WE] Critical: Reader Error."); return; }
+    if (!WE46_CppTileAt) { WE_Chat("[WE] Critical: Reader Error."); return; }
 
     for (int x = x1; x <= x2; x++) {
         for (int y = y1; y <= y2; y++) {
@@ -236,52 +236,60 @@ static void WE_RunOp(int operation, BlockDef def1, BlockDef def2) {
 
 // --- Hooks ---
 
-void WE45_Hook_Fill(id self, SEL _cmd, void* tilePtr, unsigned long long packedPos, int type, uint16_t dA, uint16_t dB, id client, id saveDict, id bh, id clientName) {
-    if (WE45_World == NULL) { WE45_World = self; }
+void WE46_Hook_Fill(id self, SEL _cmd, void* tilePtr, unsigned long long packedPos, int type, uint16_t dA, uint16_t dB, id client, id saveDict, id bh, id clientName) {
+    if (WE46_World == NULL) { WE46_World = self; }
 
     int x = (int)(packedPos & 0xFFFFFFFF);
     int y = (int)(packedPos >> 32);
     IntPair pos = {x, y};
 
-    if (WE45_Mode == WE_MODE_P1 && (type == 1 || type == 1024)) {
-        WE45_P1 = pos; WE45_HasP1 = true; WE45_Mode = WE_OFF;
+    if (WE46_Mode == WE_MODE_P1 && (type == 1 || type == 1024)) {
+        WE46_P1 = pos; WE46_HasP1 = true; WE46_Mode = WE_OFF;
         WE_Chat("[WE] Point 1 set at (X: %d, Y: %d)", x, y);
     }
-    else if (WE45_Mode == WE_MODE_P2 && (type == 1 || type == 1024)) {
-        WE45_P2 = pos; WE45_HasP2 = true; WE45_Mode = WE_OFF;
+    else if (WE46_Mode == WE_MODE_P2 && (type == 1 || type == 1024)) {
+        WE46_P2 = pos; WE46_HasP2 = true; WE46_Mode = WE_OFF;
         WE_Chat("[WE] Point 2 set at (X: %d, Y: %d)", x, y);
     }
 
-    if (WE45_Real_Fill) {
-        WE45_Real_Fill(self, _cmd, tilePtr, packedPos, type, dA, dB, client, saveDict, bh, clientName);
+    if (WE46_Real_Fill) {
+        WE46_Real_Fill(self, _cmd, tilePtr, packedPos, type, dA, dB, client, saveDict, bh, clientName);
     }
 }
 
-id WE45_Hook_Cmd(id self, SEL _cmd, id commandStr, id client) {
-    WE45_Server = self; 
+// FIX DE COLISION: Verificar comando exacto
+bool WE_IsCommand(const char* text, const char* cmd) {
+    size_t cmdLen = strlen(cmd);
+    if (strncmp(text, cmd, cmdLen) != 0) return false;
+    // El carácter siguiente debe ser espacio o fin de cadena (para evitar /fill_chest)
+    return (text[cmdLen] == ' ' || text[cmdLen] == '\0');
+}
+
+id WE46_Hook_Cmd(id self, SEL _cmd, id commandStr, id client) {
+    WE46_Server = self; 
     const char* raw = GetStr(commandStr);
-    if (!raw) return WE45_Real_Cmd(self, _cmd, commandStr, client);
+    if (!raw) return WE46_Real_Cmd(self, _cmd, commandStr, client);
     char text[256]; strncpy(text, raw, 255); text[255] = 0;
 
     if (strcasecmp(text, "/we") == 0) {
-        WE45_Mode = WE_OFF; WE45_HasP1 = false; WE45_HasP2 = false;
+        WE46_Mode = WE_OFF; WE46_HasP1 = false; WE46_HasP2 = false;
         WE_Chat("[WE] Tools Reset. Selection Cleared."); return NULL;
     }
     if (strcasecmp(text, "/p1") == 0 || strcasecmp(text, "/we p1") == 0) { 
-        WE45_Mode = WE_MODE_P1; WE_Chat("[WE] Place a block to set Point 1."); return NULL; 
+        WE46_Mode = WE_MODE_P1; WE_Chat("[WE] Place a block to set Point 1."); return NULL; 
     }
     if (strcasecmp(text, "/p2") == 0 || strcasecmp(text, "/we p2") == 0) { 
-        WE45_Mode = WE_MODE_P2; WE_Chat("[WE] Place a block to set Point 2."); return NULL; 
+        WE46_Mode = WE_MODE_P2; WE_Chat("[WE] Place a block to set Point 2."); return NULL; 
     }
 
-    if (strncmp(text, "/del", 4) == 0) {
+    if (WE_IsCommand(text, "/del")) {
         char* token = strtok(text, " "); char* arg = strtok(NULL, " "); 
         BlockDef target = arg ? WE_Parse(arg) : (BlockDef){-1,0,0};
         WE_Chat("[WE] Deleting %s...", arg ? arg : "everything");
         BlockDef dummy = {0}; WE_RunOp(1, target, dummy); return NULL;
     }
     
-    if (strncmp(text, "/fill", 5) == 0) {
+    if (WE_IsCommand(text, "/fill")) {
         char* token = strtok(text, " "); char* arg = strtok(NULL, " ");
         if (arg) { 
             WE_Chat("[WE] Filling with %s...", arg);
@@ -291,7 +299,7 @@ id WE45_Hook_Cmd(id self, SEL _cmd, id commandStr, id client) {
         return NULL;
     }
 
-    if (strncmp(text, "/replace", 8) == 0) {
+    if (WE_IsCommand(text, "/replace")) {
         char* token = strtok(text, " "); char* arg1 = strtok(NULL, " "); char* arg2 = strtok(NULL, " ");
         if (arg1 && arg2) { 
             WE_Chat("[WE] Replacing %s with %s...", arg1, arg2);
@@ -301,14 +309,14 @@ id WE45_Hook_Cmd(id self, SEL _cmd, id commandStr, id client) {
         return NULL;
     }
 
-    return WE45_Real_Cmd(self, _cmd, commandStr, client);
+    return WE46_Real_Cmd(self, _cmd, commandStr, client);
 }
 
-static void* WE45_Init(void* arg) {
+static void* WE46_Init(void* arg) {
     sleep(1);
     void* handle = dlopen(NULL, RTLD_LAZY);
     if (handle) {
-        WE45_CppTileAt = (TileAtWorldPosFunc)dlsym(handle, SYM_TILE_AT);
+        WE46_CppTileAt = (TileAtWorldPosFunc)dlsym(handle, SYM_TILE_AT);
         dlclose(handle);
     }
     
@@ -316,30 +324,30 @@ static void* WE45_Init(void* arg) {
     if (clsWorld) {
         Method mFill = class_getInstanceMethod(clsWorld, sel_registerName(SEL_FILL_LONG));
         if (mFill) {
-            WE45_Real_Fill = (FillTileLongFunc)method_getImplementation(mFill);
-            method_setImplementation(mFill, (IMP)WE45_Hook_Fill);
+            WE46_Real_Fill = (FillTileLongFunc)method_getImplementation(mFill);
+            method_setImplementation(mFill, (IMP)WE46_Hook_Fill);
         }
         Method mNuke = class_getInstanceMethod(clsWorld, sel_registerName(SEL_NUKE));
-        if (mNuke) WE45_Real_RemTile = (RemoveTileFunc)method_getImplementation(mNuke);
+        if (mNuke) WE46_Real_RemTile = (RemoveTileFunc)method_getImplementation(mNuke);
         Method mInt = class_getInstanceMethod(clsWorld, sel_registerName(SEL_REM_INT));
-        if (mInt) WE45_Real_RemInt = (RemoveIntFunc)method_getImplementation(mInt);
+        if (mInt) WE46_Real_RemInt = (RemoveIntFunc)method_getImplementation(mInt);
         Method mWater = class_getInstanceMethod(clsWorld, sel_registerName(SEL_REM_WATER));
-        if (mWater) WE45_Real_RemWater = (RemoveWaterFunc)method_getImplementation(mWater);
+        if (mWater) WE46_Real_RemWater = (RemoveWaterFunc)method_getImplementation(mWater);
         
-        printf("[WE45] World Hooks Loaded.\n");
+        printf("[WE46] World Hooks Loaded.\n");
     }
     
     Class clsServer = objc_getClass(TARGET_SERVER_CLASS);
     if (clsServer) {
         Method mCmd = class_getInstanceMethod(clsServer, sel_registerName(SEL_CMD));
-        WE45_Real_Cmd = (CmdFunc)method_getImplementation(mCmd);
-        method_setImplementation(mCmd, (IMP)WE45_Hook_Cmd);
+        WE46_Real_Cmd = (CmdFunc)method_getImplementation(mCmd);
+        method_setImplementation(mCmd, (IMP)WE46_Hook_Cmd);
         Method mChat = class_getInstanceMethod(clsServer, sel_registerName(SEL_CHAT));
-        WE45_Real_Chat = (ChatFunc)method_getImplementation(mChat);
+        WE46_Real_Chat = (ChatFunc)method_getImplementation(mChat);
     }
     return NULL;
 }
 
-__attribute__((constructor)) static void WE45_Entry() {
-    pthread_t t; pthread_create(&t, NULL, WE45_Init, NULL);
+__attribute__((constructor)) static void WE46_Entry() {
+    pthread_t t; pthread_create(&t, NULL, WE46_Init, NULL);
 }
