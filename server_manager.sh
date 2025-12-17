@@ -279,7 +279,7 @@ start_server() {
     read use_rank_manager < /dev/tty
     
     # ==========================================================================
-    # MODIFICACIÓN: GESTIÓN DE PARCHES (Patches Management) ORGANIZADA
+    # MODIFICACIÓN CRÍTICA: CARGA AUTOMÁTICA DE TODOS LOS PARCHES CRÍTICOS
     # ==========================================================================
     local PRELOAD_STR=""
     local PATCH_LIST=""
@@ -288,12 +288,19 @@ start_server() {
     if [ -d "$PATCHES_DIR" ]; then
         print_status "Scanning '$PATCHES_DIR' for security patches..."
         
-        # 1. Parche Crítico: patches/critical/name_exploit.so
-        if [ -f "$PATCHES_DIR/critical/name_exploit.so" ]; then
-            PATCH_LIST="$PWD/$PATCHES_DIR/critical/name_exploit.so"
-            print_success "Critical Patch [name_exploit] enabled automatically."
-        else
-            print_warning "Critical Patch [name_exploit.so] MISSING in $PATCHES_DIR/critical!"
+        # 1. PARCHES CRÍTICOS (Carga OBLIGATORIA)
+        # Iteramos sobre TODO lo que haya en critical, no solo name_exploit
+        if [ -d "$PATCHES_DIR/critical" ]; then
+            shopt -s nullglob
+            for critical_patch in "$PATCHES_DIR/critical/"*.so; do
+                if [ -z "$PATCH_LIST" ]; then
+                    PATCH_LIST="$PWD/$critical_patch"
+                else
+                    PATCH_LIST="$PATCH_LIST:$PWD/$critical_patch"
+                fi
+                print_success "Critical Patch [$(basename "$critical_patch")] enabled automatically."
+            done
+            shopt -u nullglob
         fi
         
         # 2. Parches Opcionales y Mods: Buscar en 'optional' y 'mods'
