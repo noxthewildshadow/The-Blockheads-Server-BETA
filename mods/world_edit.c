@@ -1,5 +1,5 @@
-
-// /set /p1 /p2 /del /replace
+// WorldEdit
+// Commands: /set <id>, /p1, /p2, /del <id|optional>, /replace <old> <new>
 
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -10,11 +10,8 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <math.h>
 #include <ctype.h>
 #include <stdarg.h>
-
-// --- Includes Nativos ---
 #include <objc/runtime.h>
 #include <objc/message.h>
 
@@ -25,36 +22,32 @@
 // --- Configuration ---
 #define TARGET_SERVER_CLASS "BHServer"
 #define TARGET_WORLD_CLASS  "World"
+#define SYM_TILE_AT         "_Z25tileAtWorldPositionLoadediiP5World"
 
-// --- IDs ---
-#define WE_SAFE_ID  1 
-#define WE_AIR_ID   2
+// --- Safety Limits ---
+#define MAX_BLOCK_LIMIT     10000 // Prevents server freeze/watchdog kill
 
+// --- IDs Constants ---
+#define BLOCK_STONE      1
+#define BLOCK_DIRT       6
+#define BLOCK_LIMESTONE  12
+#define BLOCK_AIR        0
+
+// --- Enums ---
 enum WEMode { WE_OFF = 0, WE_MODE_P1, WE_MODE_P2 };
 
-// --- Selectors ---
-#define SEL_FILL_LONG  "fillTile:atPos:withType:dataA:dataB:placedByClient:saveDict:placedByBlockhead:placedByClientName:"
-#define SEL_REM_INT    "removeInteractionObjectAtPos:removeBlockhead:"
-#define SEL_REM_WATER  "removeWaterTileAtPos:"
-#define SEL_NUKE       "removeTileAtWorldX:worldY:createContentsFreeblockCount:createForegroundContentsFreeblockCount:removeBlockhead:onlyRemoveCOntents:onlyRemoveForegroundContents:sendWorldChangedNotifcation:dontRemoveContents:"
-#define SEL_CMD        "handleCommand:issueClient:"
-#define SEL_CHAT       "sendChatMessage:sendToClients:"
-#define SEL_UTF8       "UTF8String"
-#define SEL_STR        "stringWithUTF8String:"
-
-// --- C++ Symbols ---
-#define SYM_TILE_AT "_Z25tileAtWorldPositionLoadediiP5World"
-
+// --- Structs ---
 typedef struct { int x; int y; } IntPair;
 
 typedef struct {
-    int fgID;      
-    int contentID; 
-    int dataA;     
+    int fgID;      // The Base Block ID (Byte 0)
+    int contentID; // The Content ID (Byte 3)
+    int dataA;     // Extra Data (Byte 2 - e.g., water level)
 } BlockDef;
 
-// --- Function Prototypes ---
-typedef void (*FillTileLongFunc)(id, SEL, void*, unsigned long long, int, uint16_t, uint16_t, id, id, id, id);
+// --- Function Pointers Types ---
+// Explicit types ensure correct register usage on ARM64
+typedef void (*FillTileFunc)(id, SEL, void*, unsigned long long, int, uint16_t, uint16_t, id, id, id, id);
 typedef void (*RemoveTileFunc)(id, SEL, int, int, int, int, id, BOOL, BOOL, BOOL, BOOL);
 typedef id   (*RemoveIntFunc)(id, SEL, unsigned long long, id);
 typedef void (*RemoveWaterFunc)(id, SEL, unsigned long long);
@@ -64,42 +57,43 @@ typedef const char* (*StrFunc)(id, SEL);
 typedef id   (*StringFactoryFunc)(id, SEL, const char*);
 typedef void* (*TileAtWorldPosFunc)(int, int, id);
 
-// --- GLOBAL STATE ---
-static FillTileLongFunc   WE47_Real_Fill = NULL;
-static RemoveTileFunc     WE47_Real_RemTile = NULL;
-static RemoveIntFunc      WE47_Real_RemInt = NULL;
-static RemoveWaterFunc    WE47_Real_RemWater = NULL;
-static CmdFunc            WE47_Real_Cmd = NULL;
-static ChatFunc           WE47_Real_Chat = NULL;
-static TileAtWorldPosFunc WE47_CppTileAt = NULL;
+// --- Global State ---
+static FillTileFunc       Real_Fill      = NULL;
+static RemoveTileFunc     Real_RemTile   = NULL;
+static RemoveIntFunc      Real_RemInt    = NULL;
+static RemoveWaterFunc    Real_RemWater  = NULL;
+static CmdFunc            Real_Cmd       = NULL;
+static ChatFunc           Real_Chat      = NULL;
+static TileAtWorldPosFunc Cpp_TileAt     = NULL;
 
-static id WE47_World = NULL;
-static id WE47_Server = NULL;
-static id WE47_SafeStr = NULL;
-static int WE47_Mode = WE_OFF;
-static IntPair WE47_P1 = {0, 0};
-static IntPair WE47_P2 = {0, 0};
-static bool WE47_HasP1 = false;
-static bool WE47_HasP2 = false;
+static id      G_World   = nil;
+static id      G_Server  = nil;
+static id      G_SafeStr = nil; // Cached "WE" string
+static int     G_Mode    = WE_OFF;
+static IntPair G_P1      = {0, 0};
+static IntPair G_P2      = {0, 0};
+static bool    G_HasP1   = false;
+static bool    G_HasP2   = false;
 
-// --- Helpers ---
+// --- Helper Functions ---
+
 static const char* GetStr(id strObj) {
     if (!strObj) return "";
-    SEL sel = sel_registerName(SEL_UTF8);
+    SEL sel = sel_registerName("UTF8String");
     StrFunc f = (StrFunc)class_getMethodImplementation(object_getClass(strObj), sel);
     return f ? f(strObj, sel) : "";
 }
 
 static id MkStr(const char* text) {
     Class cls = objc_getClass("NSString");
-    SEL sel = sel_registerName(SEL_STR);
+    SEL sel = sel_registerName("stringWithUTF8String:");
     StringFactoryFunc f = (StringFactoryFunc)method_getImplementation(class_getClassMethod(cls, sel));
-    return f ? f((id)cls, sel, text) : NULL;
+    return f ? f((id)cls, sel, text) : nil;
 }
 
 static void WE_Chat(const char* fmt, ...) {
-    if (!WE47_Server || !WE47_Real_Chat) {
-        printf("[WE47_LOG] %s\n", fmt); return;
+    if (!G_Server || !Real_Chat) {
+        printf("[WE_LOG] %s\n", fmt); return;
     }
     char buffer[256];
     va_list args;
@@ -107,250 +101,335 @@ static void WE_Chat(const char* fmt, ...) {
     vsnprintf(buffer, sizeof(buffer), fmt, args);
     va_end(args);
     
-    WE47_Real_Chat(WE47_Server, sel_registerName(SEL_CHAT), MkStr(buffer), NULL);
+    Real_Chat(G_Server, sel_registerName("sendChatMessage:sendToClients:"), MkStr(buffer), nil);
 }
 
-// --- PARSER ---
+// --- Enhanced Parser ---
 static BlockDef WE_Parse(const char* input) {
-    BlockDef def = {WE_AIR_ID, 0, 0}; 
+    BlockDef def = {BLOCK_AIR, 0, 0};
+    if (!input) return def;
+
+    // Numeric ID direct support
     if (isdigit(input[0])) { def.fgID = atoi(input); return def; }
 
-    if (strcasecmp(input, "air") == 0)   { def.fgID = 2; return def; }
-    if (strcasecmp(input, "stone") == 0) { def.fgID = 1; return def; }
-    if (strcasecmp(input, "dirt") == 0)  { def.fgID = 6; return def; }
-    if (strcasecmp(input, "wood") == 0)  { def.fgID = 9; return def; }
-    if (strcasecmp(input, "glass") == 0) { def.fgID = 24; return def; }
+    // Liquids & Basics
+    if (strcasecmp(input, "air") == 0)   { def.fgID = 0; return def; } // Air usually 0
     if (strcasecmp(input, "water") == 0) { def.fgID = 3; def.dataA = 255; return def; }
     if (strcasecmp(input, "lava") == 0)  { def.fgID = 31; def.dataA = 255; return def; }
-    if (strcasecmp(input, "tc") == 0)    { def.fgID = 16; return def; }
-    if (strcasecmp(input, "gold_block") == 0) { def.fgID = 26; return def; }
+    
+    // Solids (Construction)
+    if (strcasecmp(input, "stone") == 0)     { def.fgID = 1; return def; }
+    if (strcasecmp(input, "dirt") == 0)      { def.fgID = 6; return def; }
+    if (strcasecmp(input, "wood") == 0)      { def.fgID = 9; return def; }
+    if (strcasecmp(input, "glass") == 0)     { def.fgID = 24; return def; }
+    if (strcasecmp(input, "brick") == 0)     { def.fgID = 11; return def; }
+    if (strcasecmp(input, "marble") == 0)    { def.fgID = 14; return def; }
+    if (strcasecmp(input, "redmarble") == 0) { def.fgID = 19; return def; }
+    if (strcasecmp(input, "sandstone") == 0) { def.fgID = 17; return def; }
+    if (strcasecmp(input, "steel") == 0)     { def.fgID = 57; return def; }
+    if (strcasecmp(input, "carbon") == 0)    { def.fgID = 69; return def; }
+    if (strcasecmp(input, "ice") == 0)       { def.fgID = 4; return def; }
+    if (strcasecmp(input, "tc") == 0)        { def.fgID = 16; def.dataA = 3; return def; }
 
-    // Ores
-    if (strcasecmp(input, "copper") == 0)   { def.fgID = 1; def.contentID = 61; return def; }
-    if (strcasecmp(input, "tin") == 0)      { def.fgID = 1; def.contentID = 62; return def; }
-    if (strcasecmp(input, "iron") == 0)     { def.fgID = 1; def.contentID = 63; return def; }
-    if (strcasecmp(input, "coal") == 0)     { def.fgID = 1; def.contentID = 65; return def; }
-    if (strcasecmp(input, "gold") == 0)     { def.fgID = 1; def.contentID = 77; return def; }
-    if (strcasecmp(input, "titanium") == 0) { def.fgID = 1; def.contentID = 107; return def; }
-    if (strcasecmp(input, "platinum") == 0) { def.fgID = 1; def.contentID = 106; return def; }
-    if (strcasecmp(input, "oil") == 0)      { def.fgID = 12; def.contentID = 64; return def; }
+    // Ores & Contents (Requiring specific base blocks)
+    // NOTE: Base block setting happens in WE_Place logic
+    if (strcasecmp(input, "flint") == 0)    { def.fgID = BLOCK_DIRT; def.contentID = 1; return def; }
+    if (strcasecmp(input, "clay") == 0)     { def.fgID = BLOCK_DIRT; def.contentID = 2; return def; }
+    if (strcasecmp(input, "oil") == 0)      { def.fgID = BLOCK_LIMESTONE; def.contentID = 64; return def; }
+    
+    if (strcasecmp(input, "copper") == 0)   { def.fgID = BLOCK_STONE; def.contentID = 61; return def; }
+    if (strcasecmp(input, "tin") == 0)      { def.fgID = BLOCK_STONE; def.contentID = 62; return def; }
+    if (strcasecmp(input, "iron") == 0)     { def.fgID = BLOCK_STONE; def.contentID = 63; return def; }
+    if (strcasecmp(input, "coal") == 0)     { def.fgID = BLOCK_STONE; def.contentID = 65; return def; }
+    if (strcasecmp(input, "gold") == 0)     { def.fgID = BLOCK_STONE; def.contentID = 77; return def; }
+    if (strcasecmp(input, "titanium") == 0) { def.fgID = BLOCK_STONE; def.contentID = 107; return def; }
+    if (strcasecmp(input, "platinum") == 0) { def.fgID = BLOCK_STONE; def.contentID = 106; return def; }
 
-    def.fgID = 1; return def;
+    // Gems
+    if (strcasecmp(input, "diamond") == 0)  { def.fgID = BLOCK_STONE; def.contentID = 75; return def; }
+    if (strcasecmp(input, "ruby") == 0)     { def.fgID = BLOCK_STONE; def.contentID = 74; return def; }
+    if (strcasecmp(input, "emerald") == 0)  { def.fgID = BLOCK_STONE; def.contentID = 73; return def; }
+
+    // Fallback: Stone
+    def.fgID = 1; 
+    return def;
 }
 
-// --- Logic ---
+// --- Core Manipulation ---
 
 static void* WE_GetPtr(IntPair pos) {
-    if (!WE47_CppTileAt || !WE47_World) return NULL;
-    if (pos.y < 0 || pos.y > 1024) return NULL;
-    return WE47_CppTileAt(pos.x, pos.y, WE47_World);
+    if (!Cpp_TileAt || !G_World) return NULL;
+    // Bounds Check (Standard BH World Height)
+    if (pos.y < 0 || pos.y > 1024) return NULL; 
+    return Cpp_TileAt(pos.x, pos.y, G_World);
 }
 
-// SUPER DELETE
+// "Nuke" - Completely removes tile, liquids, and interactive objects
 static void WE_Nuke(IntPair pos) {
-    if (!WE47_World) return;
+    if (!G_World) return;
     unsigned long long packedPos = ((unsigned long long)pos.y << 32) | (unsigned int)pos.x;
-    if (WE47_Real_RemInt) WE47_Real_RemInt(WE47_World, sel_registerName(SEL_REM_INT), packedPos, nil);
-    if (WE47_Real_RemWater) WE47_Real_RemWater(WE47_World, sel_registerName(SEL_REM_WATER), packedPos);
-    if (WE47_Real_RemTile) WE47_Real_RemTile(WE47_World, sel_registerName(SEL_NUKE), pos.x, pos.y, 0, 0, NULL, false, false, true, false);
-}
-
-// SMART PLACE
-static void WE_Place(IntPair pos, BlockDef def) {
-    if (!WE47_Real_Fill || !WE47_World) return;
-    if (!WE47_SafeStr) WE47_SafeStr = MkStr("WE");
-    unsigned long long packedPos = ((unsigned long long)pos.y << 32) | (unsigned int)pos.x;
-
-    WE47_Real_Fill(WE47_World, sel_registerName(SEL_FILL_LONG), 
-                   NULL, packedPos, WE_SAFE_ID, def.dataA, 0, NULL, NULL, NULL, WE47_SafeStr);
-
-    void* tilePtr = WE_GetPtr(pos);
-    if (tilePtr) {
-        uint8_t* raw = (uint8_t*)tilePtr;
-        raw[0] = (uint8_t)def.fgID; 
-        raw[3] = (uint8_t)def.contentID;
+    
+    // 1. Remove Interaction Objects (Chests, Benches)
+    if (Real_RemInt) Real_RemInt(G_World, sel_registerName("removeInteractionObjectAtPos:removeBlockhead:"), packedPos, nil);
+    
+    // 2. Remove Water/Liquid
+    if (Real_RemWater) Real_RemWater(G_World, sel_registerName("removeWaterTileAtPos:"), packedPos);
+    
+    // 3. Remove Tile Physics & Data
+    if (Real_RemTile) {
+        Real_RemTile(G_World, sel_registerName("removeTileAtWorldX:worldY:createContentsFreeblockCount:createForegroundContentsFreeblockCount:removeBlockhead:onlyRemoveCOntents:onlyRemoveForegroundContents:sendWorldChangedNotifcation:dontRemoveContents:"), 
+                     pos.x, pos.y, 0, 0, nil, false, false, true, false);
     }
 }
 
-static void WE_RunOp(int operation, BlockDef def1, BlockDef def2) {
-    if (!WE47_HasP1 || !WE47_HasP2) { WE_Chat("[WE] Error: Points not set. Use /p1 and /p2"); return; }
-    
-    int x1 = (WE47_P1.x < WE47_P2.x) ? WE47_P1.x : WE47_P2.x;
-    int x2 = (WE47_P1.x > WE47_P2.x) ? WE47_P1.x : WE47_P2.x;
-    int y1 = (WE47_P1.y < WE47_P2.y) ? WE47_P1.y : WE47_P2.y;
-    int y2 = (WE47_P1.y > WE47_P2.y) ? WE47_P1.y : WE47_P2.y;
-    
-    int count = 0;
-    if (!WE47_CppTileAt) { WE_Chat("[WE] Critical: Reader Error."); return; }
+// "Set" - Smart placement
+static void WE_Place(IntPair pos, BlockDef def) {
+    if (!Real_Fill || !G_World) return;
+    if (!G_SafeStr) G_SafeStr = MkStr("WE_Bot");
 
+    unsigned long long packedPos = ((unsigned long long)pos.y << 32) | (unsigned int)pos.x;
+
+    // 1. Set the Base Block (Physics update)
+    // We pass 0 as dataB/saveDict etc to keep it clean
+    Real_Fill(G_World, sel_registerName("fillTile:atPos:withType:dataA:dataB:placedByClient:saveDict:placedByBlockhead:placedByClientName:"), 
+              nil, packedPos, def.fgID, def.dataA, 0, nil, nil, nil, G_SafeStr);
+
+    // 2. Inject Content (if any)
+    // fillTile generally handles the foreground block. Ores are "contents" inside the tile struct.
+    if (def.contentID > 0) {
+        void* tilePtr = WE_GetPtr(pos);
+        if (tilePtr) {
+            uint8_t* raw = (uint8_t*)tilePtr;
+            // Ensure base block matches parser logic
+            raw[0] = (uint8_t)def.fgID; 
+            // Set content byte (Byte 3 is standard for contents)
+            raw[3] = (uint8_t)def.contentID;
+        }
+    }
+}
+
+// --- Operation Runner ---
+
+static void WE_RunOp(int opCode, BlockDef target, BlockDef replacement) {
+    if (!G_HasP1 || !G_HasP2) { WE_Chat("[WE] Error: Set P1 and P2 first."); return; }
+    
+    int x1 = (G_P1.x < G_P2.x) ? G_P1.x : G_P2.x;
+    int x2 = (G_P1.x > G_P2.x) ? G_P1.x : G_P2.x;
+    int y1 = (G_P1.y < G_P2.y) ? G_P1.y : G_P2.y;
+    int y2 = (G_P1.y > G_P2.y) ? G_P1.y : G_P2.y;
+
+    long long totalBlocks = (long long)(x2 - x1 + 1) * (long long)(y2 - y1 + 1);
+    
+    // Safety Brake
+    if (totalBlocks > MAX_BLOCK_LIMIT) {
+        WE_Chat("[WE] Error: Selection too large (%lld blocks). Limit is %d.", totalBlocks, MAX_BLOCK_LIMIT);
+        return;
+    }
+
+    if (!Cpp_TileAt) { WE_Chat("[WE] Error: Missing C++ Symbol."); return; }
+
+    int count = 0;
+    
     for (int x = x1; x <= x2; x++) {
         for (int y = y1; y <= y2; y++) {
-            IntPair currentPos = {x, y};
-            void* tilePtr = WE_GetPtr(currentPos);
+            IntPair curPos = {x, y};
             
-            int currentID = WE_AIR_ID;
-            int currentContent = 0;
+            // Get current state for checks
+            void* tilePtr = WE_GetPtr(curPos);
+            int curID = BLOCK_AIR;
+            int curCont = 0;
 
             if (tilePtr) {
                 uint8_t* raw = (uint8_t*)tilePtr;
-                currentID = raw[0];
-                currentContent = raw[3];
+                curID = raw[0];
+                curCont = raw[3];
+            } else {
+                continue; // Skip unloaded chunks
             }
 
-            // DEL
-            if (operation == 1) { 
-                bool shouldDelete = false;
-                if (def1.fgID == -1) {
-                    if (currentID != WE_AIR_ID) shouldDelete = true;
-                } else {
-                    if (def1.contentID > 0) {
-                        if (currentID == def1.fgID && currentContent == def1.contentID) shouldDelete = true;
+            // --- OP 1: DELETE ---
+            if (opCode == 1) { 
+                bool hit = false;
+                if (target.fgID == -1) { // Delete All
+                    if (curID != BLOCK_AIR || curCont != 0) hit = true;
+                } else { // Delete Specific
+                    if (target.contentID > 0) {
+                        if (curID == target.fgID && curCont == target.contentID) hit = true;
                     } else {
-                        if (currentID == def1.fgID) shouldDelete = true;
+                        if (curID == target.fgID) hit = true;
                     }
                 }
-                if (shouldDelete) { WE_Nuke(currentPos); count++; }
+                if (hit) { WE_Nuke(curPos); count++; }
             }
-            // SET (Antes FILL)
-            else if (operation == 2) {
-                if (currentID == WE_AIR_ID) { WE_Place(currentPos, def1); count++; }
-            }
-            // REPLACE
-            else if (operation == 3) {
-                bool match = false;
-                if (def1.fgID == WE_AIR_ID && currentID == 2) match = true;
-                else if (def1.contentID > 0) {
-                    if (currentID == def1.fgID && currentContent == def1.contentID) match = true;
-                } else {
-                    if (currentID == def1.fgID) match = true;
+            
+            // --- OP 2: SET ---
+            else if (opCode == 2) {
+                // Only place if different
+                if (curID != target.fgID || (target.contentID > 0 && curCont != target.contentID)) {
+                    WE_Nuke(curPos); // Clean spot first prevents ghost blocks
+                    WE_Place(curPos, target);
+                    count++;
                 }
-
+            }
+            
+            // --- OP 3: REPLACE ---
+            else if (opCode == 3) {
+                bool match = false;
+                // Match Logic
+                if (target.contentID > 0) {
+                    // Match Block+Content (e.g. replace only Coal)
+                    if (curID == target.fgID && curCont == target.contentID) match = true;
+                } else {
+                    // Match Block Type (e.g. replace all Stone)
+                    if (curID == target.fgID) match = true;
+                }
+                
                 if (match) {
-                    if (def2.fgID != WE_AIR_ID) WE_Nuke(currentPos);
-                    WE_Place(currentPos, def2);
+                    WE_Nuke(curPos);
+                    WE_Place(curPos, replacement);
                     count++;
                 }
             }
         }
     }
     
-    WE_Chat("[WE] Operation Complete. Modified %d blocks.", count);
+    WE_Chat("[WE] Done. Affected %d blocks.", count);
 }
 
 // --- Hooks ---
 
-void WE47_Hook_Fill(id self, SEL _cmd, void* tilePtr, unsigned long long packedPos, int type, uint16_t dA, uint16_t dB, id client, id saveDict, id bh, id clientName) {
-    if (WE47_World == NULL) { WE47_World = self; }
+void Hook_FillTile(id self, SEL _cmd, void* tilePtr, unsigned long long packedPos, int type, uint16_t dA, uint16_t dB, id client, id saveDict, id bh, id clientName) {
+    if (!G_World) G_World = self; // Capture World Instance
 
     int x = (int)(packedPos & 0xFFFFFFFF);
     int y = (int)(packedPos >> 32);
-    IntPair pos = {x, y};
-
-    if (WE47_Mode == WE_MODE_P1 && (type == 1 || type == 1024)) {
-        WE47_P1 = pos; WE47_HasP1 = true; WE47_Mode = WE_OFF;
-        WE_Chat("[WE] Point 1 set at (X: %d, Y: %d)", x, y);
+    
+    // P1/P2 Selection Logic
+    // Detects placing Stone (1) or Item Stone (1024)
+    if ((type == 1 || type == 1024)) {
+        if (G_Mode == WE_MODE_P1) {
+            G_P1.x = x; G_P1.y = y; G_HasP1 = true; G_Mode = WE_OFF;
+            WE_Chat("[WE] Point 1 >> (%d, %d)", x, y);
+            // Don't place the block used for selection
+            return; 
+        } 
+        else if (G_Mode == WE_MODE_P2) {
+            G_P2.x = x; G_P2.y = y; G_HasP2 = true; G_Mode = WE_OFF;
+            WE_Chat("[WE] Point 2 >> (%d, %d)", x, y);
+            return;
+        }
     }
-    else if (WE47_Mode == WE_MODE_P2 && (type == 1 || type == 1024)) {
-        WE47_P2 = pos; WE47_HasP2 = true; WE47_Mode = WE_OFF;
-        WE_Chat("[WE] Point 2 set at (X: %d, Y: %d)", x, y);
-    }
 
-    if (WE47_Real_Fill) {
-        WE47_Real_Fill(self, _cmd, tilePtr, packedPos, type, dA, dB, client, saveDict, bh, clientName);
+    if (Real_Fill) {
+        Real_Fill(self, _cmd, tilePtr, packedPos, type, dA, dB, client, saveDict, bh, clientName);
     }
 }
 
-// Helper para chequear comando exacto
-bool WE_IsCommand(const char* text, const char* cmd) {
-    size_t cmdLen = strlen(cmd);
-    if (strncmp(text, cmd, cmdLen) != 0) return false;
-    return (text[cmdLen] == ' ' || text[cmdLen] == '\0');
+bool IsCmd(const char* text, const char* cmd) {
+    size_t len = strlen(cmd);
+    if (strncasecmp(text, cmd, len) != 0) return false;
+    return (text[len] == ' ' || text[len] == '\0');
 }
 
-id WE47_Hook_Cmd(id self, SEL _cmd, id commandStr, id client) {
-    WE47_Server = self; 
+id Hook_HandleCmd(id self, SEL _cmd, id commandStr, id client) {
+    G_Server = self; 
     const char* raw = GetStr(commandStr);
-    if (!raw) return WE47_Real_Cmd(self, _cmd, commandStr, client);
+    if (!raw) return Real_Cmd(self, _cmd, commandStr, client);
+    
     char text[256]; strncpy(text, raw, 255); text[255] = 0;
 
-    if (strcasecmp(text, "/we") == 0) {
-        WE47_Mode = WE_OFF; WE47_HasP1 = false; WE47_HasP2 = false;
-        WE_Chat("[WE] Tools Reset. Selection Cleared."); return NULL;
-    }
-    if (strcasecmp(text, "/p1") == 0 || strcasecmp(text, "/we p1") == 0) { 
-        WE47_Mode = WE_MODE_P1; WE_Chat("[WE] Place a block to set Point 1."); return NULL; 
-    }
-    if (strcasecmp(text, "/p2") == 0 || strcasecmp(text, "/we p2") == 0) { 
-        WE47_Mode = WE_MODE_P2; WE_Chat("[WE] Place a block to set Point 2."); return NULL; 
-    }
-
-    if (WE_IsCommand(text, "/del")) {
-        char* token = strtok(text, " "); char* arg = strtok(NULL, " "); 
-        BlockDef target = arg ? WE_Parse(arg) : (BlockDef){-1,0,0};
-        WE_Chat("[WE] Deleting %s...", arg ? arg : "everything");
-        BlockDef dummy = {0}; WE_RunOp(1, target, dummy); return NULL;
+    // --- Commands ---
+    
+    if (IsCmd(text, "/we")) {
+        G_Mode = WE_OFF; G_HasP1 = false; G_HasP2 = false;
+        WE_Chat("[WE] >> Tools Reset."); return nil;
     }
     
-    // CAMBIO CRITICO: /fill AHORA ES /set
-    if (WE_IsCommand(text, "/set")) {
-        char* token = strtok(text, " "); char* arg = strtok(NULL, " ");
-        if (arg) { 
-            WE_Chat("[WE] Setting %s...", arg);
-            BlockDef def = WE_Parse(arg); BlockDef dummy = {0}; 
-            WE_RunOp(2, def, dummy); 
-        } else WE_Chat("[WE] Usage: /set <block/ore>");
-        return NULL;
+    if (IsCmd(text, "/p1")) { G_Mode = WE_MODE_P1; WE_Chat("[WE] >> Place a block for Point 1."); return nil; }
+    if (IsCmd(text, "/p2")) { G_Mode = WE_MODE_P2; WE_Chat("[WE] >> Place a block for Point 2."); return nil; }
+
+    if (IsCmd(text, "/set")) {
+        char* t = strtok(text, " "); char* arg = strtok(NULL, " ");
+        if (arg) {
+            WE_Chat("[WE] Setting area to %s...", arg);
+            BlockDef def = WE_Parse(arg);
+            WE_RunOp(2, def, (BlockDef){0});
+        } else WE_Chat("Usage: /set <block/ore>");
+        return nil;
     }
 
-    if (WE_IsCommand(text, "/replace")) {
-        char* token = strtok(text, " "); char* arg1 = strtok(NULL, " "); char* arg2 = strtok(NULL, " ");
-        if (arg1 && arg2) { 
-            WE_Chat("[WE] Replacing %s with %s...", arg1, arg2);
-            BlockDef d1 = WE_Parse(arg1); BlockDef d2 = WE_Parse(arg2); 
-            WE_RunOp(3, d1, d2); 
-        } else WE_Chat("[WE] Usage: /replace <old> <new>");
-        return NULL;
+    if (IsCmd(text, "/del")) {
+        char* t = strtok(text, " "); char* arg = strtok(NULL, " ");
+        BlockDef def = {-1,0,0}; // Default: Delete All
+        if (arg) def = WE_Parse(arg);
+        WE_Chat("[WE] Deleting %s...", arg ? arg : "all");
+        WE_RunOp(1, def, (BlockDef){0});
+        return nil;
     }
 
-    return WE47_Real_Cmd(self, _cmd, commandStr, client);
+    if (IsCmd(text, "/replace")) {
+        char* t = strtok(text, " "); char* a1 = strtok(NULL, " "); char* a2 = strtok(NULL, " ");
+        if (a1 && a2) {
+            WE_Chat("[WE] Replacing %s -> %s...", a1, a2);
+            BlockDef old = WE_Parse(a1);
+            BlockDef new = WE_Parse(a2);
+            WE_RunOp(3, old, new);
+        } else WE_Chat("Usage: /replace <old> <new>");
+        return nil;
+    }
+
+    return Real_Cmd(self, _cmd, commandStr, client);
 }
 
-static void* WE47_Init(void* arg) {
+// --- Initialization ---
+
+static void* WE_InitThread(void* arg) {
     sleep(1);
+    
+    // Link C++ Symbol
     void* handle = dlopen(NULL, RTLD_LAZY);
     if (handle) {
-        WE47_CppTileAt = (TileAtWorldPosFunc)dlsym(handle, SYM_TILE_AT);
+        Cpp_TileAt = (TileAtWorldPosFunc)dlsym(handle, SYM_TILE_AT);
         dlclose(handle);
+    } else {
+        printf("[WE] Error: dlopen failed.\n");
     }
-    
+
+    // Hook World Methods
     Class clsWorld = objc_getClass(TARGET_WORLD_CLASS);
     if (clsWorld) {
-        Method mFill = class_getInstanceMethod(clsWorld, sel_registerName(SEL_FILL_LONG));
+        Method mFill = class_getInstanceMethod(clsWorld, sel_registerName("fillTile:atPos:withType:dataA:dataB:placedByClient:saveDict:placedByBlockhead:placedByClientName:"));
         if (mFill) {
-            WE47_Real_Fill = (FillTileLongFunc)method_getImplementation(mFill);
-            method_setImplementation(mFill, (IMP)WE47_Hook_Fill);
+            Real_Fill = (FillTileFunc)method_getImplementation(mFill);
+            method_setImplementation(mFill, (IMP)Hook_FillTile);
         }
-        Method mNuke = class_getInstanceMethod(clsWorld, sel_registerName(SEL_NUKE));
-        if (mNuke) WE47_Real_RemTile = (RemoveTileFunc)method_getImplementation(mNuke);
-        Method mInt = class_getInstanceMethod(clsWorld, sel_registerName(SEL_REM_INT));
-        if (mInt) WE47_Real_RemInt = (RemoveIntFunc)method_getImplementation(mInt);
-        Method mWater = class_getInstanceMethod(clsWorld, sel_registerName(SEL_REM_WATER));
-        if (mWater) WE47_Real_RemWater = (RemoveWaterFunc)method_getImplementation(mWater);
         
-        printf("[WE47] World Hooks Loaded.\n");
+        Method mNuke = class_getInstanceMethod(clsWorld, sel_registerName("removeTileAtWorldX:worldY:createContentsFreeblockCount:createForegroundContentsFreeblockCount:removeBlockhead:onlyRemoveCOntents:onlyRemoveForegroundContents:sendWorldChangedNotifcation:dontRemoveContents:"));
+        if (mNuke) Real_RemTile = (RemoveTileFunc)method_getImplementation(mNuke);
+        
+        Method mInt = class_getInstanceMethod(clsWorld, sel_registerName("removeInteractionObjectAtPos:removeBlockhead:"));
+        if (mInt) Real_RemInt = (RemoveIntFunc)method_getImplementation(mInt);
+        
+        Method mWater = class_getInstanceMethod(clsWorld, sel_registerName("removeWaterTileAtPos:"));
+        if (mWater) Real_RemWater = (RemoveWaterFunc)method_getImplementation(mWater);
     }
-    
+
+    // Hook Server Methods
     Class clsServer = objc_getClass(TARGET_SERVER_CLASS);
     if (clsServer) {
-        Method mCmd = class_getInstanceMethod(clsServer, sel_registerName(SEL_CMD));
-        WE47_Real_Cmd = (CmdFunc)method_getImplementation(mCmd);
-        method_setImplementation(mCmd, (IMP)WE47_Hook_Cmd);
-        Method mChat = class_getInstanceMethod(clsServer, sel_registerName(SEL_CHAT));
-        WE47_Real_Chat = (ChatFunc)method_getImplementation(mChat);
+        Method mCmd = class_getInstanceMethod(clsServer, sel_registerName("handleCommand:issueClient:"));
+        if (mCmd) {
+            Real_Cmd = (CmdFunc)method_getImplementation(mCmd);
+            method_setImplementation(mCmd, (IMP)Hook_HandleCmd);
+        }
+        Method mChat = class_getInstanceMethod(clsServer, sel_registerName("sendChatMessage:sendToClients:"));
+        if (mChat) Real_Chat = (ChatFunc)method_getImplementation(mChat);
     }
+
+    printf("[WE] WorldEdit v2 Loaded.\n");
     return NULL;
 }
 
-__attribute__((constructor)) static void WE47_Entry() {
-    pthread_t t; pthread_create(&t, NULL, WE47_Init, NULL);
+__attribute__((constructor)) static void WE_Entry() {
+    pthread_t t; pthread_create(&t, NULL, WE_InitThread, NULL);
 }
