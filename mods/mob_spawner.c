@@ -40,6 +40,9 @@
 #define SEL_DICT     "dictionaryWithObject:forKey:"
 #define SEL_STR      "stringWithUTF8String:"
 #define SEL_UTF8     "UTF8String"
+#define SEL_ALLOC    "alloc"
+#define SEL_INIT     "init"
+#define SEL_RELEASE  "release"
 
 // --- Mob IDs ---
 enum MobType {
@@ -113,10 +116,31 @@ typedef id   (*DictFactoryFunc)(id, SEL, id, id);
 typedef int  (*CountFunc)(id, SEL);
 typedef id   (*ObjIdxFunc)(id, SEL, unsigned long);
 typedef const char* (*UTF8Func)(id, SEL);
+// Memory Types
+typedef id (*AllocFunc)(id, SEL);
+typedef id (*InitFunc)(id, SEL);
+typedef void (*ReleaseFunc)(id, SEL);
 
 // --- Globals ---
 static CmdFunc  Real_HandleCmd = NULL;
 static ChatFunc Real_SendChat = NULL;
+
+// --- Memory Helpers ---
+static id CreatePool() {
+    Class cls = objc_getClass("NSAutoreleasePool");
+    SEL sAlloc = sel_registerName(SEL_ALLOC);
+    SEL sInit = sel_registerName(SEL_INIT);
+    AllocFunc fAlloc = (AllocFunc)method_getImplementation(class_getClassMethod(cls, sAlloc));
+    InitFunc fInit = (InitFunc)method_getImplementation(class_getInstanceMethod(cls, sInit));
+    return fInit(fAlloc((id)cls, sAlloc), sInit);
+}
+
+static void ReleasePool(id pool) {
+    if(!pool) return;
+    SEL sRel = sel_registerName(SEL_RELEASE);
+    ReleaseFunc fRel = (ReleaseFunc)method_getImplementation(class_getInstanceMethod(object_getClass(pool), sRel));
+    fRel(pool, sRel);
+}
 
 // --- Helpers ---
 
@@ -164,37 +188,37 @@ static int ParseDodoBreed(const char* name) {
     if (!name) return -1;
     if (strcasecmp(name, "titanium") == 0) return DODO_TITANIUM;
     if (strcasecmp(name, "platinum") == 0) return DODO_PLATINUM;
-    if (strcasecmp(name, "gold") == 0)     return DODO_GOLD;
-    if (strcasecmp(name, "iron") == 0)     return DODO_IRON;
-    if (strcasecmp(name, "copper") == 0)   return DODO_COPPER;
-    if (strcasecmp(name, "tin") == 0)      return DODO_TIN;
-    if (strcasecmp(name, "coal") == 0)     return DODO_COAL;
-    if (strcasecmp(name, "oil") == 0)      return DODO_OIL;
-    if (strcasecmp(name, "fuel") == 0)     return DODO_FUEL;
-    if (strcasecmp(name, "diamond") == 0)  return DODO_DIAMOND;
-    if (strcasecmp(name, "ruby") == 0)     return DODO_RUBY;
-    if (strcasecmp(name, "emerald") == 0)  return DODO_EMERALD;
-    if (strcasecmp(name, "sapphire") == 0) return DODO_SAPPHIRE;
-    if (strcasecmp(name, "amethyst") == 0) return DODO_AMETHYST;
-    if (strcasecmp(name, "rainbow") == 0)  return DODO_RAINBOW;
-    if (strcasecmp(name, "glass") == 0)    return DODO_GLASS;
-    if (strcasecmp(name, "stone") == 0)    return DODO_STONE;
-    if (strcasecmp(name, "dirt") == 0)     return DODO_DIRT;
-    if (strcasecmp(name, "wood") == 0)     return DODO_WOOD;
-    if (strcasecmp(name, "ice") == 0)      return DODO_GLASS;
-    if (strcasecmp(name, "lapis") == 0)    return DODO_LAPIS;
+    if (strcasecmp(name, "gold") == 0)      return DODO_GOLD;
+    if (strcasecmp(name, "iron") == 0)      return DODO_IRON;
+    if (strcasecmp(name, "copper") == 0)    return DODO_COPPER;
+    if (strcasecmp(name, "tin") == 0)       return DODO_TIN;
+    if (strcasecmp(name, "coal") == 0)      return DODO_COAL;
+    if (strcasecmp(name, "oil") == 0)       return DODO_OIL;
+    if (strcasecmp(name, "fuel") == 0)      return DODO_FUEL;
+    if (strcasecmp(name, "diamond") == 0)   return DODO_DIAMOND;
+    if (strcasecmp(name, "ruby") == 0)      return DODO_RUBY;
+    if (strcasecmp(name, "emerald") == 0)   return DODO_EMERALD;
+    if (strcasecmp(name, "sapphire") == 0)  return DODO_SAPPHIRE;
+    if (strcasecmp(name, "amethyst") == 0)  return DODO_AMETHYST;
+    if (strcasecmp(name, "rainbow") == 0)   return DODO_RAINBOW;
+    if (strcasecmp(name, "glass") == 0)     return DODO_GLASS;
+    if (strcasecmp(name, "stone") == 0)     return DODO_STONE;
+    if (strcasecmp(name, "dirt") == 0)      return DODO_DIRT;
+    if (strcasecmp(name, "wood") == 0)      return DODO_WOOD;
+    if (strcasecmp(name, "ice") == 0)       return DODO_GLASS;
+    if (strcasecmp(name, "lapis") == 0)     return DODO_LAPIS;
     if (strcasecmp(name, "red_marble") == 0) return DODO_RED_MARBLE;
-    if (strcasecmp(name, "marble") == 0)   return DODO_MARBLE;
-    if (strcasecmp(name, "sand") == 0)     return DODO_SAND;
-    if (strcasecmp(name, "flint") == 0)    return DODO_FLINT;
-    if (strcasecmp(name, "clay") == 0)     return DODO_CLAY;
+    if (strcasecmp(name, "marble") == 0)    return DODO_MARBLE;
+    if (strcasecmp(name, "sand") == 0)      return DODO_SAND;
+    if (strcasecmp(name, "flint") == 0)     return DODO_FLINT;
+    if (strcasecmp(name, "clay") == 0)      return DODO_CLAY;
     return -1;
 }
 
 static int ParseDonkeyBreed(const char* name) {
     if (!name) return -1;
     if (strcasecmp(name, "rainbow") == 0) return DONK_RAINBOW;
-    if (strcasecmp(name, "unicorn") == 0)        return DONK_UNI_RAINBOW;
+    if (strcasecmp(name, "unicorn") == 0)         return DONK_UNI_RAINBOW;
     if (strcasecmp(name, "unicorn_rainbow") == 0) return DONK_UNI_RAINBOW;
     if (strcasecmp(name, "unicorn_white") == 0)   return DONK_UNI_WHITE;
     if (strcasecmp(name, "unicorn_black") == 0)   return DONK_UNI_BLACK;
@@ -282,14 +306,21 @@ static void PrintDonkeyHelp(id self) {
 id Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
     const char* raw = GetCStr(cmdStr);
     if (!raw) return Real_HandleCmd(self, _cmd, cmdStr, client);
+    
+    id pool = CreatePool(); // Inicio gestión de memoria
+
     char text[256]; strncpy(text, raw, 255); text[255] = 0;
 
     // Help
     if (strcasecmp(text, "/help_dodo") == 0) {
-        PrintDodoHelp(self); return nil;
+        PrintDodoHelp(self); 
+        ReleasePool(pool);
+        return nil;
     }
     if (strcasecmp(text, "/help_donkey") == 0) {
-        PrintDonkeyHelp(self); return nil;
+        PrintDonkeyHelp(self); 
+        ReleasePool(pool);
+        return nil;
     }
 
     // Spawn
@@ -299,23 +330,33 @@ id Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
         id dynWorld = nil;
         if (world) object_getInstanceVariable(world, "dynamicWorld", (void**)&dynWorld);
         
-        if (!dynWorld) { SendChat(self, "Error: World system not ready."); return nil; }
+        if (!dynWorld) { 
+            SendChat(self, "Error: World system not ready."); 
+            ReleasePool(pool);
+            return nil; 
+        }
 
-        char *t = strtok(text, " ");
-        char *sID = strtok(NULL, " ");
-        char *sQty = strtok(NULL, " ");
-        char *sPl = strtok(NULL, " ");
-        char *sVar = strtok(NULL, " "); 
-        char *sBaby = strtok(NULL, " ");
+        char *saveptr; // Puntero para strtok_r
+        char *t = strtok_r(text, " ", &saveptr);
+        char *sID = strtok_r(NULL, " ", &saveptr);
+        char *sQty = strtok_r(NULL, " ", &saveptr);
+        char *sPl = strtok_r(NULL, " ", &saveptr);
+        char *sVar = strtok_r(NULL, " ", &saveptr); 
+        char *sBaby = strtok_r(NULL, " ", &saveptr);
 
         if (!sID || !sPl) {
             SendChat(self, "Usage: /spawn <mob> <qty> <player> [variant] [baby]");
             SendChat(self, "Type /help_dodo or /help_donkey for variants.");
+            ReleasePool(pool);
             return nil;
         }
 
         id target = FindPlayer(dynWorld, sPl);
-        if (!target) { SendChat(self, "Player not found."); return nil; }
+        if (!target) { 
+            SendChat(self, "Player not found."); 
+            ReleasePool(pool);
+            return nil; 
+        }
 
         int qty = sQty ? atoi(sQty) : 1;
         if (qty > 20) qty = 20;
@@ -351,9 +392,12 @@ id Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
         } else {
             SendChat(self, "Unknown Mob.");
         }
+        
+        ReleasePool(pool); // Limpieza final
         return nil;
     }
 
+    ReleasePool(pool); // Limpieza si no fue comando nuestro
     return Real_HandleCmd(self, _cmd, cmdStr, client);
 }
 
