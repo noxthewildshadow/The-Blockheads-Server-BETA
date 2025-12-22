@@ -1,5 +1,5 @@
 /*
- * OMNI TOOL (FULL VERSION)
+ * OMNI TOOL (ID FIXED)
  * /place, /wall, /build
  */
 #define _GNU_SOURCE
@@ -21,6 +21,9 @@
 #define BLOCK_DIRT       6
 #define BLOCK_LIMESTONE  12
 #define ITEM_STONE       1024
+
+// ID FIX
+#define TILE_AIR 2 
 
 enum BuildMode { MODE_OFF = 0, MODE_PLACE, MODE_WALL, MODE_BUILD };
 
@@ -67,9 +70,8 @@ static void SendChat(id server, const char* msg) {
     }
 }
 
-// FULL PARSER (ALL BLOCKS/ITEMS RESTORED)
 static int ParseID(const char* input, bool* isContent) {
-    if (isContent) *isContent = true; // Default to content unless proven solid
+    if (isContent) *isContent = true; 
     
     // --- Walls / Poles ---
     if (strcasecmp(input, "north") == 0) return 38;
@@ -77,7 +79,7 @@ static int ParseID(const char* input, bool* isContent) {
     if (strcasecmp(input, "west") == 0)  return 40;
     if (strcasecmp(input, "east") == 0)  return 41;
     
-    // --- Solid Blocks (TileTypes) ---
+    // --- Solid Blocks ---
     bool foundSolid = false;
     int solidID = 0;
 
@@ -93,13 +95,14 @@ static int ParseID(const char* input, bool* isContent) {
     if (strcasecmp(input, "brick") == 0)     { solidID = 11; foundSolid = true; }
     if (strcasecmp(input, "ice") == 0)       { solidID = 4;  foundSolid = true; }
     if (strcasecmp(input, "lapis") == 0)     { solidID = 29; foundSolid = true; }
+    if (strcasecmp(input, "tc") == 0)        { solidID = 16; foundSolid = true; }
 
     if (foundSolid) {
         if (isContent) *isContent = false;
         return solidID;
     }
 
-    // --- Contents (Ores, Gems, Dirt items) ---
+    // --- Contents ---
     if (strcasecmp(input, "flint") == 0) return 1;
     if (strcasecmp(input, "clay") == 0)  return 2;
     if (strcasecmp(input, "copper") == 0)   return 61;
@@ -122,9 +125,8 @@ static int ParseID(const char* input, bool* isContent) {
     if (strcasecmp(input, "gate") == 0)      return 47;
     if (strcasecmp(input, "portal") == 0)    return 47;
     if (strcasecmp(input, "workbench") == 0) return 46;
-    if (strcasecmp(input, "tc") == 0)        return 16;
     
-    // Numeric Fallback
+    // Numeric
     if (isContent) *isContent = false;
     return atoi(input);
 }
@@ -134,7 +136,7 @@ void Hook_FillTile(id self, SEL _cmd, void* tilePtr, IntPair pos, int type, uint
     if (isTrigger) {
         client = nil; bh = nil; clientName = nil; saveDict = nil;
         if (G_Mode == MODE_PLACE && !G_IsContent) {
-            if (G_TargetID == 16) dataA = 3;  
+            if (G_TargetID == 16) dataA = 3; // TC Glow
             if (G_TargetID == 31) dataA = 255; 
             if (G_TargetID == 3)  dataA = 255;
         }
