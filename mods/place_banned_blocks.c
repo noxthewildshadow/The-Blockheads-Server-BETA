@@ -1,5 +1,5 @@
 /*
- * OMNI TOOL
+ * OMNI TOOL (FULL VERSION)
  * /place, /wall, /build
  */
 #define _GNU_SOURCE
@@ -67,25 +67,39 @@ static void SendChat(id server, const char* msg) {
     }
 }
 
+// FULL PARSER (ALL BLOCKS/ITEMS RESTORED)
 static int ParseID(const char* input, bool* isContent) {
-    if (isContent) *isContent = true; 
+    if (isContent) *isContent = true; // Default to content unless proven solid
+    
+    // --- Walls / Poles ---
     if (strcasecmp(input, "north") == 0) return 38;
     if (strcasecmp(input, "south") == 0) return 39;
     if (strcasecmp(input, "west") == 0)  return 40;
     if (strcasecmp(input, "east") == 0)  return 41;
     
+    // --- Solid Blocks (TileTypes) ---
     bool foundSolid = false;
     int solidID = 0;
+
     if (strcasecmp(input, "carbon") == 0)    { solidID = 69; foundSolid = true; }
     if (strcasecmp(input, "steel") == 0)     { solidID = 57; foundSolid = true; }
+    if (strcasecmp(input, "bronze") == 0)    { solidID = 55; foundSolid = true; }
     if (strcasecmp(input, "glass") == 0)     { solidID = 24; foundSolid = true; }
     if (strcasecmp(input, "marble") == 0)    { solidID = 14; foundSolid = true; }
+    if (strcasecmp(input, "redmarble") == 0) { solidID = 19; foundSolid = true; }
+    if (strcasecmp(input, "sandstone") == 0) { solidID = 17; foundSolid = true; }
+    if (strcasecmp(input, "basalt") == 0)    { solidID = 51; foundSolid = true; }
+    if (strcasecmp(input, "gravel") == 0)    { solidID = 70; foundSolid = true; }
+    if (strcasecmp(input, "brick") == 0)     { solidID = 11; foundSolid = true; }
     if (strcasecmp(input, "ice") == 0)       { solidID = 4;  foundSolid = true; }
+    if (strcasecmp(input, "lapis") == 0)     { solidID = 29; foundSolid = true; }
 
     if (foundSolid) {
         if (isContent) *isContent = false;
         return solidID;
     }
+
+    // --- Contents (Ores, Gems, Dirt items) ---
     if (strcasecmp(input, "flint") == 0) return 1;
     if (strcasecmp(input, "clay") == 0)  return 2;
     if (strcasecmp(input, "copper") == 0)   return 61;
@@ -94,9 +108,23 @@ static int ParseID(const char* input, bool* isContent) {
     if (strcasecmp(input, "oil") == 0)      return 64;
     if (strcasecmp(input, "coal") == 0)     return 65;
     if (strcasecmp(input, "gold") == 0)     return 77;
+    if (strcasecmp(input, "platinum") == 0) return 106;
+    if (strcasecmp(input, "titanium") == 0) return 107;
+    
+    // Gems
     if (strcasecmp(input, "diamond") == 0)  return 75;
     if (strcasecmp(input, "ruby") == 0)     return 74;
+    if (strcasecmp(input, "emerald") == 0)  return 73;
+    if (strcasecmp(input, "sapphire") == 0) return 72;
+    if (strcasecmp(input, "amethyst") == 0) return 71;
     
+    // Structures
+    if (strcasecmp(input, "gate") == 0)      return 47;
+    if (strcasecmp(input, "portal") == 0)    return 47;
+    if (strcasecmp(input, "workbench") == 0) return 46;
+    if (strcasecmp(input, "tc") == 0)        return 16;
+    
+    // Numeric Fallback
     if (isContent) *isContent = false;
     return atoi(input);
 }
@@ -163,7 +191,8 @@ id Omni_Hook_HandleCmd(id self, SEL _cmd, id commandStr, id client) {
             G_TargetID = target;
             G_Mode = MODE_PLACE;
             char msg[128];
-            snprintf(msg, 128, ">> [Omni] Place Mode: %s (ID %d).", arg, target);
+            const char* typeStr = G_IsContent ? "Ore/Content" : "Solid Block";
+            snprintf(msg, 128, ">> [Omni] Place Mode: %s (%s ID %d).", arg, typeStr, target);
             SendChat(self, msg);
         } else {
             SendChat(self, ">> [Omni] Error: Unknown ID.");
@@ -185,9 +214,36 @@ id Omni_Hook_HandleCmd(id self, SEL _cmd, id commandStr, id client) {
             char msg[128]; 
             snprintf(msg, 128, ">> [Omni] Wall Mode: ID %d.", target);
             SendChat(self, msg);
+        } else {
+            SendChat(self, ">> [Omni] Error: Unknown ID.");
         }
         return nil;
     }
+    if (strncmp(text, "/build", 6) == 0) {
+        char bufferCopy[256]; strcpy(bufferCopy, text);
+        char* token = strtok(bufferCopy, " "); 
+        char* arg = strtok(NULL, " ");
+        
+        if (!arg || strcasecmp(arg, "off") == 0) {
+            G_Mode = MODE_OFF;
+            SendChat(self, ">> [Omni] Deactivated.");
+            return nil;
+        }
+        G_BuildCount = 0;
+        while (arg != NULL && G_BuildCount < 12) {
+            G_BuildBytes[G_BuildCount] = (uint8_t)atoi(arg);
+            G_BuildCount++;
+            arg = strtok(NULL, " ");
+        }
+        if (G_BuildCount > 0) {
+            G_Mode = MODE_BUILD;
+            char msg[128];
+            snprintf(msg, 128, ">> [Omni] Raw Build: %d bytes.", G_BuildCount);
+            SendChat(self, msg);
+        }
+        return nil;
+    }
+
     return Omni_Real_HandleCmd(self, _cmd, commandStr, client);
 }
 
