@@ -1,11 +1,5 @@
 /*
  * Chest Dupe + Any Item (Stabilized)
- * -----------------------------------------------------
- * Filename: chest_dupe_plus_any_item.c
- * * Commands:
- * /item <ID> <QTY> <PLAYER> [force]  - Spawns items.
- * /block <ID> <QTY> <PLAYER> [force] - Spawns blocks.
- * /dupe [count]                      - Toggles chest duplication.
  */
 
 #define _GNU_SOURCE
@@ -20,10 +14,9 @@
 #include <objc/message.h>
 
 // --- CONSTANTS & SELECTORS ---
-
 #define SERVER_CLASS  "BHServer"
 #define CHEST_CLASS   "Chest"
-#define TARGET_ITEM   1043 // Item ID for Chests
+#define TARGET_ITEM   1043
 
 #define SEL_CMD       "handleCommand:issueClient:"
 #define SEL_CHAT      "sendChatMessage:sendToClients:"
@@ -42,13 +35,10 @@
 #define SEL_INIT      "init"
 #define SEL_RELEASE   "release"
 
-// --- FUNCTION POINTER DEFINITIONS (IMPs) ---
-
 typedef id (*CmdFunc)(id, SEL, id, id);
 typedef void (*ChatFunc)(id, SEL, id, id);
 typedef id (*PlaceFunc)(id, SEL, id, id, long long, id, id, unsigned char, id, id, id);
 typedef id (*SpawnItemFunc)(id, SEL, long long, int, int, int, id, id, BOOL, BOOL, id);
-
 typedef long (*CompareFunc)(id, SEL, id);
 typedef id (*StrFactoryFunc)(id, SEL, const char*);
 typedef id (*ListFunc)(id, SEL);
@@ -57,12 +47,9 @@ typedef id (*ObjIdxFunc)(id, SEL, unsigned long);
 typedef const char* (*UTF8Func)(id, SEL);
 typedef int (*IntFunc)(id, SEL);
 typedef void (*VoidBoolFunc)(id, SEL, BOOL);
-
 typedef id (*AllocFunc)(id, SEL);
 typedef id (*InitFunc)(id, SEL);
 typedef void (*ReleaseFunc)(id, SEL);
-
-// --- GLOBALS ---
 
 static CmdFunc    Freight_Real_HandleCmd = NULL;
 static ChatFunc   Freight_Real_SendChat = NULL;
@@ -71,21 +58,15 @@ static PlaceFunc  Freight_Real_ChestPlace = NULL;
 static bool g_FreightDupeEnabled = false;
 static int  g_FreightDupeCount = 1;
 
-// --- MEMORY MANAGEMENT HELPERS ---
-
 id Freight_CreatePool() {
     Class cls = objc_getClass("NSAutoreleasePool");
     if (!cls) return nil;
-
     SEL sAlloc = sel_registerName(SEL_ALLOC);
     SEL sInit = sel_registerName(SEL_INIT);
-
     Method mAlloc = class_getClassMethod(cls, sAlloc);
     AllocFunc fAlloc = (AllocFunc)method_getImplementation(mAlloc);
-
     Method mInit = class_getInstanceMethod(cls, sInit);
     InitFunc fInit = (InitFunc)method_getImplementation(mInit);
-
     if (fAlloc && fInit) {
         id obj = fAlloc((id)cls, sAlloc); 
         return fInit(obj, sInit);         
@@ -98,13 +79,8 @@ void Freight_Release(id obj) {
     SEL sRel = sel_registerName(SEL_RELEASE);
     Method mRel = class_getInstanceMethod(object_getClass(obj), sRel);
     ReleaseFunc fRel = (ReleaseFunc)method_getImplementation(mRel);
-    
-    if (fRel) {
-        fRel(obj, sRel);
-    }
+    if (fRel) fRel(obj, sRel);
 }
-
-// --- UTILITIES ---
 
 id Freight_MakeNSString(const char* text) {
     if (!text) return nil;
@@ -151,8 +127,7 @@ int Freight_ParseBlockID(int blockID) {
     }
 }
 
-// --- PLAYER LOOKUP (CRASH FIX) ---
-
+// CRASH FIX: Null checks added
 id Freight_FindPlayer(id dynWorld, const char* targetName) {
     if (!dynWorld || !targetName) return nil;
     id nsTarget = Freight_MakeNSString(targetName);
@@ -161,7 +136,6 @@ id Freight_FindPlayer(id dynWorld, const char* targetName) {
     id list = nil;
     SEL sAll = sel_registerName(SEL_ALL_NET);
     Method mAll = class_getInstanceMethod(object_getClass(dynWorld), sAll);
-    
     if (mAll) {
         ListFunc f = (ListFunc)method_getImplementation(mAll);
         if (f) list = f(dynWorld, sAll);
@@ -200,7 +174,6 @@ id Freight_FindPlayer(id dynWorld, const char* targetName) {
                 if (ivName) nsName = *(id*)((char*)bh + ivar_getOffset(ivName));
             }
 
-            // CRASH FIX: Ensure both NSStrings are valid before comparing
             if (nsName && nsTarget) {
                 Method mComp = class_getInstanceMethod(object_getClass(nsName), sComp);
                 if (mComp) {
@@ -214,8 +187,6 @@ id Freight_FindPlayer(id dynWorld, const char* targetName) {
     return nil;
 }
 
-// --- CORE LOGIC ---
-
 void Freight_SpawnItem(id dynWorld, id player, int idVal, int qty, id saveDict) {
     if (!player) return;
     Ivar ivP = class_getInstanceVariable(object_getClass(player), "pos");
@@ -227,26 +198,19 @@ void Freight_SpawnItem(id dynWorld, id player, int idVal, int qty, id saveDict) 
     if (mSpawn) {
         SpawnItemFunc f = (SpawnItemFunc)method_getImplementation(mSpawn);
         for(int i=0; i<qty; i++) {
-            // Passing 0 for hovers/sounds to reduce load
             f(dynWorld, sel, pos, idVal, 1, 0, nil, saveDict, 1, 0, player);
         }
     }
 }
 
-// --- HOOKS ---
-
 id Freight_Hook_ChestPlace(id self, SEL _cmd, id w, id dw, long long pos, id cache, id item, unsigned char flip, id save, id client, id cName) {
     id ret = Freight_Real_ChestPlace(self, _cmd, w, dw, pos, cache, item, flip, save, client, cName);
-    
     if (g_FreightDupeEnabled && ret && item && Freight_GetItemID(item) == TARGET_ITEM) {
         const char* name = Freight_GetCString(cName);
-        
         id pool = Freight_CreatePool();
-
         id player = Freight_FindPlayer(dw, name);
         if (player) {
             Freight_SpawnItem(dw, player, TARGET_ITEM, 1 + g_FreightDupeCount, save);
-            
             SEL sRem = sel_registerName(SEL_REMOVE);
             Method mRem = class_getInstanceMethod(object_getClass(ret), sRem);
             if (mRem) {
@@ -254,7 +218,6 @@ id Freight_Hook_ChestPlace(id self, SEL _cmd, id w, id dw, long long pos, id cac
                 fRem(ret, sRem, 1);
             }
         }
-        
         Freight_Release(pool);
     }
     return ret;
@@ -265,10 +228,7 @@ id Freight_Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
     if (!raw || strlen(raw) == 0) return Freight_Real_HandleCmd(self, _cmd, cmdStr, client);
 
     id pool = Freight_CreatePool();
-
-    char buffer[256]; 
-    strncpy(buffer, raw, 255); 
-    buffer[255] = 0;
+    char buffer[256]; strncpy(buffer, raw, 255); buffer[255] = 0;
     
     bool isItem  = (strncmp(buffer, "/item", 5) == 0);
     bool isBlock = (strncmp(buffer, "/block", 6) == 0);
@@ -282,7 +242,6 @@ id Freight_Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
     id world = nil;
     Ivar ivW = class_getInstanceVariable(object_getClass(self), "world");
     if (ivW) world = *(id*)((char*)self + ivar_getOffset(ivW));
-    
     id dynWorld = nil;
     if (world) {
         Ivar ivD = class_getInstanceVariable(object_getClass(world), "dynamicWorld");
@@ -302,7 +261,6 @@ id Freight_Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
         char* arg1 = strtok_r(NULL, " ", &saveptr);
         char* arg2 = strtok_r(NULL, " ", &saveptr); 
         char msg[128];
-
         if (!arg1) {
             g_FreightDupeEnabled = !g_FreightDupeEnabled;
             if (g_FreightDupeEnabled) g_FreightDupeCount = 1;
@@ -313,12 +271,7 @@ id Freight_Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
                 g_FreightDupeCount = 5;
             }
         }
-
-        if (g_FreightDupeEnabled) {
-            snprintf(msg, 128, ">> [Dupe] Active: Mode 1 Original + %d Copies", g_FreightDupeCount);
-        } else {
-            snprintf(msg, 128, ">> [Dupe] Disabled.");
-        }
+        snprintf(msg, 128, ">> [Dupe] %s", g_FreightDupeEnabled ? "ACTIVE" : "DISABLED");
         Freight_SendChat(self, msg);
         Freight_Release(pool);
         return nil;
@@ -337,56 +290,39 @@ id Freight_Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
 
     id targetBH = Freight_FindPlayer(dynWorld, sPlayer);
     if (!targetBH) {
-        char err[128];
-        snprintf(err, 128, ">> [Error] Player '%s' not found.", sPlayer);
-        Freight_SendChat(self, err);
+        Freight_SendChat(self, ">> [Error] Player not found.");
         Freight_Release(pool);
         return nil;
     }
 
     int qty = sQty ? atoi(sQty) : 1;
     if (qty < 1) qty = 1;
-    
     bool force = false;
     if (sArg4 && strcasecmp(sArg4, "force")==0) force = true;
-    
-    if (!force && qty > 99) {
-        qty = 99;
-        Freight_SendChat(self, ">> [Info] Quantity capped at 99 for safety.");
-    }
+    if (!force && qty > 99) { qty = 99; Freight_SendChat(self, ">> [Info] Capped at 99."); }
 
     int itemID = atoi(sID);
     if (isBlock) itemID = Freight_ParseBlockID(itemID);
     
     Freight_SpawnItem(dynWorld, targetBH, itemID, qty, nil);
-    
-    char successMsg[128];
-    snprintf(successMsg, 128, ">> [Spawner] Given %d x (ID: %d) to %s.", qty, itemID, sPlayer);
-    Freight_SendChat(self, successMsg);
+    Freight_SendChat(self, ">> [Spawner] Done.");
 
     Freight_Release(pool);
     return nil;
 }
 
-// --- INITIALIZATION ---
-
 static void* Freight_InitThread(void* arg) {
     sleep(1);
-    
     Class clsServer = objc_getClass(SERVER_CLASS);
     if (clsServer) {
         SEL sC = sel_registerName(SEL_CMD);
         SEL sT = sel_registerName(SEL_CHAT);
-        
         Method mC = class_getInstanceMethod(clsServer, sC);
         Method mT = class_getInstanceMethod(clsServer, sT);
-
         Freight_Real_HandleCmd = (CmdFunc)method_getImplementation(mC);
         Freight_Real_SendChat  = (ChatFunc)method_getImplementation(mT);
-        
         method_setImplementation(mC, (IMP)Freight_Hook_HandleCmd);
     }
-
     Class clsChest = objc_getClass(CHEST_CLASS);
     if (clsChest) {
         SEL sP = sel_registerName(SEL_PLACE);
@@ -394,11 +330,9 @@ static void* Freight_InitThread(void* arg) {
         Freight_Real_ChestPlace = (PlaceFunc)method_getImplementation(mP);
         method_setImplementation(mP, (IMP)Freight_Hook_ChestPlace);
     }
-
     return NULL;
 }
 
 __attribute__((constructor)) static void Freight_Entry() {
-    pthread_t t; 
-    pthread_create(&t, NULL, Freight_InitThread, NULL);
+    pthread_t t; pthread_create(&t, NULL, Freight_InitThread, NULL);
 }
