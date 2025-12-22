@@ -1,5 +1,5 @@
 /*
- * WorldEdit
+ * WorldEdit (FULL VERSION)
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -82,17 +82,54 @@ static void WE_Chat(const char* fmt, ...) {
     WE_Real_Chat(G_Server, sel_registerName("sendChatMessage:sendToClients:"), MkStr(buffer), nil);
 }
 
+// FULL PARSER (ALL TYPES RESTORED)
 static BlockDef WE_Parse(const char* input) {
     BlockDef def = {BLOCK_AIR, 0, 0};
     if (!input) return def;
+
+    // Numeric ID direct support
     if (isdigit(input[0])) { def.fgID = atoi(input); return def; }
+
+    // Liquids & Basics
     if (strcasecmp(input, "air") == 0)   { def.fgID = 0; return def; }
     if (strcasecmp(input, "water") == 0) { def.fgID = 3; def.dataA = 255; return def; }
     if (strcasecmp(input, "lava") == 0)  { def.fgID = 31; def.dataA = 255; return def; }
-    if (strcasecmp(input, "stone") == 0) { def.fgID = 1; return def; }
-    if (strcasecmp(input, "dirt") == 0)  { def.fgID = 6; return def; }
-    if (strcasecmp(input, "flint") == 0) { def.fgID = BLOCK_DIRT; def.contentID = 1; return def; }
-    if (strcasecmp(input, "diamond") == 0) { def.fgID = BLOCK_STONE; def.contentID = 75; return def; }
+    
+    // Solids
+    if (strcasecmp(input, "stone") == 0)     { def.fgID = 1; return def; }
+    if (strcasecmp(input, "dirt") == 0)      { def.fgID = 6; return def; }
+    if (strcasecmp(input, "wood") == 0)      { def.fgID = 9; return def; }
+    if (strcasecmp(input, "glass") == 0)     { def.fgID = 24; return def; }
+    if (strcasecmp(input, "brick") == 0)     { def.fgID = 11; return def; }
+    if (strcasecmp(input, "marble") == 0)    { def.fgID = 14; return def; }
+    if (strcasecmp(input, "redmarble") == 0) { def.fgID = 19; return def; }
+    if (strcasecmp(input, "sandstone") == 0) { def.fgID = 17; return def; }
+    if (strcasecmp(input, "steel") == 0)     { def.fgID = 57; return def; }
+    if (strcasecmp(input, "carbon") == 0)    { def.fgID = 69; return def; }
+    if (strcasecmp(input, "ice") == 0)       { def.fgID = 4; return def; }
+    if (strcasecmp(input, "tc") == 0)        { def.fgID = 16; def.dataA = 3; return def; }
+
+    // Ores & Contents (Requiring specific base blocks)
+    if (strcasecmp(input, "flint") == 0)    { def.fgID = BLOCK_DIRT; def.contentID = 1; return def; }
+    if (strcasecmp(input, "clay") == 0)     { def.fgID = BLOCK_DIRT; def.contentID = 2; return def; }
+    if (strcasecmp(input, "oil") == 0)      { def.fgID = BLOCK_LIMESTONE; def.contentID = 64; return def; }
+    
+    if (strcasecmp(input, "copper") == 0)   { def.fgID = BLOCK_STONE; def.contentID = 61; return def; }
+    if (strcasecmp(input, "tin") == 0)      { def.fgID = BLOCK_STONE; def.contentID = 62; return def; }
+    if (strcasecmp(input, "iron") == 0)     { def.fgID = BLOCK_STONE; def.contentID = 63; return def; }
+    if (strcasecmp(input, "coal") == 0)     { def.fgID = BLOCK_STONE; def.contentID = 65; return def; }
+    if (strcasecmp(input, "gold") == 0)     { def.fgID = BLOCK_STONE; def.contentID = 77; return def; }
+    if (strcasecmp(input, "titanium") == 0) { def.fgID = BLOCK_STONE; def.contentID = 107; return def; }
+    if (strcasecmp(input, "platinum") == 0) { def.fgID = BLOCK_STONE; def.contentID = 106; return def; }
+
+    // Gems (COMPLETE)
+    if (strcasecmp(input, "diamond") == 0)  { def.fgID = BLOCK_STONE; def.contentID = 75; return def; }
+    if (strcasecmp(input, "ruby") == 0)     { def.fgID = BLOCK_STONE; def.contentID = 74; return def; }
+    if (strcasecmp(input, "emerald") == 0)  { def.fgID = BLOCK_STONE; def.contentID = 73; return def; }
+    if (strcasecmp(input, "sapphire") == 0) { def.fgID = BLOCK_STONE; def.contentID = 72; return def; }
+    if (strcasecmp(input, "amethyst") == 0) { def.fgID = BLOCK_STONE; def.contentID = 71; return def; }
+
+    // Fallback: Stone
     def.fgID = 1; 
     return def;
 }
@@ -157,12 +194,29 @@ static void WE_RunOp(int opCode, BlockDef target, BlockDef replacement) {
             if (opCode == 1) { // Del
                 bool hit = false;
                 if (target.fgID == -1) { if (curID != BLOCK_AIR || curCont != 0) hit = true; } 
-                else { if (curID == target.fgID) hit = true; }
+                else { 
+                    if (target.contentID > 0) {
+                        if (curID == target.fgID && curCont == target.contentID) hit = true;
+                    } else {
+                        if (curID == target.fgID) hit = true;
+                    }
+                }
                 if (hit) { WE_Nuke(curPos); count++; }
             }
             else if (opCode == 2) { // Set
                 if (curID != target.fgID || (target.contentID > 0 && curCont != target.contentID)) {
                     WE_Nuke(curPos); WE_Place(curPos, target); count++;
+                }
+            }
+            else if (opCode == 3) { // Replace
+                bool match = false;
+                if (target.contentID > 0) {
+                    if (curID == target.fgID && curCont == target.contentID) match = true;
+                } else {
+                    if (curID == target.fgID) match = true;
+                }
+                if (match) {
+                    WE_Nuke(curPos); WE_Place(curPos, replacement); count++;
                 }
             }
         }
@@ -208,7 +262,7 @@ id Hook_WE_HandleCmd(id self, SEL _cmd, id commandStr, id client) {
         if (arg) {
             WE_Chat(">> [WE] Setting %s...", arg);
             WE_RunOp(2, WE_Parse(arg), (BlockDef){0});
-        }
+        } else WE_Chat("Usage: /set <block>");
         return nil;
     }
     if (strncmp(text, "/del", 4) == 0) {
@@ -217,6 +271,14 @@ id Hook_WE_HandleCmd(id self, SEL _cmd, id commandStr, id client) {
         if (arg) def = WE_Parse(arg);
         WE_Chat(">> [WE] Deleting %s...", arg ? arg : "all");
         WE_RunOp(1, def, (BlockDef){0});
+        return nil;
+    }
+    if (IsCmd(text, "/replace")) {
+        char* t = strtok(text, " "); char* a1 = strtok(NULL, " "); char* a2 = strtok(NULL, " ");
+        if (a1 && a2) {
+            WE_Chat(">> [WE] Replacing %s -> %s...", a1, a2);
+            WE_RunOp(3, WE_Parse(a1), WE_Parse(a2));
+        } else WE_Chat("Usage: /replace <old> <new>");
         return nil;
     }
     return WE_Real_Cmd(self, _cmd, commandStr, client);
