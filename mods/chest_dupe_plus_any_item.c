@@ -1,12 +1,12 @@
 /*
- * Chest Dupe + Any Item
- * -----------------------------------------------------
+ * Chest Dupe + Any Item Spawner
+ * -----------------------------
  * Filename: chest_dupe_plus_any_item.c
  *
  * Commands:
- * /item <ID> <QTY> <PLAYER> [force]  - Spawns items (caps at 99 unless force is used).
- * /block <ID> <QTY> <PLAYER> [force] - Spawns blocks (converts IDs automatically).
- * /dupe [count]                      - Toggles chest duplication mode.
+ * /item <ID> <QTY> <PLAYER> [force]  - Spawns items safely.
+ * /block <ID> <QTY> <PLAYER> [force] - Spawns blocks (converts IDs).
+ * /dupe [count]                      - Toggles chest duplication.
  */
 
 #define _GNU_SOURCE
@@ -288,7 +288,7 @@ id Freight_Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
     }
 
     if (!dynWorld) {
-        Freight_SendChat(self, "[CD+] Error: Server world not initialized.");
+        Freight_SendChat(self, ">> [Error] Server World not ready.");
         Freight_Release(pool);
         return nil;
     }
@@ -296,6 +296,7 @@ id Freight_Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
     char *saveptr;
     char *token = strtok_r(buffer, " ", &saveptr); 
 
+    // --- DUPE COMMAND ---
     if (isDupe) {
         char* arg1 = strtok_r(NULL, " ", &saveptr);
         char* arg2 = strtok_r(NULL, " ", &saveptr); 
@@ -313,22 +314,24 @@ id Freight_Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
         }
 
         if (g_FreightDupeEnabled) {
-            snprintf(msg, 128, "[CD+] Duplicator: ACTIVE (Mode: 1 Original + %d Copies)", g_FreightDupeCount);
+            snprintf(msg, 128, ">> [Dupe] ENABLED. Multiplier: %d. Place a Chest to dupe it.", g_FreightDupeCount);
         } else {
-            snprintf(msg, 128, "[CD+] Duplicator: DISABLED");
+            snprintf(msg, 128, ">> [Dupe] DISABLED.");
         }
         Freight_SendChat(self, msg);
         Freight_Release(pool);
         return nil;
     }
 
+    // --- ITEM/BLOCK COMMAND ---
     char *sID = strtok_r(NULL, " ", &saveptr);
     char *sQty = strtok_r(NULL, " ", &saveptr);
     char *sPlayer = strtok_r(NULL, " ", &saveptr);
     char *sArg4 = strtok_r(NULL, " ", &saveptr);
 
     if (!sID || !sPlayer) {
-        Freight_SendChat(self, "[CD+] Usage: /item <ID> <Qty> <Player> [force]");
+        Freight_SendChat(self, ">> Usage: /item <ID> <Qty> <Player> [force]");
+        Freight_SendChat(self, ">> Usage: /block <BlockID> <Qty> <Player> [force]");
         Freight_Release(pool);
         return nil;
     }
@@ -336,7 +339,7 @@ id Freight_Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
     id targetBH = Freight_FindPlayer(dynWorld, sPlayer);
     if (!targetBH) {
         char err[128];
-        snprintf(err, 128, "[CD+] Error: Player '%s' not found.", sPlayer);
+        snprintf(err, 128, ">> [Error] Player '%s' not found online.", sPlayer);
         Freight_SendChat(self, err);
         Freight_Release(pool);
         return nil;
@@ -348,9 +351,10 @@ id Freight_Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
     bool force = false;
     if (sArg4 && strcasecmp(sArg4, "force")==0) force = true;
     
+    // Safety Cap
     if (!force && qty > 99) {
         qty = 99;
-        Freight_SendChat(self, "[CD+] Warning: Quantity capped at 99.");
+        Freight_SendChat(self, ">> [Safety] Quantity capped at 99. Use 'force' to override.");
     }
 
     int itemID = atoi(sID);
@@ -359,7 +363,7 @@ id Freight_Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
     Freight_SpawnItem(dynWorld, targetBH, itemID, qty, nil);
     
     char successMsg[128];
-    snprintf(successMsg, 128, "[CD+] Spawned %d x (ID: %d) for %s.", qty, itemID, sPlayer);
+    snprintf(successMsg, 128, ">> [Spawner] Gave %d x (ID: %d) to %s.", qty, itemID, sPlayer);
     Freight_SendChat(self, successMsg);
 
     Freight_Release(pool);
