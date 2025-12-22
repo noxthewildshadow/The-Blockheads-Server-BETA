@@ -1,5 +1,5 @@
 /*
- * WorldEdit (FIXED & FULL)
+ * WorldEdit (HEADER FIXED)
  * Commands: /we, /p1, /p2, /set <block>, /replace <old> <new>, /del <block>
  */
 #define _GNU_SOURCE
@@ -24,10 +24,12 @@
 #define TARGET_WORLD_CLASS  "World"
 #define SYM_TILE_AT         "_Z25tileAtWorldPositionLoadediiP5World"
 #define MAX_BLOCK_LIMIT     10000 
-#define BLOCK_STONE       1
-#define BLOCK_DIRT        6
-#define BLOCK_LIMESTONE   12
-#define BLOCK_AIR         0
+
+// IDs from Provided Headers
+#define TILE_AIR 0
+#define TILE_STONE 1
+#define TILE_DIRT 6
+#define TILE_LIMESTONE 12
 
 enum WEMode { WE_OFF = 0, WE_MODE_P1, WE_MODE_P2 };
 typedef struct { int x; int y; } IntPair;
@@ -83,61 +85,78 @@ static void WE_Chat(const char* fmt, ...) {
     WE_Real_Chat(G_Server, sel_registerName("sendChatMessage:sendToClients:"), MkStr(buffer), nil);
 }
 
-// Helper faltante agregado
 bool IsCmd(const char* text, const char* cmd) {
     size_t len = strlen(cmd);
     if (strncasecmp(text, cmd, len) != 0) return false;
     return (text[len] == ' ' || text[len] == '\0');
 }
 
-// FULL PARSER (Igual que Omni Tool para máxima compatibilidad)
+// FIXED PARSER BASED ON HEADERS
 static BlockDef WE_Parse(const char* input) {
-    BlockDef def = {BLOCK_AIR, 0, 0};
+    BlockDef def = {TILE_AIR, 0, 0};
     if (!input) return def;
 
-    // Numeric ID direct support
-    if (isdigit(input[0])) { def.fgID = atoi(input); return def; }
+    if (isdigit(input[0])) { 
+        def.fgID = atoi(input); 
+        if (def.fgID == 16) def.dataA = 3;   // TILE_TIME_CRYSTAL (0x10) needs glow
+        if (def.fgID == 3)  def.dataA = 255; // TILE_WATER (0x3)
+        if (def.fgID == 31) def.dataA = 255; // TILE_LAVA (0x1F)
+        return def; 
+    }
 
-    // Liquids & Basics
+    // Liquids & Basics (TileType)
     if (strcasecmp(input, "air") == 0)   { def.fgID = 0; return def; }
-    if (strcasecmp(input, "water") == 0) { def.fgID = 3; def.dataA = 255; return def; }
-    if (strcasecmp(input, "lava") == 0)  { def.fgID = 31; def.dataA = 255; return def; }
+    if (strcasecmp(input, "water") == 0) { def.fgID = 3; def.dataA = 255; return def; } // 0x3
+    if (strcasecmp(input, "lava") == 0)  { def.fgID = 31; def.dataA = 255; return def; } // 0x1F
+    if (strcasecmp(input, "ice") == 0)   { def.fgID = 4; return def; } // 0x4
     
-    // Solids
-    if (strcasecmp(input, "stone") == 0)     { def.fgID = 1; return def; }
-    if (strcasecmp(input, "dirt") == 0)      { def.fgID = 6; return def; }
-    if (strcasecmp(input, "wood") == 0)      { def.fgID = 9; return def; }
-    if (strcasecmp(input, "glass") == 0)     { def.fgID = 24; return def; }
-    if (strcasecmp(input, "brick") == 0)     { def.fgID = 11; return def; }
-    if (strcasecmp(input, "marble") == 0)    { def.fgID = 14; return def; }
-    if (strcasecmp(input, "redmarble") == 0) { def.fgID = 19; return def; }
-    if (strcasecmp(input, "sandstone") == 0) { def.fgID = 17; return def; }
-    if (strcasecmp(input, "steel") == 0)     { def.fgID = 57; return def; }
-    if (strcasecmp(input, "carbon") == 0)    { def.fgID = 69; return def; }
-    if (strcasecmp(input, "ice") == 0)       { def.fgID = 4; return def; }
-    if (strcasecmp(input, "tc") == 0)        { def.fgID = 16; def.dataA = 3; return def; }
-    if (strcasecmp(input, "lapis") == 0)     { def.fgID = 29; return def; }
-    if (strcasecmp(input, "basalt") == 0)    { def.fgID = 51; return def; }
-
-    // Ores & Contents (Requiring specific base blocks)
-    if (strcasecmp(input, "flint") == 0)    { def.fgID = BLOCK_DIRT; def.contentID = 1; return def; }
-    if (strcasecmp(input, "clay") == 0)     { def.fgID = BLOCK_DIRT; def.contentID = 2; return def; }
-    if (strcasecmp(input, "oil") == 0)      { def.fgID = BLOCK_LIMESTONE; def.contentID = 64; return def; }
+    // Solids (TileType)
+    if (strcasecmp(input, "stone") == 0)     { def.fgID = 1; return def; } // 0x1
+    if (strcasecmp(input, "dirt") == 0)      { def.fgID = 6; return def; } // 0x6
+    if (strcasecmp(input, "wood") == 0)      { def.fgID = 9; return def; } // 0x9
+    if (strcasecmp(input, "glass") == 0)     { def.fgID = 24; return def; } // 0x18
+    if (strcasecmp(input, "brick") == 0)     { def.fgID = 11; return def; } // 0xB
+    if (strcasecmp(input, "marble") == 0)    { def.fgID = 14; return def; } // 0xE
+    if (strcasecmp(input, "sandstone") == 0) { def.fgID = 17; return def; } // 0x11
+    if (strcasecmp(input, "red_marble") == 0){ def.fgID = 19; return def; } // 0x13
+    if (strcasecmp(input, "lapis") == 0)     { def.fgID = 29; return def; } // 0x1D
+    if (strcasecmp(input, "basalt") == 0)    { def.fgID = 51; return def; } // 0x33
     
-    if (strcasecmp(input, "copper") == 0)   { def.fgID = BLOCK_STONE; def.contentID = 61; return def; }
-    if (strcasecmp(input, "tin") == 0)      { def.fgID = BLOCK_STONE; def.contentID = 62; return def; }
-    if (strcasecmp(input, "iron") == 0)     { def.fgID = BLOCK_STONE; def.contentID = 63; return def; }
-    if (strcasecmp(input, "coal") == 0)     { def.fgID = BLOCK_STONE; def.contentID = 65; return def; }
-    if (strcasecmp(input, "gold") == 0)     { def.fgID = BLOCK_STONE; def.contentID = 77; return def; }
-    if (strcasecmp(input, "titanium") == 0) { def.fgID = BLOCK_STONE; def.contentID = 107; return def; }
-    if (strcasecmp(input, "platinum") == 0) { def.fgID = BLOCK_STONE; def.contentID = 106; return def; }
+    // Rare Blocks (TileType)
+    if (strcasecmp(input, "steel") == 0)        { def.fgID = 57; return def; } // 0x39
+    if (strcasecmp(input, "gold_block") == 0)   { def.fgID = 26; return def; } // 0x1A
+    if (strcasecmp(input, "carbon") == 0)       { def.fgID = 69; return def; } // 0x45
+    if (strcasecmp(input, "titanium_block") == 0){ def.fgID = 68; return def; } // 0x44
+    if (strcasecmp(input, "platinum_block") == 0){ def.fgID = 67; return def; } // 0x43
+    if (strcasecmp(input, "tc") == 0)           { def.fgID = 16; def.dataA = 3; return def; } // 0x10
 
-    // Gems (COMPLETE)
-    if (strcasecmp(input, "diamond") == 0)  { def.fgID = BLOCK_STONE; def.contentID = 75; return def; }
-    if (strcasecmp(input, "ruby") == 0)     { def.fgID = BLOCK_STONE; def.contentID = 74; return def; }
-    if (strcasecmp(input, "emerald") == 0)  { def.fgID = BLOCK_STONE; def.contentID = 73; return def; }
-    if (strcasecmp(input, "sapphire") == 0) { def.fgID = BLOCK_STONE; def.contentID = 72; return def; }
-    if (strcasecmp(input, "amethyst") == 0) { def.fgID = BLOCK_STONE; def.contentID = 71; return def; }
+    // Solid Gem Blocks (TileType)
+    if (strcasecmp(input, "amethyst_block") == 0) { def.fgID = 71; return def; } // 0x47
+    if (strcasecmp(input, "sapphire_block") == 0) { def.fgID = 72; return def; } // 0x48
+    if (strcasecmp(input, "emerald_block") == 0)  { def.fgID = 73; return def; } // 0x49
+    if (strcasecmp(input, "ruby_block") == 0)     { def.fgID = 74; return def; } // 0x4A
+    if (strcasecmp(input, "diamond_block") == 0)  { def.fgID = 75; return def; } // 0x4B
+
+    // Ores & Contents (Base + TileContents)
+    // NOTE: TileContents confirms these IDs
+    if (strcasecmp(input, "flint") == 0)    { def.fgID = TILE_DIRT; def.contentID = 1; return def; } // 0x1
+    if (strcasecmp(input, "clay") == 0)     { def.fgID = TILE_DIRT; def.contentID = 2; return def; } // 0x2
+    if (strcasecmp(input, "oil") == 0)      { def.fgID = TILE_LIMESTONE; def.contentID = 64; return def; } // 0x40
+    
+    if (strcasecmp(input, "copper") == 0)   { def.fgID = TILE_STONE; def.contentID = 61; return def; } // 0x3D
+    if (strcasecmp(input, "tin") == 0)      { def.fgID = TILE_STONE; def.contentID = 62; return def; } // 0x3E
+    if (strcasecmp(input, "iron") == 0)     { def.fgID = TILE_STONE; def.contentID = 63; return def; } // 0x3F
+    if (strcasecmp(input, "coal") == 0)     { def.fgID = TILE_STONE; def.contentID = 65; return def; } // 0x41
+    if (strcasecmp(input, "gold") == 0)     { def.fgID = TILE_STONE; def.contentID = 77; return def; } // 0x4D
+    if (strcasecmp(input, "platinum") == 0) { def.fgID = TILE_STONE; def.contentID = 106; return def; } // 0x6A
+    if (strcasecmp(input, "titanium") == 0) { def.fgID = TILE_STONE; def.contentID = 107; return def; } // 0x6B
+
+    // Gems (Embedded in Stone - TileContents)
+    if (strcasecmp(input, "ruby") == 0)     { def.fgID = TILE_STONE; def.contentID = 51; return def; } // 0x33
+    if (strcasecmp(input, "emerald") == 0)  { def.fgID = TILE_STONE; def.contentID = 53; return def; } // 0x35
+    if (strcasecmp(input, "sapphire") == 0) { def.fgID = TILE_STONE; def.contentID = 55; return def; } // 0x37
+    if (strcasecmp(input, "amethyst") == 0) { def.fgID = TILE_STONE; def.contentID = 57; return def; } // 0x39
+    if (strcasecmp(input, "diamond") == 0)  { def.fgID = TILE_STONE; def.contentID = 59; return def; } // 0x3B
 
     // Fallback: Stone
     def.fgID = 1; 
@@ -203,7 +222,7 @@ static void WE_RunOp(int opCode, BlockDef target, BlockDef replacement) {
 
             if (opCode == 1) { // Del
                 bool hit = false;
-                if (target.fgID == -1) { if (curID != BLOCK_AIR || curCont != 0) hit = true; } 
+                if (target.fgID == -1) { if (curID != TILE_AIR || curCont != 0) hit = true; } 
                 else { 
                     if (target.contentID > 0) {
                         if (curID == target.fgID && curCont == target.contentID) hit = true;
