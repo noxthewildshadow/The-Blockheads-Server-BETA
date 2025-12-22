@@ -1,10 +1,7 @@
 /*
- * Ban Drops / Clear New Drops
- * ---------------------------
- * Prevents items from dropping on the ground when blocks are broken
- * or items are discarded.
- *
+ * Ban Drops / Clear Drops Mod
  * Command: /ban_drops
+ * Description: Prevents items from dropping on the ground to reduce lag or clear mess.
  */
 
 #define _GNU_SOURCE
@@ -21,29 +18,23 @@
 #define BAN_SERVER_CLASS "BHServer"
 #define BAN_DYN_WORLD    "DynamicWorld"
 
-// Global flag
-static bool g_BanDrops_Active = false;
+static bool g_ClearDrops_Active = false;
 
-// Function Pointers
 typedef id (*Ban_CmdFunc)(id, SEL, id, id);
 typedef void (*Ban_ChatFunc)(id, SEL, id, id);
 typedef id (*Ban_DropFunc)(id, SEL, id);
-typedef id (*Ban_StrFactoryFunc)(id, SEL, const char*);
-typedef const char* (*Ban_Utf8Func)(id, SEL);
 
-// Originals
 static Ban_CmdFunc  Real_Ban_HandleCmd = NULL;
 static Ban_ChatFunc Real_Ban_SendChat = NULL;
 static Ban_DropFunc Real_Ban_ClientDrop = NULL;
 
-// Helpers
 static id Ban_AllocStr(const char* text) {
     if (!text) return nil;
     Class cls = objc_getClass("NSString");
     SEL sel = sel_registerName("stringWithUTF8String:");
     Method m = class_getClassMethod(cls, sel);
     if (!m) return nil;
-    Ban_StrFactoryFunc f = (Ban_StrFactoryFunc)method_getImplementation(m);
+    id (*f)(id,SEL,const char*) = (void*)method_getImplementation(m);
     return f ? f((id)cls, sel, text) : nil;
 }
 
@@ -52,7 +43,7 @@ static const char* Ban_GetCStr(id str) {
     SEL sel = sel_registerName("UTF8String");
     Method m = class_getInstanceMethod(object_getClass(str), sel);
     if (!m) return "";
-    Ban_Utf8Func f = (Ban_Utf8Func)method_getImplementation(m);
+    const char* (*f)(id, SEL) = (void*)method_getImplementation(m);
     return f ? f(str, sel) : "";
 }
 
@@ -62,11 +53,8 @@ static void Ban_SendMsg(id server, const char* msg) {
     }
 }
 
-// Hooks
 id Hook_Ban_ClientDrop(id self, SEL _cmd, id data) {
-    // If active, return nil to prevent the drop logic from executing
-    if (g_BanDrops_Active) return nil;
-    
+    if (g_ClearDrops_Active) return nil;
     if (Real_Ban_ClientDrop) return Real_Ban_ClientDrop(self, _cmd, data);
     return nil;
 }
@@ -74,25 +62,26 @@ id Hook_Ban_ClientDrop(id self, SEL _cmd, id data) {
 id Hook_Ban_Cmd(id self, SEL _cmd, id cmdStr, id client) {
     const char* raw = Ban_GetCStr(cmdStr);
     
-    // Command Logic
+    // Command changed to /ban_drops as requested
     if (raw && strncmp(raw, "/ban_drops", 10) == 0) {
-        g_BanDrops_Active = !g_BanDrops_Active;
-        
+        g_ClearDrops_Active = !g_ClearDrops_Active;
         char msg[128];
-        snprintf(msg, 128, ">> [System] Drop Ban is now: %s", g_BanDrops_Active ? "ACTIVE (No drops)" : "DISABLED (Drops allowed)");
+        if (g_ClearDrops_Active) {
+            snprintf(msg, 128, ">> [System] Drop Ban: ENABLED. (Items will vanish instantly)");
+        } else {
+            snprintf(msg, 128, ">> [System] Drop Ban: DISABLED. (Items drop normally)");
+        }
         Ban_SendMsg(self, msg);
-        
-        return nil; // Consume command
+        return nil;
     }
 
     if (Real_Ban_HandleCmd) return Real_Ban_HandleCmd(self, _cmd, cmdStr, client);
     return nil;
 }
 
-// Init
 static void* BanDrops_InitThread(void* arg) {
+    // Increased sleep to 2 seconds to avoid collision with other instant-load scripts
     sleep(2);
-    printf("[BanDrops] Initializing...\n");
     
     Class clsSrv = objc_getClass(BAN_SERVER_CLASS);
     Class clsDW = objc_getClass(BAN_DYN_WORLD);
@@ -118,8 +107,6 @@ static void* BanDrops_InitThread(void* arg) {
             method_setImplementation(mDrop, (IMP)Hook_Ban_ClientDrop);
         }
     }
-    
-    printf("[BanDrops] Ready. Use /ban_drops\n");
     return NULL;
 }
 
