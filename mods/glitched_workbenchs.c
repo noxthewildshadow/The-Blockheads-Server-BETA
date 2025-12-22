@@ -1,22 +1,9 @@
 /*
- * ======================================================================================
- *
- * 1. /chaos
- * - Activates RANDOM Mode.
- * - Action: Place Stone (Block ID 1) or Stone Item (ID 1024).
- * - Result: Generates a random seed/type for every block placed.
- * - Logs: Checks the SERVER CONSOLE for the "Seed" and "Type" generated.
- *
- * 2. /glitch <TYPE> <SEED>
- * - Activates REPLICATOR (Fixed) Mode.
- * - Usage: /glitch 4 1928374
- * - Action: Forces the specified Type and Seed on every Stone placed.
- * - Use this to replicate a specific glitch found using /chaos.
- *
- * 3. /glitch off
- * - Disables the mod immediately.
- *
- * ======================================================================================
+ * Replicator / Chaos Mod
+ * ----------------------
+ * 1. /chaos           - Activates RANDOM Mode. Place Stone to generate random tiles.
+ * 2. /glitch <T> <S>  - Activates FIXED Mode (Type/Seed). Replicates a specific glitch.
+ * 3. /glitch off      - Disables the mod.
  */
 
 #define _GNU_SOURCE
@@ -45,7 +32,7 @@
 #define SEL_CHAT     "sendChatMessage:sendToClients:"
 #define SEL_FILL     "fillTile:atPos:withType:dataA:dataB:placedByClient:saveDict:placedByBlockhead:placedByClientName:"
 
-// --- Typedefs (Function Pointers) ---
+// --- Typedefs ---
 typedef struct { int x; int y; } IntPair;
 
 typedef void (*Imp_Fill)(id, SEL, void*, IntPair, int, uint16_t, uint16_t, id, id, id, id);
@@ -69,7 +56,7 @@ static int G_Mode      = 0; // 0=OFF, 1=RANDOM, 2=FIXED
 static int G_FixedType = 3;
 static int G_FixedSeed = 0;
 
-// --- Runtime Helpers (No objc_msgSend) ---
+// --- Runtime Helpers ---
 
 static IMP GetClassIMP(const char* className, const char* selName) {
     Class cls = objc_getClass(className);
@@ -87,7 +74,6 @@ static IMP GetInstIMP(id obj, const char* selName) {
     return m ? method_getImplementation(m) : NULL;
 }
 
-// Cached Wrappers for common objects
 id NbInt(int val) {
     static Imp_NbInt imp = NULL;
     static Class cls = NULL;
@@ -156,23 +142,18 @@ id CreateSeededDict(int seed, int* outType) {
     SEL selSet = sel_registerName("setObject:forKey:");
 
     if (impSet) {
-        // ID Generation: Random 1-20
         int t = (rand() % 20) + 1;
         if (outType) *outType = t;
 
         impSet(dict, selSet, NbInt(t), MkStr("id"));
-        
-        // High level to break textures/logic
         impSet(dict, selSet, NbInt((rand() % 15) + 1), MkStr("level"));
 
-        // Random Garbage Data
         char keyBuf[16];
         for (char c = 'C'; c <= 'F'; c++) {
             sprintf(keyBuf, "data%c", c);
             impSet(dict, selSet, NbInt(rand()), MkStr(keyBuf));
         }
 
-        // Hybrid Properties
         if (rand() % 2) impSet(dict, selSet, NbInt((rand() % 5)), MkStr("chestType"));
         
         impSet(dict, selSet, NbInt(1), MkStr("hasFuel"));
@@ -188,30 +169,29 @@ id Hook_Cmd(id self, SEL _cmd, id cmdStr, id client) {
     const char* txt = GetDesc(cmdStr); 
     char buffer[256];
     
-    // /chaos -> Modo Random
     if (txt && strcasecmp(txt, "/chaos") == 0) {
         G_Mode = 1; 
-        SendMsg(self, "[CHAOS] ON. Place STONE. Check CONSOLE for Seeds.");
+        SendMsg(self, ">> [CHAOS] RANDOM Mode Active. Place Stone to generate random tiles.");
+        SendMsg(self, ">> Check Server Console for Seeds/Types.");
         return nil;
     }
 
-    // /glitch TYPE SEED -> Modo Replicar
     if (txt && strncmp(txt, "/glitch", 7) == 0) {
         int typeArg = 0;
         int seedArg = 0;
         
         if (strcasecmp(txt, "/glitch off") == 0) {
             G_Mode = 0;
-            SendMsg(self, "[GLITCH] OFF.");
+            SendMsg(self, ">> [Glitch] DISABLED.");
         } 
         else if (sscanf(txt, "/glitch %d %d", &typeArg, &seedArg) == 2) {
             G_Mode = 2;
             G_FixedType = typeArg;
             G_FixedSeed = seedArg;
-            sprintf(buffer, "[REPLICATOR] Locked: Type %d | Seed %d", G_FixedType, G_FixedSeed);
+            sprintf(buffer, ">> [Glitch] REPLICATOR Active. Type: %d, Seed: %d.", G_FixedType, G_FixedSeed);
             SendMsg(self, buffer);
         } else {
-            SendMsg(self, "Usage: /glitch <TYPE> <SEED> (Get data from console)");
+            SendMsg(self, ">> Usage: /glitch <TYPE> <SEED> (Get data from console)");
         }
         return nil;
     }
@@ -222,33 +202,24 @@ id Hook_Cmd(id self, SEL _cmd, id cmdStr, id client) {
 
 void Hook_FillTile(id self, SEL _cmd, void* tile, IntPair pos, int type, uint16_t dA, uint16_t dB, id client, id dict, id bh, id name) {
     
-    // DETECTOR DE STONE (P1/P2 logic compatible)
     if (G_Mode > 0 && (type == ID_STONE_BLOCK || type == ID_STONE_ITEM)) {
-        
         int typeToUse = 0;
         int seedToUse = 0;
 
-        if (G_Mode == 1) { // RANDOM MODE
+        if (G_Mode == 1) { 
             seedToUse = (int)time(NULL) + pos.x + pos.y + rand();
-        } else { // FIXED MODE
+        } else { 
             typeToUse = G_FixedType;
             seedToUse = G_FixedSeed;
         }
 
-        // Create corrupt dictionary
         id junkDict = CreateSeededDict(seedToUse, &typeToUse);
-        
-        // Ensure Fixed Type consistency
         if (G_Mode == 2) typeToUse = G_FixedType;
 
-        // SAFE LOGGING (Console Only - No Chat calls here)
         if (G_Mode == 1) {
-            printf("[CHAOS] Type: %d | Seed: %d | Replicate: /glitch %d %d\n", typeToUse, seedToUse, typeToUse, seedToUse);
-        } else {
-            printf("[REPLICATOR] Injecting Type %d Seed %d\n", typeToUse, seedToUse);
+            printf("[CHAOS] Type: %d | Seed: %d | Cmd: /glitch %d %d\n", typeToUse, seedToUse, typeToUse, seedToUse);
         }
 
-        // Injection: Call PlaceWorkbench instead of FillTile
         if (Real_PlaceWB) {
             Real_PlaceWB(self, sel_registerName(SEL_PLACE_WB), 
                          typeToUse, pos, junkDict, client, bh, name);
@@ -267,7 +238,6 @@ void* InitThread(void* arg) {
     sleep(1);
     srand(time(NULL));
 
-    // Hook World
     Class world = objc_getClass(TARGET_WORLD); 
     if (world) {
         Method mFill = class_getInstanceMethod(world, sel_registerName(SEL_FILL));
@@ -280,7 +250,6 @@ void* InitThread(void* arg) {
         if (mWB) Real_PlaceWB = (Imp_PlaceWB)method_getImplementation(mWB);
     }
 
-    // Hook Server
     Class server = objc_getClass(TARGET_SERVER);
     if (server) {
         Method mCmd = class_getInstanceMethod(server, sel_registerName(SEL_CMD));
@@ -291,7 +260,7 @@ void* InitThread(void* arg) {
         Real_Chat = (Imp_Chat)method_getImplementation(mChat);
     }
 
-    printf("[WE47] Replicator V40 (Clean & Stable) Loaded.\n");
+    printf("[System] Replicator/Chaos Loaded.\n");
     return NULL;
 }
 
