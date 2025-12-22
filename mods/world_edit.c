@@ -1,5 +1,5 @@
 /*
- * WorldEdit (HEADER FIXED)
+ * WorldEdit (STABLE & FIXED ID 2)
  * Commands: /we, /p1, /p2, /set <block>, /replace <old> <new>, /del <block>
  */
 #define _GNU_SOURCE
@@ -25,16 +25,18 @@
 #define SYM_TILE_AT         "_Z25tileAtWorldPositionLoadediiP5World"
 #define MAX_BLOCK_LIMIT     10000 
 
-// IDs from Provided Headers
-#define TILE_AIR 0
-#define TILE_STONE 1
-#define TILE_DIRT 6
-#define TILE_LIMESTONE 12
+// --- FIXED IDS BASED ON TileType ENUM ---
+#define BLOCK_AIR         2  // FIXED: Was 0, now 2 (TILE_AIR)
+#define BLOCK_ROCK        1
+#define BLOCK_DIRT        6
+#define BLOCK_LIMESTONE   12
+#define BLOCK_TC          16 // TILE_TIME_CRYSTAL
 
 enum WEMode { WE_OFF = 0, WE_MODE_P1, WE_MODE_P2 };
 typedef struct { int x; int y; } IntPair;
 typedef struct { int fgID; int contentID; int dataA; } BlockDef;
 
+// Explicit types for ARM64 stability
 typedef void (*FillTileFunc)(id, SEL, void*, unsigned long long, int, uint16_t, uint16_t, id, id, id, id);
 typedef void (*RemoveTileFunc)(id, SEL, int, int, int, int, id, BOOL, BOOL, BOOL, BOOL);
 typedef id   (*RemoveIntFunc)(id, SEL, unsigned long long, id);
@@ -60,6 +62,8 @@ static IntPair G_P1      = {0, 0};
 static IntPair G_P2      = {0, 0};
 static bool    G_HasP1   = false;
 static bool    G_HasP2   = false;
+
+// --- Helpers ---
 
 static const char* GetStr(id strObj) {
     if (!strObj) return "";
@@ -91,74 +95,65 @@ bool IsCmd(const char* text, const char* cmd) {
     return (text[len] == ' ' || text[len] == '\0');
 }
 
-// FIXED PARSER BASED ON HEADERS
+// --- PARSER (FIXED FOR AIR ID 2) ---
 static BlockDef WE_Parse(const char* input) {
-    BlockDef def = {TILE_AIR, 0, 0};
+    BlockDef def = {BLOCK_AIR, 0, 0}; // Default to Air (2)
     if (!input) return def;
 
+    // Numeric ID direct support
     if (isdigit(input[0])) { 
         def.fgID = atoi(input); 
-        if (def.fgID == 16) def.dataA = 3;   // TILE_TIME_CRYSTAL (0x10) needs glow
-        if (def.fgID == 3)  def.dataA = 255; // TILE_WATER (0x3)
-        if (def.fgID == 31) def.dataA = 255; // TILE_LAVA (0x1F)
+        // Special case for TC Block to give it glow/data if user typed "16"
+        if (def.fgID == 16) def.dataA = 3; 
         return def; 
     }
 
-    // Liquids & Basics (TileType)
-    if (strcasecmp(input, "air") == 0)   { def.fgID = 0; return def; }
-    if (strcasecmp(input, "water") == 0) { def.fgID = 3; def.dataA = 255; return def; } // 0x3
-    if (strcasecmp(input, "lava") == 0)  { def.fgID = 31; def.dataA = 255; return def; } // 0x1F
-    if (strcasecmp(input, "ice") == 0)   { def.fgID = 4; return def; } // 0x4
+    // Liquids & Basics
+    if (strcasecmp(input, "air") == 0)   { def.fgID = 2; return def; } // TILE_AIR
+    if (strcasecmp(input, "water") == 0) { def.fgID = 3; def.dataA = 255; return def; } // TILE_WATER
+    if (strcasecmp(input, "lava") == 0)  { def.fgID = 31; def.dataA = 255; return def; } // TILE_LAVA
     
-    // Solids (TileType)
-    if (strcasecmp(input, "stone") == 0)     { def.fgID = 1; return def; } // 0x1
-    if (strcasecmp(input, "dirt") == 0)      { def.fgID = 6; return def; } // 0x6
-    if (strcasecmp(input, "wood") == 0)      { def.fgID = 9; return def; } // 0x9
-    if (strcasecmp(input, "glass") == 0)     { def.fgID = 24; return def; } // 0x18
-    if (strcasecmp(input, "brick") == 0)     { def.fgID = 11; return def; } // 0xB
-    if (strcasecmp(input, "marble") == 0)    { def.fgID = 14; return def; } // 0xE
-    if (strcasecmp(input, "sandstone") == 0) { def.fgID = 17; return def; } // 0x11
-    if (strcasecmp(input, "red_marble") == 0){ def.fgID = 19; return def; } // 0x13
-    if (strcasecmp(input, "lapis") == 0)     { def.fgID = 29; return def; } // 0x1D
-    if (strcasecmp(input, "basalt") == 0)    { def.fgID = 51; return def; } // 0x33
+    // Solids (Based on TileType Enum)
+    if (strcasecmp(input, "rock") == 0)      { def.fgID = 1; return def; }
+    if (strcasecmp(input, "stone") == 0)     { def.fgID = 1; return def; }
+    if (strcasecmp(input, "dirt") == 0)      { def.fgID = 6; return def; }
+    if (strcasecmp(input, "sand") == 0)      { def.fgID = 7; return def; }
+    if (strcasecmp(input, "wood") == 0)      { def.fgID = 9; return def; }
+    if (strcasecmp(input, "glass") == 0)     { def.fgID = 24; return def; }
+    if (strcasecmp(input, "brick") == 0)     { def.fgID = 11; return def; }
+    if (strcasecmp(input, "marble") == 0)    { def.fgID = 14; return def; }
+    if (strcasecmp(input, "redmarble") == 0) { def.fgID = 19; return def; }
+    if (strcasecmp(input, "sandstone") == 0) { def.fgID = 17; return def; }
+    if (strcasecmp(input, "steel") == 0)     { def.fgID = 57; return def; }
+    if (strcasecmp(input, "carbon") == 0)    { def.fgID = 69; return def; }
+    if (strcasecmp(input, "ice") == 0)       { def.fgID = 4; return def; }
+    if (strcasecmp(input, "snow") == 0)      { def.fgID = 5; return def; }
+    if (strcasecmp(input, "tc") == 0)        { def.fgID = 16; def.dataA = 3; return def; }
+    if (strcasecmp(input, "lapis") == 0)     { def.fgID = 29; return def; }
+    if (strcasecmp(input, "basalt") == 0)    { def.fgID = 51; return def; }
+    if (strcasecmp(input, "compost") == 0)   { def.fgID = 48; return def; } // TILE_COMPOST
+
+    // Ores & Contents (Requiring specific base blocks)
+    if (strcasecmp(input, "flint") == 0)    { def.fgID = BLOCK_DIRT; def.contentID = 1; return def; }
+    if (strcasecmp(input, "clay") == 0)     { def.fgID = BLOCK_DIRT; def.contentID = 2; return def; }
+    if (strcasecmp(input, "oil") == 0)      { def.fgID = BLOCK_LIMESTONE; def.contentID = 64; return def; }
     
-    // Rare Blocks (TileType)
-    if (strcasecmp(input, "steel") == 0)        { def.fgID = 57; return def; } // 0x39
-    if (strcasecmp(input, "gold_block") == 0)   { def.fgID = 26; return def; } // 0x1A
-    if (strcasecmp(input, "carbon") == 0)       { def.fgID = 69; return def; } // 0x45
-    if (strcasecmp(input, "titanium_block") == 0){ def.fgID = 68; return def; } // 0x44
-    if (strcasecmp(input, "platinum_block") == 0){ def.fgID = 67; return def; } // 0x43
-    if (strcasecmp(input, "tc") == 0)           { def.fgID = 16; def.dataA = 3; return def; } // 0x10
+    if (strcasecmp(input, "copper") == 0)   { def.fgID = BLOCK_ROCK; def.contentID = 61; return def; }
+    if (strcasecmp(input, "tin") == 0)      { def.fgID = BLOCK_ROCK; def.contentID = 62; return def; }
+    if (strcasecmp(input, "iron") == 0)     { def.fgID = BLOCK_ROCK; def.contentID = 63; return def; }
+    if (strcasecmp(input, "coal") == 0)     { def.fgID = BLOCK_ROCK; def.contentID = 65; return def; }
+    if (strcasecmp(input, "gold") == 0)     { def.fgID = BLOCK_ROCK; def.contentID = 77; return def; }
+    if (strcasecmp(input, "titanium") == 0) { def.fgID = BLOCK_ROCK; def.contentID = 107; return def; }
+    if (strcasecmp(input, "platinum") == 0) { def.fgID = BLOCK_ROCK; def.contentID = 106; return def; }
 
-    // Solid Gem Blocks (TileType)
-    if (strcasecmp(input, "amethyst_block") == 0) { def.fgID = 71; return def; } // 0x47
-    if (strcasecmp(input, "sapphire_block") == 0) { def.fgID = 72; return def; } // 0x48
-    if (strcasecmp(input, "emerald_block") == 0)  { def.fgID = 73; return def; } // 0x49
-    if (strcasecmp(input, "ruby_block") == 0)     { def.fgID = 74; return def; } // 0x4A
-    if (strcasecmp(input, "diamond_block") == 0)  { def.fgID = 75; return def; } // 0x4B
+    // Gems (COMPLETE)
+    if (strcasecmp(input, "diamond") == 0)  { def.fgID = BLOCK_ROCK; def.contentID = 75; return def; }
+    if (strcasecmp(input, "ruby") == 0)     { def.fgID = BLOCK_ROCK; def.contentID = 74; return def; }
+    if (strcasecmp(input, "emerald") == 0)  { def.fgID = BLOCK_ROCK; def.contentID = 73; return def; }
+    if (strcasecmp(input, "sapphire") == 0) { def.fgID = BLOCK_ROCK; def.contentID = 72; return def; }
+    if (strcasecmp(input, "amethyst") == 0) { def.fgID = BLOCK_ROCK; def.contentID = 71; return def; }
 
-    // Ores & Contents (Base + TileContents)
-    // NOTE: TileContents confirms these IDs
-    if (strcasecmp(input, "flint") == 0)    { def.fgID = TILE_DIRT; def.contentID = 1; return def; } // 0x1
-    if (strcasecmp(input, "clay") == 0)     { def.fgID = TILE_DIRT; def.contentID = 2; return def; } // 0x2
-    if (strcasecmp(input, "oil") == 0)      { def.fgID = TILE_LIMESTONE; def.contentID = 64; return def; } // 0x40
-    
-    if (strcasecmp(input, "copper") == 0)   { def.fgID = TILE_STONE; def.contentID = 61; return def; } // 0x3D
-    if (strcasecmp(input, "tin") == 0)      { def.fgID = TILE_STONE; def.contentID = 62; return def; } // 0x3E
-    if (strcasecmp(input, "iron") == 0)     { def.fgID = TILE_STONE; def.contentID = 63; return def; } // 0x3F
-    if (strcasecmp(input, "coal") == 0)     { def.fgID = TILE_STONE; def.contentID = 65; return def; } // 0x41
-    if (strcasecmp(input, "gold") == 0)     { def.fgID = TILE_STONE; def.contentID = 77; return def; } // 0x4D
-    if (strcasecmp(input, "platinum") == 0) { def.fgID = TILE_STONE; def.contentID = 106; return def; } // 0x6A
-    if (strcasecmp(input, "titanium") == 0) { def.fgID = TILE_STONE; def.contentID = 107; return def; } // 0x6B
-
-    // Gems (Embedded in Stone - TileContents)
-    if (strcasecmp(input, "ruby") == 0)     { def.fgID = TILE_STONE; def.contentID = 51; return def; } // 0x33
-    if (strcasecmp(input, "emerald") == 0)  { def.fgID = TILE_STONE; def.contentID = 53; return def; } // 0x35
-    if (strcasecmp(input, "sapphire") == 0) { def.fgID = TILE_STONE; def.contentID = 55; return def; } // 0x37
-    if (strcasecmp(input, "amethyst") == 0) { def.fgID = TILE_STONE; def.contentID = 57; return def; } // 0x39
-    if (strcasecmp(input, "diamond") == 0)  { def.fgID = TILE_STONE; def.contentID = 59; return def; } // 0x3B
-
-    // Fallback: Stone
+    // Fallback: Rock
     def.fgID = 1; 
     return def;
 }
@@ -169,11 +164,14 @@ static void* WE_GetPtr(IntPair pos) {
     return WE_Cpp_TileAt(pos.x, pos.y, G_World);
 }
 
+// Fixed Nuke to properly handle ID 2 (Air) logic
 static void WE_Nuke(IntPair pos) {
     if (!G_World) return;
     unsigned long long packedPos = ((unsigned long long)pos.y << 32) | (unsigned int)pos.x;
     if (WE_Real_RemInt) WE_Real_RemInt(G_World, sel_registerName("removeInteractionObjectAtPos:removeBlockhead:"), packedPos, nil);
     if (WE_Real_RemWater) WE_Real_RemWater(G_World, sel_registerName("removeWaterTileAtPos:"), packedPos);
+    
+    // Removing tile essentially sets it to AIR (2)
     if (WE_Real_RemTile) {
         WE_Real_RemTile(G_World, sel_registerName("removeTileAtWorldX:worldY:createContentsFreeblockCount:createForegroundContentsFreeblockCount:removeBlockhead:onlyRemoveCOntents:onlyRemoveForegroundContents:sendWorldChangedNotifcation:dontRemoveContents:"), 
                        pos.x, pos.y, 0, 0, nil, false, false, true, false);
@@ -183,8 +181,12 @@ static void WE_Nuke(IntPair pos) {
 static void WE_Place(IntPair pos, BlockDef def) {
     if (!WE_Real_Fill || !G_World) return;
     unsigned long long packedPos = ((unsigned long long)pos.y << 32) | (unsigned int)pos.x;
+    
+    // FillTile sets the base block ID (Byte 0)
     WE_Real_Fill(G_World, sel_registerName("fillTile:atPos:withType:dataA:dataB:placedByClient:saveDict:placedByBlockhead:placedByClientName:"), 
                nil, packedPos, def.fgID, def.dataA, 0, nil, nil, nil, MkStr("WE_Bot"));
+    
+    // Manually inject content (Byte 3) if needed
     if (def.contentID > 0) {
         void* tilePtr = WE_GetPtr(pos);
         if (tilePtr) {
@@ -197,23 +199,28 @@ static void WE_Place(IntPair pos, BlockDef def) {
 
 static void WE_RunOp(int opCode, BlockDef target, BlockDef replacement) {
     if (!G_HasP1 || !G_HasP2) { WE_Chat(">> [WE] Error: Set P1 and P2."); return; }
+    
+    // Coordinates Normalization
     int x1 = (G_P1.x < G_P2.x) ? G_P1.x : G_P2.x;
     int x2 = (G_P1.x > G_P2.x) ? G_P1.x : G_P2.x;
     int y1 = (G_P1.y < G_P2.y) ? G_P1.y : G_P2.y;
     int y2 = (G_P1.y > G_P2.y) ? G_P1.y : G_P2.y;
+    
     long long totalBlocks = (long long)(x2 - x1 + 1) * (long long)(y2 - y1 + 1);
     
     if (totalBlocks > MAX_BLOCK_LIMIT) {
         WE_Chat(">> [WE] Error: Limit %d blocks.", MAX_BLOCK_LIMIT);
         return;
     }
+    
     int count = 0;
     for (int x = x1; x <= x2; x++) {
         for (int y = y1; y <= y2; y++) {
             IntPair curPos = {x, y};
             void* tilePtr = WE_GetPtr(curPos);
-            int curID = BLOCK_AIR;
+            int curID = BLOCK_AIR; // Default to 2
             int curCont = 0;
+            
             if (tilePtr) {
                 uint8_t* raw = (uint8_t*)tilePtr;
                 curID = raw[0];
@@ -222,7 +229,10 @@ static void WE_RunOp(int opCode, BlockDef target, BlockDef replacement) {
 
             if (opCode == 1) { // Del
                 bool hit = false;
-                if (target.fgID == -1) { if (curID != TILE_AIR || curCont != 0) hit = true; } 
+                if (target.fgID == -1) { 
+                    // If not Air(2) or has content, delete it
+                    if (curID != BLOCK_AIR || curCont != 0) hit = true; 
+                } 
                 else { 
                     if (target.contentID > 0) {
                         if (curID == target.fgID && curCont == target.contentID) hit = true;
@@ -233,8 +243,12 @@ static void WE_RunOp(int opCode, BlockDef target, BlockDef replacement) {
                 if (hit) { WE_Nuke(curPos); count++; }
             }
             else if (opCode == 2) { // Set
+                // If it's already the target, don't lag the server
                 if (curID != target.fgID || (target.contentID > 0 && curCont != target.contentID)) {
-                    WE_Nuke(curPos); WE_Place(curPos, target); count++;
+                    // Force Nuke first to clear existing complex blocks (chests, etc)
+                    WE_Nuke(curPos); 
+                    WE_Place(curPos, target); 
+                    count++;
                 }
             }
             else if (opCode == 3) { // Replace
@@ -245,7 +259,9 @@ static void WE_RunOp(int opCode, BlockDef target, BlockDef replacement) {
                     if (curID == target.fgID) match = true;
                 }
                 if (match) {
-                    WE_Nuke(curPos); WE_Place(curPos, replacement); count++;
+                    WE_Nuke(curPos); 
+                    WE_Place(curPos, replacement); 
+                    count++;
                 }
             }
         }
@@ -258,6 +274,7 @@ void Hook_WE_FillTile(id self, SEL _cmd, void* tilePtr, unsigned long long packe
     int x = (int)(packedPos & 0xFFFFFFFF);
     int y = (int)(packedPos >> 32);
     
+    // Capture P1/P2 using Stone or Item Stone
     if ((type == 1 || type == 1024)) {
         if (G_Mode == WE_MODE_P1) {
             G_P1.x = x; G_P1.y = y; G_HasP1 = true; G_Mode = WE_OFF;
@@ -289,8 +306,9 @@ id Hook_WE_HandleCmd(id self, SEL _cmd, id commandStr, id client) {
     if (IsCmd(text, "/set")) {
         char* t = strtok(text, " "); char* arg = strtok(NULL, " ");
         if (arg) {
-            WE_Chat(">> [WE] Setting %s...", arg);
-            WE_RunOp(2, WE_Parse(arg), (BlockDef){0});
+            BlockDef def = WE_Parse(arg);
+            WE_Chat(">> [WE] Setting ID %d (Cont: %d)...", def.fgID, def.contentID);
+            WE_RunOp(2, def, (BlockDef){0});
         } else WE_Chat("Usage: /set <block>");
         return nil;
     }
@@ -298,15 +316,17 @@ id Hook_WE_HandleCmd(id self, SEL _cmd, id commandStr, id client) {
         char* t = strtok(text, " "); char* arg = strtok(NULL, " ");
         BlockDef def = {-1,0,0}; 
         if (arg) def = WE_Parse(arg);
-        WE_Chat(">> [WE] Deleting %s...", arg ? arg : "all");
+        WE_Chat(">> [WE] Deleting...");
         WE_RunOp(1, def, (BlockDef){0});
         return nil;
     }
     if (IsCmd(text, "/replace")) {
         char* t = strtok(text, " "); char* a1 = strtok(NULL, " "); char* a2 = strtok(NULL, " ");
         if (a1 && a2) {
-            WE_Chat(">> [WE] Replacing %s -> %s...", a1, a2);
-            WE_RunOp(3, WE_Parse(a1), WE_Parse(a2));
+            BlockDef oldDef = WE_Parse(a1);
+            BlockDef newDef = WE_Parse(a2);
+            WE_Chat(">> [WE] Replacing ID %d -> %d...", oldDef.fgID, newDef.fgID);
+            WE_RunOp(3, oldDef, newDef);
         } else WE_Chat("Usage: /replace <old> <new>");
         return nil;
     }
