@@ -1,8 +1,7 @@
 /*
- * Server Pause World
- * Commands: /pause [mode 1|2]
+ * Pause World
+ * Command: /pause [mode 1|2]
  */
-
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,11 +56,7 @@ static void Pause_SendMsg(id server, const char* msg) {
 
 void Hook_Pause_Update(id self, SEL _cmd, double dt, bool isSim) {
     if (g_IsPaused) return;
-
-    if (g_PauseMode == 2 && time(NULL) < g_DramaEndTime) {
-        dt = 0.0;
-    }
-
+    if (g_PauseMode == 2 && time(NULL) < g_DramaEndTime) dt = 0.0;
     if (Real_Pause_Update) Real_Pause_Update(self, _cmd, dt, isSim);
 }
 
@@ -70,35 +65,20 @@ id Hook_Pause_Cmd(id self, SEL _cmd, id cmdStr, id client) {
     
     if (raw) {
         bool toggle = false;
-        
-        if (strcmp(raw, "/pause") == 0 || strcmp(raw, "/pause ") == 0) {
-            toggle = true;
-        }
-        else if (strncmp(raw, "/pause mode 1", 13) == 0) {
-            g_PauseMode = 1;
-            toggle = true;
-        }
-        else if (strncmp(raw, "/pause mode 2", 13) == 0) {
-            g_PauseMode = 2;
-            toggle = true;
-        }
+        if (strcmp(raw, "/pause") == 0 || strcmp(raw, "/pause ") == 0) toggle = true;
+        else if (strncmp(raw, "/pause mode 1", 13) == 0) { g_PauseMode = 1; toggle = true; }
+        else if (strncmp(raw, "/pause mode 2", 13) == 0) { g_PauseMode = 2; toggle = true; }
 
         if (toggle) {
             g_IsPaused = !g_IsPaused;
-            
-            if (!g_IsPaused && g_PauseMode == 2) {
-                g_DramaEndTime = time(NULL) + 60;
-            }
+            if (!g_IsPaused && g_PauseMode == 2) g_DramaEndTime = time(NULL) + 60;
 
             char msg[128];
-            char *desc = (g_PauseMode == 1) ? "BURST" : "DRAMA";
-            snprintf(msg, 128, "[System] Pause: %s [%s]", g_IsPaused ? "ON" : "OFF", desc);
+            snprintf(msg, 128, ">> [World] Pause: %s [%s]", g_IsPaused ? "ACTIVE" : "INACTIVE", (g_PauseMode == 1) ? "Burst" : "Drama");
             Pause_SendMsg(self, msg);
-            
             return nil;
         }
     }
-    
     if (Real_Pause_Cmd) return Real_Pause_Cmd(self, _cmd, cmdStr, client);
     return nil;
 }
@@ -125,7 +105,6 @@ static void* Pause_InitThread(void* arg) {
             method_setImplementation(mUp, (IMP)Hook_Pause_Update);
         }
     }
-    
     return NULL;
 }
 
