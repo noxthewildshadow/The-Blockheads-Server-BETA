@@ -1,11 +1,8 @@
 /*
- * Chest Filler (The Trojan Horse)
- * -------------------------------
+ * Chest Filler (Glitch Items)
  * Commands:
- * /fill <ID>                -> Activate filling with clean items (Data 0).
- * /fill <ID> <DataA>        -> Activate filling with custom DataA.
- * /fill <ID> <DataA> <DataB>-> Activate filling with custom DataA & DataB.
- * /fill off                 -> Turn OFF / Disable mode.
+ * /fill <ID> <DataA> <DataB>
+ * /fill off
  */
 
 #define _GNU_SOURCE
@@ -89,7 +86,7 @@ IMP CFILL_GetInstMethod(id instance, SEL sel) {
     return method_getImplementation(class_getInstanceMethod(object_getClass(instance), sel));
 }
 
-// --- LOGIC: FORCE MAX STACK (Allow stacking unstackables) ---
+// --- LOGIC: FORCE MAX STACK ---
 int CFILL_Hook_MaxStack(id self, SEL _cmd) { return 99; }
 
 // --- LOGIC: CREATE ITEM WITH DATA ---
@@ -105,7 +102,6 @@ id CFILL_CreateItem(int itemID, int16_t dA, int16_t dB) {
     CFill_InitItemFunc fInit = (CFill_InitItemFunc)method_getImplementation(class_getInstanceMethod(clsItem, sInit));
     rawItem = fInit(rawItem, sInit, itemID, 1, 0, nil, nil);
 
-    // Inject Custom Data (Bypasses constructor limits)
     unsigned int outCount = 0;
     Ivar *ivars = class_copyIvarList(object_getClass(rawItem), &outCount);
     if (ivars) {
@@ -189,11 +185,14 @@ id CFILL_Hook_Place(id self, SEL _cmd, id w, id dw, long long p, id c, id i, uns
             id mainInv = fAllocArr((id)clsArray, sAlloc);
             CFill_InitArrFunc fInitArr = (CFill_InitArrFunc)CFILL_GetInstMethod(mainInv, sInitCap);
             if(fInitArr) mainInv = fInitArr(mainInv, sInitCap, 16);
+            *ptrArray = mainInv;
+            
             CFill_AddObjFunc fAddMain = (CFill_AddObjFunc)CFILL_GetInstMethod(mainInv, sAdd);
 
             if(fAddMain) {
                 for(int k=0; k<16; k++) {
                     id basket = CFILL_CreateBasket();
+                    
                     id slot = fAllocArr((id)clsArray, sAlloc);
                     CFill_InitArrFunc fInitSlot = (CFill_InitArrFunc)CFILL_GetInstMethod(slot, sInitCap);
                     if(fInitSlot) slot = fInitSlot(slot, sInitCap, 1);
@@ -203,8 +202,6 @@ id CFILL_Hook_Place(id self, SEL _cmd, id w, id dw, long long p, id c, id i, uns
                     fAddMain(mainInv, sAdd, slot);
                 }
             }
-            *ptrArray = mainInv;
-
             SEL sUpdate = sel_registerName(CFILL_SEL_UPDATE);
             CFill_VoidFunc fUp = (CFill_VoidFunc)CFILL_GetInstMethod(obj, sUpdate);
             if(fUp) fUp(obj, sUpdate);
@@ -221,26 +218,32 @@ id CFILL_Hook_Cmd(id self, SEL _cmd, id commandStr, id client) {
 
     if (strncmp(text, "/fill", 5) == 0) {
         char* token = strtok(text, " ");
-        char* sArg1 = strtok(NULL, " "); // ID (or empty)
-        char* sArg2 = strtok(NULL, " "); // DataA
-        char* sArg3 = strtok(NULL, " "); // DataB
+        char* sArg1 = strtok(NULL, " "); 
+        char* sArg2 = strtok(NULL, " "); 
+        char* sArg3 = strtok(NULL, " "); 
 
         if (!sArg1 || strcasecmp(sArg1, "off") == 0) {
             CFILL_Active = false;
             CFILL_TargetID = 0;
-            CFILL_SendChat(self, ">> [Chest Fill] DISABLED.");
+            CFILL_SendChat(self, ">> [Fill] Mode: OFF.");
             return nil;
         }
 
         int parsedID = atoi(sArg1);
         if (parsedID > 0) {
             CFILL_TargetID = parsedID;
+            
             CFILL_DataA = (sArg2) ? (int16_t)atoi(sArg2) : 0;
             CFILL_DataB = (sArg3) ? (int16_t)atoi(sArg3) : 0;
+
             CFILL_Active = true;
             
             char msg[128];
-            snprintf(msg, 128, ">> [Chest Fill] ACTIVE. ID: %d (DataA: %d, DataB: %d). Place a chest to fill it.", CFILL_TargetID, CFILL_DataA, CFILL_DataB);
+            if (sArg2 || sArg3) {
+                snprintf(msg, 128, ">> [Fill] Glitch Mode: ID %d (DataA:%d DataB:%d)", CFILL_TargetID, CFILL_DataA, CFILL_DataB);
+            } else {
+                snprintf(msg, 128, ">> [Fill] Clean Mode: ID %d", CFILL_TargetID);
+            }
             CFILL_SendChat(self, msg);
         } else {
             CFILL_SendChat(self, ">> [Error] Invalid Item ID.");
@@ -279,8 +282,6 @@ static void* CFILL_InitThread(void* arg) {
         Method mChat = class_getInstanceMethod(clsServer, sel_registerName(CFILL_SEL_CHAT));
         CFILL_Real_Chat = (CFill_ChatFunc)method_getImplementation(mChat);
     }
-    
-    printf("[SYSTEM] Chest Filler Ready.\n");
     return NULL;
 }
 
