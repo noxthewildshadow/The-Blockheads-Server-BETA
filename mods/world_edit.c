@@ -1,5 +1,6 @@
 /*
- * WorldEdit (FULL VERSION)
+ * WorldEdit (FIXED & FULL)
+ * Commands: /we, /p1, /p2, /set <block>, /replace <old> <new>, /del <block>
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -82,7 +83,14 @@ static void WE_Chat(const char* fmt, ...) {
     WE_Real_Chat(G_Server, sel_registerName("sendChatMessage:sendToClients:"), MkStr(buffer), nil);
 }
 
-// FULL PARSER (ALL TYPES RESTORED)
+// Helper faltante agregado
+bool IsCmd(const char* text, const char* cmd) {
+    size_t len = strlen(cmd);
+    if (strncasecmp(text, cmd, len) != 0) return false;
+    return (text[len] == ' ' || text[len] == '\0');
+}
+
+// FULL PARSER (Igual que Omni Tool para máxima compatibilidad)
 static BlockDef WE_Parse(const char* input) {
     BlockDef def = {BLOCK_AIR, 0, 0};
     if (!input) return def;
@@ -108,6 +116,8 @@ static BlockDef WE_Parse(const char* input) {
     if (strcasecmp(input, "carbon") == 0)    { def.fgID = 69; return def; }
     if (strcasecmp(input, "ice") == 0)       { def.fgID = 4; return def; }
     if (strcasecmp(input, "tc") == 0)        { def.fgID = 16; def.dataA = 3; return def; }
+    if (strcasecmp(input, "lapis") == 0)     { def.fgID = 29; return def; }
+    if (strcasecmp(input, "basalt") == 0)    { def.fgID = 51; return def; }
 
     // Ores & Contents (Requiring specific base blocks)
     if (strcasecmp(input, "flint") == 0)    { def.fgID = BLOCK_DIRT; def.contentID = 1; return def; }
@@ -250,14 +260,14 @@ id Hook_WE_HandleCmd(id self, SEL _cmd, id commandStr, id client) {
     if (!raw) return WE_Real_Cmd(self, _cmd, commandStr, client);
     char text[256]; strncpy(text, raw, 255); text[255] = 0;
 
-    if (strncmp(text, "/we", 3) == 0) {
+    if (IsCmd(text, "/we")) {
         G_Mode = WE_OFF; G_HasP1 = false; G_HasP2 = false;
         WE_Chat(">> [WE] Reset."); return nil;
     }
-    if (strncmp(text, "/p1", 3) == 0) { G_Mode = WE_MODE_P1; WE_Chat(">> [WE] Place Point 1."); return nil; }
-    if (strncmp(text, "/p2", 3) == 0) { G_Mode = WE_MODE_P2; WE_Chat(">> [WE] Place Point 2."); return nil; }
+    if (IsCmd(text, "/p1")) { G_Mode = WE_MODE_P1; WE_Chat(">> [WE] Place Point 1."); return nil; }
+    if (IsCmd(text, "/p2")) { G_Mode = WE_MODE_P2; WE_Chat(">> [WE] Place Point 2."); return nil; }
 
-    if (strncmp(text, "/set", 4) == 0) {
+    if (IsCmd(text, "/set")) {
         char* t = strtok(text, " "); char* arg = strtok(NULL, " ");
         if (arg) {
             WE_Chat(">> [WE] Setting %s...", arg);
@@ -265,7 +275,7 @@ id Hook_WE_HandleCmd(id self, SEL _cmd, id commandStr, id client) {
         } else WE_Chat("Usage: /set <block>");
         return nil;
     }
-    if (strncmp(text, "/del", 4) == 0) {
+    if (IsCmd(text, "/del")) {
         char* t = strtok(text, " "); char* arg = strtok(NULL, " ");
         BlockDef def = {-1,0,0}; 
         if (arg) def = WE_Parse(arg);
