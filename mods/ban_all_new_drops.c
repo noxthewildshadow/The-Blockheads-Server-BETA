@@ -1,6 +1,6 @@
 /*
  * Clear All New Drops
- * Commands: /clear drops
+ * Commands: /clear_drops
  */
 
 #define _GNU_SOURCE
@@ -61,7 +61,7 @@ id Hook_Ban_ClientDrop(id self, SEL _cmd, id data) {
 id Hook_Ban_Cmd(id self, SEL _cmd, id cmdStr, id client) {
     const char* raw = Ban_GetCStr(cmdStr);
     
-    if (raw && strncmp(raw, "/clear drops", 12) == 0) {
+    if (raw && strncmp(raw, "/clear_drops", 12) == 0) {
         g_ClearDrops_Active = !g_ClearDrops_Active;
         char msg[128];
         snprintf(msg, 128, "[System] Clear Drops: %s", g_ClearDrops_Active ? "ON" : "OFF");
