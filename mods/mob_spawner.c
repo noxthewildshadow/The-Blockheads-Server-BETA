@@ -1,12 +1,15 @@
 /*
- * Mob Spawner (Headers Verified)
+ * Mob Spawner (Complete & Crash Fixed)
  * -----------------------------------------------------
- * PATCH NOTES:
- * - Uses verified ivars: '_clientName' (Blockhead) and '_pos' (DynamicObject).
- * - Matches server memory layout to prevent crash on player lookup.
+ * Description:
+ * Spawns mobs at player position.
+ * FIXED: Player detection crash when >1 player is online.
+ * FIXED: Implicit declaration warnings.
  *
  * Commands:
  * /spawn <mob> <qty> <player> [variant] [baby]
+ *
+ * Compile: gcc -shared -o mob_mod.so mob_spawner.c -fPIC -ldl
  */
 
 #define _GNU_SOURCE
@@ -18,6 +21,7 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <ctype.h>
+#include <stdint.h>
 #include <objc/runtime.h>
 #include <objc/message.h>
 
@@ -25,112 +29,101 @@
 #define nil (id)0
 #endif
 
-// --- Configuration ---
-#define SERVER_CLASS "BHServer"
-
-// --- Structs (From Headers) ---
+// --- STRUCT ---
 typedef struct {
     int x;
     int y;
 } IntPair;
 
-// --- Selectors ---
+// --- CONFIG ---
+#define SERVER_CLASS "BHServer"
 #define SEL_CMD      "handleCommand:issueClient:"
 #define SEL_CHAT     "sendChatMessage:sendToClients:"
 #define SEL_LOAD_NPC "loadNPCAtPosition:type:saveDict:isAdult:wasPlaced:placedByClient:"
 #define SEL_NUM_INT  "numberWithInt:"
 #define SEL_DICT     "dictionaryWithObject:forKey:"
 #define SEL_STR      "stringWithUTF8String:"
-#define SEL_UTF8     "UTF8String"
-#define SEL_ALLOC    "alloc"
-#define SEL_INIT     "init"
-#define SEL_RELEASE  "release"
 
-// --- Constants ---
 enum MobType {
-    MOB_DODO      = 1,
-    MOB_DONKEY    = 3,
-    MOB_FISH      = 4,
-    MOB_SHARK     = 5,
-    MOB_TROLL     = 6,
-    MOB_SCORPION  = 7,
-    MOB_YAK       = 8
+    MOB_DODO = 1, MOB_DONKEY = 3, MOB_FISH = 4, MOB_SHARK = 5,
+    MOB_TROLL = 6, MOB_SCORPION = 7, MOB_YAK = 8
 };
 
-// Dodo
-#define DODO_STD        0
-#define DODO_STONE      1
-#define DODO_LIMESTONE  2
-#define DODO_SANDSTONE  3
-#define DODO_MARBLE     4
+// --- DODO BREEDS ---
+#define DODO_STD 0
+#define DODO_STONE 1
+#define DODO_LIMESTONE 2
+#define DODO_SANDSTONE 3
+#define DODO_MARBLE 4
 #define DODO_RED_MARBLE 5
-#define DODO_LAPIS      6
-#define DODO_DIRT       7
-#define DODO_COMPOST    8
-#define DODO_WOOD       9
-#define DODO_GRAVEL     10
-#define DODO_SAND       11
+#define DODO_LAPIS 6
+#define DODO_DIRT 7
+#define DODO_COMPOST 8
+#define DODO_WOOD 9
+#define DODO_GRAVEL 10
+#define DODO_SAND 11
 #define DODO_BLACK_SAND 12
-#define DODO_GLASS      13
+#define DODO_GLASS 13
 #define DODO_BLACK_GLASS 14
-#define DODO_CLAY       15
-#define DODO_BRICK      16
-#define DODO_FLINT      17
-#define DODO_COAL       18
-#define DODO_OIL        19
-#define DODO_FUEL       20
-#define DODO_COPPER     21
-#define DODO_TIN        22
-#define DODO_IRON       23
-#define DODO_GOLD       24
-#define DODO_TITANIUM   25
-#define DODO_PLATINUM   26
-#define DODO_AMETHYST   27
-#define DODO_SAPPHIRE   28
-#define DODO_EMERALD    29
-#define DODO_RUBY       30
-#define DODO_DIAMOND    31
-#define DODO_RAINBOW    32
+#define DODO_CLAY 15
+#define DODO_BRICK 16
+#define DODO_FLINT 17
+#define DODO_COAL 18
+#define DODO_OIL 19
+#define DODO_FUEL 20
+#define DODO_COPPER 21
+#define DODO_TIN 22
+#define DODO_IRON 23
+#define DODO_GOLD 24
+#define DODO_TITANIUM 25
+#define DODO_PLATINUM 26
+#define DODO_AMETHYST 27
+#define DODO_SAPPHIRE 28
+#define DODO_EMERALD 29
+#define DODO_RUBY 30
+#define DODO_DIAMOND 31
+#define DODO_RAINBOW 32
 
-// Donkey
-#define DONK_STD            0
-#define DONK_RAINBOW        11
-#define DONK_UNI_GREY       12
-#define DONK_UNI_BROWN      13
-#define DONK_UNI_BLACK      14
-#define DONK_UNI_BLUE       15
-#define DONK_UNI_GREEN      16
-#define DONK_UNI_YELLOW     17
-#define DONK_UNI_ORANGE     18
-#define DONK_UNI_RED        19
-#define DONK_UNI_PURPLE     20
-#define DONK_UNI_PINK       21
-#define DONK_UNI_WHITE      22
-#define DONK_UNI_RAINBOW    23
+// --- DONKEY BREEDS ---
+#define DONK_STD 0
+#define DONK_RAINBOW 11
+#define DONK_UNI_GREY 12
+#define DONK_UNI_BROWN 13
+#define DONK_UNI_BLACK 14
+#define DONK_UNI_BLUE 15
+#define DONK_UNI_GREEN 16
+#define DONK_UNI_YELLOW 17
+#define DONK_UNI_ORANGE 18
+#define DONK_UNI_RED 19
+#define DONK_UNI_PURPLE 20
+#define DONK_UNI_PINK 21
+#define DONK_UNI_WHITE 22
+#define DONK_UNI_RAINBOW 23
 
-// --- Types ---
+// --- TYPES ---
 typedef id   (*CmdFunc)(id, SEL, id, id);
 typedef void (*ChatFunc)(id, SEL, id, id);
-typedef id   (*SpawnNPCFunc)(id, SEL, IntPair, int, id, BOOL, BOOL, id); // Updated to IntPair
+typedef id   (*SpawnNPCFunc)(id, SEL, IntPair, int, id, BOOL, BOOL, id);
 typedef id   (*StrFactoryFunc)(id, SEL, const char*);
 typedef id   (*NumFactoryFunc)(id, SEL, int);
 typedef id   (*DictFactoryFunc)(id, SEL, id, id);
 typedef int  (*CountFunc)(id, SEL);
 typedef id   (*ObjIdxFunc)(id, SEL, unsigned long);
 typedef const char* (*UTF8Func)(id, SEL);
+typedef long (*CompareFunc)(id, SEL, id);
 typedef id (*AllocFunc)(id, SEL);
 typedef id (*InitFunc)(id, SEL);
 typedef void (*ReleaseFunc)(id, SEL);
 
-// --- Globals ---
+// --- GLOBALS ---
 static CmdFunc  Real_HandleCmd = NULL;
 static ChatFunc Real_SendChat = NULL;
 
-// --- Helpers ---
+// --- HELPERS ---
 static id CreatePool() {
     Class cls = objc_getClass("NSAutoreleasePool");
-    SEL sAlloc = sel_registerName(SEL_ALLOC);
-    SEL sInit = sel_registerName(SEL_INIT);
+    SEL sAlloc = sel_registerName("alloc");
+    SEL sInit = sel_registerName("init");
     AllocFunc fAlloc = (AllocFunc)method_getImplementation(class_getClassMethod(cls, sAlloc));
     InitFunc fInit = (InitFunc)method_getImplementation(class_getInstanceMethod(cls, sInit));
     return fInit(fAlloc((id)cls, sAlloc), sInit);
@@ -138,22 +131,21 @@ static id CreatePool() {
 
 static void ReleasePool(id pool) {
     if(!pool) return;
-    SEL sRel = sel_registerName(SEL_RELEASE);
+    SEL sRel = sel_registerName("release");
     ReleaseFunc fRel = (ReleaseFunc)method_getImplementation(class_getInstanceMethod(object_getClass(pool), sRel));
     fRel(pool, sRel);
 }
 
 static id MkStr(const char* text) {
-    if (!text) return nil;
     Class cls = objc_getClass("NSString");
-    SEL sel = sel_registerName(SEL_STR);
+    SEL sel = sel_registerName("stringWithUTF8String:");
     StrFactoryFunc f = (StrFactoryFunc)method_getImplementation(class_getClassMethod(cls, sel));
     return f ? f((id)cls, sel, text) : nil;
 }
 
 static const char* GetCStr(id strObj) {
     if (!strObj) return "";
-    SEL sel = sel_registerName(SEL_UTF8);
+    SEL sel = sel_registerName("UTF8String");
     UTF8Func f = (UTF8Func)class_getMethodImplementation(object_getClass(strObj), sel);
     return f ? f(strObj, sel) : "";
 }
@@ -167,17 +159,27 @@ static void SendChat(id server, const char* msg) {
 static id MkGeneDict(int breedID) {
     if (breedID < 0) return nil;
     Class clsNum = objc_getClass("NSNumber");
-    SEL selNum = sel_registerName(SEL_NUM_INT);
+    SEL selNum = sel_registerName("numberWithInt:");
     NumFactoryFunc fNum = (NumFactoryFunc)method_getImplementation(class_getClassMethod(clsNum, selNum));
     id val = fNum((id)clsNum, selNum, breedID);
     id key = MkStr("breed");
     Class clsDict = objc_getClass("NSDictionary");
-    SEL selDict = sel_registerName(SEL_DICT);
+    SEL selDict = sel_registerName("dictionaryWithObject:forKey:");
     DictFactoryFunc fDict = (DictFactoryFunc)method_getImplementation(class_getClassMethod(clsDict, selDict));
     return fDict((id)clsDict, selDict, val, key);
 }
 
-// --- Parsers ---
+static void PrintDodoHelp(id self) {
+    SendChat(self, ">> DODO LIST: stone, dirt, wood, glass, gold, titanium, platinum, coal, oil, fuel...");
+    SendChat(self, ">> GEMS: diamond, ruby, emerald, sapphire, amethyst, rainbow.");
+    SendChat(self, ">> ORES: iron, copper, tin.");
+}
+
+static void PrintDonkeyHelp(id self) {
+    SendChat(self, ">> DONKEY LIST: rainbow (standard).");
+    SendChat(self, ">> UNICORNS: unicorn, unicorn_white, unicorn_black, unicorn_pink, unicorn_blue, unicorn_rainbow.");
+}
+
 static int ParseDodoBreed(const char* name) {
     if (!name) return -1;
     if (strcasecmp(name, "titanium") == 0) return DODO_TITANIUM;
@@ -225,42 +227,47 @@ static int ParseDonkeyBreed(const char* name) {
     return -1;
 }
 
-// --- Core Logic (OPTIMIZED) ---
-
+// --- PLAYER LOOKUP (CRASH FIX) ---
 static id FindPlayer(id dynWorld, const char* name) {
     if (!dynWorld || !name) return nil;
     id targetStr = MkStr(name);
     
-    // Ivar: netBlockheads (Confirmed)
+    // 1. Safe access to netBlockheads using Ivar
     id list = nil;
     Ivar ivList = class_getInstanceVariable(object_getClass(dynWorld), "netBlockheads");
-    if (ivList) list = *(id*)((char*)dynWorld + ivar_getOffset(ivList));
+    if (ivList) {
+        list = *(id*)((char*)dynWorld + ivar_getOffset(ivList));
+    }
     
     if (!list) return nil;
-    
+
     SEL sCount = sel_registerName("count");
     SEL sIdx = sel_registerName("objectAtIndex:");
     SEL sComp = sel_registerName("caseInsensitiveCompare:");
-    
+
     CountFunc fCount = (CountFunc)class_getMethodImplementation(object_getClass(list), sCount);
     ObjIdxFunc fIdx = (ObjIdxFunc)class_getMethodImplementation(object_getClass(list), sIdx);
-    
+
     if (!fCount || !fIdx) return nil;
 
     int count = fCount(list, sCount);
-    for(int i=0; i<count; i++) {
+    for (int i = 0; i < count; i++) {
         id bh = fIdx(list, sIdx, i);
-        if(bh) {
-            id bName = nil;
-            // Ivar: _clientName (Confirmed)
-            Ivar ivCName = class_getInstanceVariable(object_getClass(bh), "_clientName");
-            if (ivCName) {
-                bName = *(id*)((char*)bh + ivar_getOffset(ivCName));
-            }
+        if (bh) {
+            id nsName = nil;
+            // Check _clientName (Ivar)
+            Ivar ivName = class_getInstanceVariable(object_getClass(bh), "_clientName");
+            if (ivName) nsName = *(id*)((char*)bh + ivar_getOffset(ivName));
             
-            if(bName) {
-                long (*fC)(id, SEL, id) = (long (*)(id, SEL, id))class_getMethodImplementation(object_getClass(bName), sComp);
-                if(fC(bName, sComp, targetStr) == 0) return bh;
+            // Fallback
+            if (!nsName) {
+                ivName = class_getInstanceVariable(object_getClass(bh), "clientName");
+                if (ivName) nsName = *(id*)((char*)bh + ivar_getOffset(ivName));
+            }
+
+            if (nsName) {
+                CompareFunc fComp = (CompareFunc)class_getMethodImplementation(object_getClass(nsName), sComp);
+                if (fComp && fComp(nsName, sComp, targetStr) == 0) return bh;
             }
         }
     }
@@ -268,29 +275,34 @@ static id FindPlayer(id dynWorld, const char* name) {
 }
 
 static void SpawnAction(id dynWorld, id player, int mobID, int qty, int breedID, bool isBaby) {
-    // Ivar: _pos (Confirmed IntPair)
-    IntPair posStruct = {0, 0};
+    // FIX: Read _pos struct correctly
+    IntPair pos = {0,0};
+    void* posPtr = NULL;
+    
     Ivar ivPos = class_getInstanceVariable(object_getClass(player), "_pos");
+    if (!ivPos) ivPos = class_getInstanceVariable(object_getClass(player), "pos");
     
     if (ivPos) {
-        posStruct = *(IntPair*)((char*)player + ivar_getOffset(ivPos));
+        pos = *(IntPair*)((char*)player + ivar_getOffset(ivPos));
+    } else {
+        return;
     }
-    
-    if (posStruct.x == 0 && posStruct.y == 0) return;
 
-    SEL sel = sel_registerName(SEL_LOAD_NPC);
+    if (pos.x == 0 && pos.y == 0) return;
+
+    SEL sel = sel_registerName("loadNPCAtPosition:type:saveDict:isAdult:wasPlaced:placedByClient:");
     Method m = class_getInstanceMethod(object_getClass(dynWorld), sel);
     
     if (m) {
         SpawnNPCFunc f = (SpawnNPCFunc)method_getImplementation(m);
         id saveDict = MkGeneDict(breedID);
         for(int i=0; i<qty; i++) {
-            f(dynWorld, sel, posStruct, mobID, saveDict, !isBaby, 0, nil);
+            // Args: pos, type, saveDict, isAdult(!baby), wasPlaced(0), clientID(nil)
+            f(dynWorld, sel, pos, mobID, saveDict, !isBaby, 0, nil);
         }
     }
 }
 
-// --- Command Hook ---
 id Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
     const char* raw = GetCStr(cmdStr);
     if (!raw) return Real_HandleCmd(self, _cmd, cmdStr, client);
@@ -306,17 +318,10 @@ id Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
     }
 
     if (strncmp(text, "/spawn", 6) == 0) {
-        // Ivar: world (Confirmed)
         id world = nil;
-        Ivar ivW = class_getInstanceVariable(object_getClass(self), "world");
-        if (ivW) world = *(id*)((char*)self + ivar_getOffset(ivW));
-        
-        // Ivar: dynamicWorld (Confirmed)
+        object_getInstanceVariable(self, "world", (void**)&world);
         id dynWorld = nil;
-        if (world) {
-            Ivar ivD = class_getInstanceVariable(object_getClass(world), "dynamicWorld");
-            if (ivD) dynWorld = *(id*)((char*)world + ivar_getOffset(ivD));
-        }
+        if (world) object_getInstanceVariable(world, "dynamicWorld", (void**)&dynWorld);
         
         if (!dynWorld) { 
             SendChat(self, "Error: World system not ready."); 
@@ -387,6 +392,7 @@ id Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
 }
 
 // --- Initialization ---
+
 static void* InitThread(void* arg) {
     sleep(1);
     Class cls = objc_getClass(SERVER_CLASS);
