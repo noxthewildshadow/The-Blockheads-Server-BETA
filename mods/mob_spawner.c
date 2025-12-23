@@ -1,15 +1,6 @@
 /*
- * Mob Spawner (Complete & Crash Fixed)
- * -----------------------------------------------------
- * Description:
- * Spawns mobs at player position.
- * FIXED: Player detection crash when >1 player is online.
- * FIXED: Implicit declaration warnings.
- *
- * Commands:
- * /spawn <mob> <qty> <player> [variant] [baby]
- *
- * Compile: gcc -shared -o mob_mod.so mob_spawner.c -fPIC -ldl
+ * Script: Mob Spawner
+ * Command: /spawn <mob> <qty> <player> [variant] [baby]
  */
 
 #define _GNU_SOURCE
@@ -25,31 +16,19 @@
 #include <objc/runtime.h>
 #include <objc/message.h>
 
-#ifndef nil
-#define nil (id)0
-#endif
+typedef struct { int x; int y; } MS_IntPair;
 
-// --- STRUCT ---
-typedef struct {
-    int x;
-    int y;
-} IntPair;
+// --- STATIC GLOBALS (Isolation) ---
+static id (*MS_Real_HandleCmd)(id, SEL, id, id) = NULL;
+static void (*MS_Real_SendChat)(id, SEL, id, id) = NULL;
 
-// --- CONFIG ---
-#define SERVER_CLASS "BHServer"
-#define SEL_CMD      "handleCommand:issueClient:"
-#define SEL_CHAT     "sendChatMessage:sendToClients:"
-#define SEL_LOAD_NPC "loadNPCAtPosition:type:saveDict:isAdult:wasPlaced:placedByClient:"
-#define SEL_NUM_INT  "numberWithInt:"
-#define SEL_DICT     "dictionaryWithObject:forKey:"
-#define SEL_STR      "stringWithUTF8String:"
-
+// --- MOBS ---
 enum MobType {
     MOB_DODO = 1, MOB_DONKEY = 3, MOB_FISH = 4, MOB_SHARK = 5,
     MOB_TROLL = 6, MOB_SCORPION = 7, MOB_YAK = 8
 };
 
-// --- DODO BREEDS ---
+// Dodo Variants
 #define DODO_STD 0
 #define DODO_STONE 1
 #define DODO_LIMESTONE 2
@@ -84,7 +63,7 @@ enum MobType {
 #define DODO_DIAMOND 31
 #define DODO_RAINBOW 32
 
-// --- DONKEY BREEDS ---
+// Donkey Variants
 #define DONK_STD 0
 #define DONK_RAINBOW 11
 #define DONK_UNI_GREY 12
@@ -100,87 +79,42 @@ enum MobType {
 #define DONK_UNI_WHITE 22
 #define DONK_UNI_RAINBOW 23
 
-// --- TYPES ---
-typedef id   (*CmdFunc)(id, SEL, id, id);
-typedef void (*ChatFunc)(id, SEL, id, id);
-typedef id   (*SpawnNPCFunc)(id, SEL, IntPair, int, id, BOOL, BOOL, id);
-typedef id   (*StrFactoryFunc)(id, SEL, const char*);
-typedef id   (*NumFactoryFunc)(id, SEL, int);
-typedef id   (*DictFactoryFunc)(id, SEL, id, id);
-typedef int  (*CountFunc)(id, SEL);
-typedef id   (*ObjIdxFunc)(id, SEL, unsigned long);
-typedef const char* (*UTF8Func)(id, SEL);
-typedef long (*CompareFunc)(id, SEL, id);
-typedef id (*AllocFunc)(id, SEL);
-typedef id (*InitFunc)(id, SEL);
-typedef void (*ReleaseFunc)(id, SEL);
-
-// --- GLOBALS ---
-static CmdFunc  Real_HandleCmd = NULL;
-static ChatFunc Real_SendChat = NULL;
-
 // --- HELPERS ---
-static id CreatePool() {
-    Class cls = objc_getClass("NSAutoreleasePool");
-    SEL sAlloc = sel_registerName("alloc");
-    SEL sInit = sel_registerName("init");
-    AllocFunc fAlloc = (AllocFunc)method_getImplementation(class_getClassMethod(cls, sAlloc));
-    InitFunc fInit = (InitFunc)method_getImplementation(class_getInstanceMethod(cls, sInit));
-    return fInit(fAlloc((id)cls, sAlloc), sInit);
-}
-
-static void ReleasePool(id pool) {
-    if(!pool) return;
-    SEL sRel = sel_registerName("release");
-    ReleaseFunc fRel = (ReleaseFunc)method_getImplementation(class_getInstanceMethod(object_getClass(pool), sRel));
-    fRel(pool, sRel);
-}
-
-static id MkStr(const char* text) {
+static id MS_AllocStr(const char* text) {
+    if (!text) return nil;
     Class cls = objc_getClass("NSString");
     SEL sel = sel_registerName("stringWithUTF8String:");
-    StrFactoryFunc f = (StrFactoryFunc)method_getImplementation(class_getClassMethod(cls, sel));
+    id (*f)(id, SEL, const char*) = (void*)method_getImplementation(class_getClassMethod(cls, sel));
     return f ? f((id)cls, sel, text) : nil;
 }
 
-static const char* GetCStr(id strObj) {
+static const char* MS_GetCStr(id strObj) {
     if (!strObj) return "";
     SEL sel = sel_registerName("UTF8String");
-    UTF8Func f = (UTF8Func)class_getMethodImplementation(object_getClass(strObj), sel);
+    const char* (*f)(id, SEL) = (void*)class_getMethodImplementation(object_getClass(strObj), sel);
     return f ? f(strObj, sel) : "";
 }
 
-static void SendChat(id server, const char* msg) {
-    if (server && Real_SendChat) {
-        Real_SendChat(server, sel_registerName(SEL_CHAT), MkStr(msg), nil);
+static void MS_SendChat(id server, const char* msg) {
+    if (server && MS_Real_SendChat) {
+        MS_Real_SendChat(server, sel_registerName("sendChatMessage:sendToClients:"), MS_AllocStr(msg), nil);
     }
 }
 
-static id MkGeneDict(int breedID) {
+static id MS_MkGeneDict(int breedID) {
     if (breedID < 0) return nil;
     Class clsNum = objc_getClass("NSNumber");
-    SEL selNum = sel_registerName("numberWithInt:");
-    NumFactoryFunc fNum = (NumFactoryFunc)method_getImplementation(class_getClassMethod(clsNum, selNum));
-    id val = fNum((id)clsNum, selNum, breedID);
-    id key = MkStr("breed");
+    id (*fNum)(id, SEL, int) = (void*)method_getImplementation(class_getClassMethod(clsNum, sel_registerName("numberWithInt:")));
+    id val = fNum((id)clsNum, sel_registerName("numberWithInt:"), breedID);
+    
+    id key = MS_AllocStr("breed");
     Class clsDict = objc_getClass("NSDictionary");
-    SEL selDict = sel_registerName("dictionaryWithObject:forKey:");
-    DictFactoryFunc fDict = (DictFactoryFunc)method_getImplementation(class_getClassMethod(clsDict, selDict));
-    return fDict((id)clsDict, selDict, val, key);
+    id (*fDict)(id, SEL, id, id) = (void*)method_getImplementation(class_getClassMethod(clsDict, sel_registerName("dictionaryWithObject:forKey:")));
+    return fDict((id)clsDict, sel_registerName("dictionaryWithObject:forKey:"), val, key);
 }
 
-static void PrintDodoHelp(id self) {
-    SendChat(self, ">> DODO LIST: stone, dirt, wood, glass, gold, titanium, platinum, coal, oil, fuel...");
-    SendChat(self, ">> GEMS: diamond, ruby, emerald, sapphire, amethyst, rainbow.");
-    SendChat(self, ">> ORES: iron, copper, tin.");
-}
-
-static void PrintDonkeyHelp(id self) {
-    SendChat(self, ">> DONKEY LIST: rainbow (standard).");
-    SendChat(self, ">> UNICORNS: unicorn, unicorn_white, unicorn_black, unicorn_pink, unicorn_blue, unicorn_rainbow.");
-}
-
-static int ParseDodoBreed(const char* name) {
+// --- PARSERS ---
+static int ParseDodo(const char* name) {
     if (!name) return -1;
     if (strcasecmp(name, "titanium") == 0) return DODO_TITANIUM;
     if (strcasecmp(name, "platinum") == 0) return DODO_PLATINUM;
@@ -211,7 +145,7 @@ static int ParseDodoBreed(const char* name) {
     return -1;
 }
 
-static int ParseDonkeyBreed(const char* name) {
+static int ParseDonkey(const char* name) {
     if (!name) return -1;
     if (strcasecmp(name, "rainbow") == 0) return DONK_RAINBOW;
     if (strcasecmp(name, "unicorn") == 0)         return DONK_UNI_RAINBOW;
@@ -227,94 +161,79 @@ static int ParseDonkeyBreed(const char* name) {
     return -1;
 }
 
-// --- PLAYER LOOKUP (CRASH FIX) ---
-static id FindPlayer(id dynWorld, const char* name) {
+// --- LOGIC ---
+static id MS_FindPlayer(id dynWorld, const char* name) {
     if (!dynWorld || !name) return nil;
-    id targetStr = MkStr(name);
+    id targetStr = MS_AllocStr(name);
     
-    // 1. Safe access to netBlockheads using Ivar
     id list = nil;
-    Ivar ivList = class_getInstanceVariable(object_getClass(dynWorld), "netBlockheads");
-    if (ivList) {
-        list = *(id*)((char*)dynWorld + ivar_getOffset(ivList));
-    }
-    
+    Ivar iv = class_getInstanceVariable(object_getClass(dynWorld), "netBlockheads");
+    if (iv) list = *(id*)((char*)dynWorld + ivar_getOffset(iv));
     if (!list) return nil;
-
+    
     SEL sCount = sel_registerName("count");
     SEL sIdx = sel_registerName("objectAtIndex:");
     SEL sComp = sel_registerName("caseInsensitiveCompare:");
-
-    CountFunc fCount = (CountFunc)class_getMethodImplementation(object_getClass(list), sCount);
-    ObjIdxFunc fIdx = (ObjIdxFunc)class_getMethodImplementation(object_getClass(list), sIdx);
-
+    
+    int (*fCount)(id, SEL) = (void*)class_getMethodImplementation(object_getClass(list), sCount);
+    id (*fIdx)(id, SEL, unsigned long) = (void*)class_getMethodImplementation(object_getClass(list), sIdx);
+    
     if (!fCount || !fIdx) return nil;
 
     int count = fCount(list, sCount);
-    for (int i = 0; i < count; i++) {
+    for(int i=0; i<count; i++) {
         id bh = fIdx(list, sIdx, i);
-        if (bh) {
-            id nsName = nil;
-            // Check _clientName (Ivar)
+        if(bh) {
+            id bName = nil;
             Ivar ivName = class_getInstanceVariable(object_getClass(bh), "_clientName");
-            if (ivName) nsName = *(id*)((char*)bh + ivar_getOffset(ivName));
+            if (ivName) bName = *(id*)((char*)bh + ivar_getOffset(ivName));
             
-            // Fallback
-            if (!nsName) {
+            if (!bName) {
                 ivName = class_getInstanceVariable(object_getClass(bh), "clientName");
-                if (ivName) nsName = *(id*)((char*)bh + ivar_getOffset(ivName));
+                if (ivName) bName = *(id*)((char*)bh + ivar_getOffset(ivName));
             }
-
-            if (nsName) {
-                CompareFunc fComp = (CompareFunc)class_getMethodImplementation(object_getClass(nsName), sComp);
-                if (fComp && fComp(nsName, sComp, targetStr) == 0) return bh;
+            
+            if(bName) {
+                long (*fC)(id, SEL, id) = (void*)class_getMethodImplementation(object_getClass(bName), sComp);
+                if(fC && fC(bName, sComp, targetStr) == 0) return bh;
             }
         }
     }
     return nil;
 }
 
-static void SpawnAction(id dynWorld, id player, int mobID, int qty, int breedID, bool isBaby) {
-    // FIX: Read _pos struct correctly
-    IntPair pos = {0,0};
+static void MS_SpawnAction(id dynWorld, id player, int mobID, int qty, int breedID, bool isBaby) {
+    MS_IntPair pos = {0,0};
     void* posPtr = NULL;
-    
-    Ivar ivPos = class_getInstanceVariable(object_getClass(player), "_pos");
-    if (!ivPos) ivPos = class_getInstanceVariable(object_getClass(player), "pos");
-    
-    if (ivPos) {
-        pos = *(IntPair*)((char*)player + ivar_getOffset(ivPos));
-    } else {
-        return;
-    }
-
-    if (pos.x == 0 && pos.y == 0) return;
+    object_getInstanceVariable(player, "_pos", &posPtr);
+    if (!posPtr) object_getInstanceVariable(player, "pos", &posPtr);
+    if (posPtr) pos = *(MS_IntPair*)posPtr;
+    else return;
 
     SEL sel = sel_registerName("loadNPCAtPosition:type:saveDict:isAdult:wasPlaced:placedByClient:");
     Method m = class_getInstanceMethod(object_getClass(dynWorld), sel);
     
     if (m) {
-        SpawnNPCFunc f = (SpawnNPCFunc)method_getImplementation(m);
-        id saveDict = MkGeneDict(breedID);
+        id (*f)(id, SEL, MS_IntPair, int, id, BOOL, BOOL, id) = (void*)method_getImplementation(m);
+        id saveDict = MS_MkGeneDict(breedID);
         for(int i=0; i<qty; i++) {
-            // Args: pos, type, saveDict, isAdult(!baby), wasPlaced(0), clientID(nil)
             f(dynWorld, sel, pos, mobID, saveDict, !isBaby, 0, nil);
         }
     }
 }
 
-id Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
-    const char* raw = GetCStr(cmdStr);
-    if (!raw) return Real_HandleCmd(self, _cmd, cmdStr, client);
+// --- HOOK ---
+static id Hook_MobCmd(id self, SEL _cmd, id cmdStr, id client) {
+    const char* raw = MS_GetCStr(cmdStr);
+    if (!raw) return MS_Real_HandleCmd(self, _cmd, cmdStr, client);
     
-    id pool = CreatePool(); 
     char text[256]; strncpy(text, raw, 255); text[255] = 0;
 
     if (strcasecmp(text, "/help_dodo") == 0) {
-        PrintDodoHelp(self); ReleasePool(pool); return nil;
+        PrintDodoHelp(self); return nil;
     }
     if (strcasecmp(text, "/help_donkey") == 0) {
-        PrintDonkeyHelp(self); ReleasePool(pool); return nil;
+        PrintDonkeyHelp(self); return nil;
     }
 
     if (strncmp(text, "/spawn", 6) == 0) {
@@ -324,8 +243,8 @@ id Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
         if (world) object_getInstanceVariable(world, "dynamicWorld", (void**)&dynWorld);
         
         if (!dynWorld) { 
-            SendChat(self, "Error: World system not ready."); 
-            ReleasePool(pool); return nil; 
+            MS_SendChat(self, "[Mob] Error: World not ready."); 
+            return nil; 
         }
 
         char *saveptr; 
@@ -337,15 +256,14 @@ id Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
         char *sBaby = strtok_r(NULL, " ", &saveptr);
 
         if (!sID || !sPl) {
-            SendChat(self, "Usage: /spawn <mob> <qty> <player> [variant] [baby]");
-            SendChat(self, "Type /help_dodo or /help_donkey for variants.");
-            ReleasePool(pool); return nil;
+            MS_SendChat(self, "Usage: /spawn <mob> <qty> <player> [variant] [baby]");
+            return nil;
         }
 
-        id target = FindPlayer(dynWorld, sPl);
+        id target = MS_FindPlayer(dynWorld, sPl);
         if (!target) { 
-            SendChat(self, "Player not found."); 
-            ReleasePool(pool); return nil; 
+            MS_SendChat(self, "Player not found."); 
+            return nil; 
         }
 
         int qty = sQty ? atoi(sQty) : 1;
@@ -360,50 +278,49 @@ id Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
 
         if (strcasecmp(sID, "dodo") == 0) {
             mobID = MOB_DODO;
-            if (sVar) breedID = ParseDodoBreed(sVar);
+            if (sVar) breedID = ParseDodo(sVar);
         }
         else if (strcasecmp(sID, "donkey") == 0 || strcasecmp(sID, "unicorn") == 0) {
             mobID = MOB_DONKEY;
             if (strcasecmp(sID, "unicorn") == 0 && !sVar) breedID = DONK_UNI_RAINBOW;
-            else if (sVar) breedID = ParseDonkeyBreed(sVar);
+            else if (sVar) breedID = ParseDonkey(sVar);
         }
         else if (strcasecmp(sID, "shark") == 0) mobID = MOB_SHARK;
         else if (strcasecmp(sID, "fish") == 0) mobID = MOB_FISH;
         else if (strcasecmp(sID, "yak") == 0) mobID = MOB_YAK;
         else if (strcasecmp(sID, "scorpion") == 0) mobID = MOB_SCORPION;
         else if (strcasecmp(sID, "troll") == 0) mobID = MOB_TROLL;
-        else if (strcasecmp(sID, "dropbear") == 0) mobID = 2;
+        else if (strcasecmp(sID, "dropbear") == 0) mobID = 2; // Fixed ID from context
 
         if (mobID > 0) {
-            SpawnAction(dynWorld, target, mobID, qty, breedID, isBaby);
+            MS_SpawnAction(dynWorld, target, mobID, qty, breedID, isBaby);
             char msg[128];
-            snprintf(msg, 128, ">> Summoned %d %s [%s] for %s.", qty, sID, sVar ? sVar : "Standard", sPl);
-            SendChat(self, msg);
+            snprintf(msg, 128, ">> Summoned %d %s for %s.", qty, sID, sPl);
+            MS_SendChat(self, msg);
         } else {
-            SendChat(self, "Unknown Mob.");
+            MS_SendChat(self, "Unknown Mob.");
         }
         
-        ReleasePool(pool); 
         return nil;
     }
 
-    ReleasePool(pool); 
-    return Real_HandleCmd(self, _cmd, cmdStr, client);
+    return MS_Real_HandleCmd(self, _cmd, cmdStr, client);
 }
 
-// --- Initialization ---
-
-static void* InitThread(void* arg) {
+// --- INIT ---
+static void* Mob_Init(void* arg) {
     sleep(1);
-    Class cls = objc_getClass(SERVER_CLASS);
-    if (cls) {
-        Real_HandleCmd = (CmdFunc)method_getImplementation(class_getInstanceMethod(cls, sel_registerName(SEL_CMD)));
-        Real_SendChat = (ChatFunc)method_getImplementation(class_getInstanceMethod(cls, sel_registerName(SEL_CHAT)));
-        method_setImplementation(class_getInstanceMethod(cls, sel_registerName(SEL_CMD)), (IMP)Hook_HandleCmd);
+    Class clsSrv = objc_getClass("BHServer");
+    if (clsSrv) {
+        Method mC = class_getInstanceMethod(clsSrv, sel_registerName("handleCommand:issueClient:"));
+        Method mT = class_getInstanceMethod(clsSrv, sel_registerName("sendChatMessage:sendToClients:"));
+        MS_Real_HandleCmd = (void*)method_getImplementation(mC);
+        MS_Real_SendChat  = (void*)method_getImplementation(mT);
+        method_setImplementation(mC, (IMP)Hook_MobCmd);
     }
     return NULL;
 }
 
-__attribute__((constructor)) static void Entry() {
-    pthread_t t; pthread_create(&t, NULL, InitThread, NULL);
+__attribute__((constructor)) static void Mob_Entry() {
+    pthread_t t; pthread_create(&t, NULL, Mob_Init, NULL);
 }
