@@ -1,11 +1,3 @@
-/*
- * Chest Filler
- * ----------------------------------------------------
- * Prefix: CFill_
- * Commands: /fill <ID> [DataA] [DataB]
- * /fill (Toggle OFF)
- */
-
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
