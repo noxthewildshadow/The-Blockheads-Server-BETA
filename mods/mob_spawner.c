@@ -1,6 +1,8 @@
 /*
- * Script: Mob Spawner
- * Command: /spawn <mob> <qty> <player> [variant] [baby]
+ * Mob Spawner
+ * --------------------------------------------------
+ * Prefix: MSpawn_
+ * Example of command: /spawn dodo 13 MyUsername baby diamond force
  */
 
 #define _GNU_SOURCE
@@ -12,315 +14,288 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <ctype.h>
-#include <stdint.h>
 #include <objc/runtime.h>
 #include <objc/message.h>
 
-typedef struct { int x; int y; } MS_IntPair;
+#define MS_SERVER_CLASS "BHServer"
 
-// --- STATIC GLOBALS (Isolation) ---
-static id (*MS_Real_HandleCmd)(id, SEL, id, id) = NULL;
-static void (*MS_Real_SendChat)(id, SEL, id, id) = NULL;
+// --- IMP TYPES ---
+typedef id (*MS_CmdFunc)(id, SEL, id, id);
+typedef void (*MS_ChatFunc)(id, SEL, id, BOOL, id);
+typedef id (*MS_SpawnFunc)(id, SEL, long long, int, id, BOOL, BOOL, id);
 
-// --- MOBS ---
-enum MobType {
-    MOB_DODO = 1, MOB_DONKEY = 3, MOB_FISH = 4, MOB_SHARK = 5,
-    MOB_TROLL = 6, MOB_SCORPION = 7, MOB_YAK = 8
-};
+typedef id (*MS_AllocFunc)(id, SEL);
+typedef id (*MS_InitFunc)(id, SEL);
+typedef id (*MS_DictFunc)(id, SEL, id, id);
+typedef id (*MS_NumFunc)(id, SEL, int);
+typedef id (*MS_StrFunc)(id, SEL, const char*);
+typedef const char* (*MS_Utf8Func)(id, SEL);
+typedef int (*MS_IntFunc)(id, SEL);
+typedef id (*MS_IdxFunc)(id, SEL, int);
+typedef id (*MS_GetterFunc)(id, SEL);
+typedef long (*MS_CompFunc)(id, SEL, id);
+typedef void (*MS_VoidFunc)(id, SEL);
 
-// Dodo Variants
-#define DODO_STD 0
-#define DODO_STONE 1
-#define DODO_LIMESTONE 2
-#define DODO_SANDSTONE 3
-#define DODO_MARBLE 4
-#define DODO_RED_MARBLE 5
-#define DODO_LAPIS 6
-#define DODO_DIRT 7
-#define DODO_COMPOST 8
-#define DODO_WOOD 9
-#define DODO_GRAVEL 10
-#define DODO_SAND 11
-#define DODO_BLACK_SAND 12
-#define DODO_GLASS 13
-#define DODO_BLACK_GLASS 14
-#define DODO_CLAY 15
-#define DODO_BRICK 16
-#define DODO_FLINT 17
-#define DODO_COAL 18
-#define DODO_OIL 19
-#define DODO_FUEL 20
-#define DODO_COPPER 21
-#define DODO_TIN 22
-#define DODO_IRON 23
-#define DODO_GOLD 24
-#define DODO_TITANIUM 25
-#define DODO_PLATINUM 26
-#define DODO_AMETHYST 27
-#define DODO_SAPPHIRE 28
-#define DODO_EMERALD 29
-#define DODO_RUBY 30
-#define DODO_DIAMOND 31
-#define DODO_RAINBOW 32
+static MS_CmdFunc  Real_MSpawn_Cmd = NULL;
+static MS_ChatFunc Real_MSpawn_Chat = NULL;
 
-// Donkey Variants
-#define DONK_STD 0
-#define DONK_RAINBOW 11
-#define DONK_UNI_GREY 12
-#define DONK_UNI_BROWN 13
-#define DONK_UNI_BLACK 14
-#define DONK_UNI_BLUE 15
-#define DONK_UNI_GREEN 16
-#define DONK_UNI_YELLOW 17
-#define DONK_UNI_ORANGE 18
-#define DONK_UNI_RED 19
-#define DONK_UNI_PURPLE 20
-#define DONK_UNI_PINK 21
-#define DONK_UNI_WHITE 22
-#define DONK_UNI_RAINBOW 23
+// --- UTILS ---
+static id MSpawn_Pool() {
+    Class cls = objc_getClass("NSAutoreleasePool");
+    SEL sA = sel_registerName("alloc");
+    SEL sI = sel_registerName("init");
+    MS_AllocFunc fA = (MS_AllocFunc)method_getImplementation(class_getClassMethod(cls, sA));
+    MS_AllocFunc fI = (MS_AllocFunc)method_getImplementation(class_getInstanceMethod(cls, sI));
+    return fI(fA((id)cls, sA), sI);
+}
 
-// --- HELPERS ---
-static id MS_AllocStr(const char* text) {
-    if (!text) return nil;
+static void MSpawn_Drain(id pool) {
+    if (!pool) return;
+    SEL s = sel_registerName("drain");
+    MS_VoidFunc f = (MS_VoidFunc)method_getImplementation(class_getInstanceMethod(object_getClass(pool), s));
+    f(pool, s);
+}
+
+static id MSpawn_Str(const char* txt) {
+    if (!txt) return nil;
     Class cls = objc_getClass("NSString");
-    SEL sel = sel_registerName("stringWithUTF8String:");
-    id (*f)(id, SEL, const char*) = (void*)method_getImplementation(class_getClassMethod(cls, sel));
-    return f ? f((id)cls, sel, text) : nil;
+    SEL s = sel_registerName("stringWithUTF8String:");
+    MS_StrFunc f = (MS_StrFunc)method_getImplementation(class_getClassMethod(cls, s));
+    return f ? f((id)cls, s, txt) : nil;
 }
 
-static const char* MS_GetCStr(id strObj) {
-    if (!strObj) return "";
-    SEL sel = sel_registerName("UTF8String");
-    const char* (*f)(id, SEL) = (void*)class_getMethodImplementation(object_getClass(strObj), sel);
-    return f ? f(strObj, sel) : "";
+static const char* MSpawn_CStr(id str) {
+    if (!str) return "";
+    SEL s = sel_registerName("UTF8String");
+    MS_Utf8Func f = (MS_Utf8Func)method_getImplementation(class_getInstanceMethod(object_getClass(str), s));
+    return f ? f(str, s) : "";
 }
 
-static void MS_SendChat(id server, const char* msg) {
-    if (server && MS_Real_SendChat) {
-        MS_Real_SendChat(server, sel_registerName("sendChatMessage:sendToClients:"), MS_AllocStr(msg), nil);
+static void MSpawn_Chat(id server, const char* msg) {
+    if (server && Real_MSpawn_Chat) {
+        Real_MSpawn_Chat(server, sel_registerName("sendChatMessage:displayNotification:sendToClients:"), MSpawn_Str(msg), true, nil);
     }
 }
 
-static id MS_MkGeneDict(int breedID) {
-    if (breedID < 0) return nil;
+static id MSpawn_MakeBreedDict(int breedVal) {
+    if (breedVal < 0) return nil;
     Class clsNum = objc_getClass("NSNumber");
-    id (*fNum)(id, SEL, int) = (void*)method_getImplementation(class_getClassMethod(clsNum, sel_registerName("numberWithInt:")));
-    id val = fNum((id)clsNum, sel_registerName("numberWithInt:"), breedID);
+    SEL sNum = sel_registerName("numberWithInt:");
+    MS_NumFunc fNum = (MS_NumFunc)method_getImplementation(class_getClassMethod(clsNum, sNum));
+    id numObj = fNum((id)clsNum, sNum, breedVal);
     
-    id key = MS_AllocStr("breed");
+    id key = MSpawn_Str("breed");
     Class clsDict = objc_getClass("NSDictionary");
-    id (*fDict)(id, SEL, id, id) = (void*)method_getImplementation(class_getClassMethod(clsDict, sel_registerName("dictionaryWithObject:forKey:")));
-    return fDict((id)clsDict, sel_registerName("dictionaryWithObject:forKey:"), val, key);
+    SEL sDict = sel_registerName("dictionaryWithObject:forKey:");
+    MS_DictFunc fDict = (MS_DictFunc)method_getImplementation(class_getClassMethod(clsDict, sDict));
+    return fDict((id)clsDict, sDict, numObj, key);
 }
 
-// --- PARSERS ---
-static int ParseDodo(const char* name) {
-    if (!name) return -1;
-    if (strcasecmp(name, "titanium") == 0) return DODO_TITANIUM;
-    if (strcasecmp(name, "platinum") == 0) return DODO_PLATINUM;
-    if (strcasecmp(name, "gold") == 0)      return DODO_GOLD;
-    if (strcasecmp(name, "iron") == 0)      return DODO_IRON;
-    if (strcasecmp(name, "copper") == 0)    return DODO_COPPER;
-    if (strcasecmp(name, "tin") == 0)       return DODO_TIN;
-    if (strcasecmp(name, "coal") == 0)      return DODO_COAL;
-    if (strcasecmp(name, "oil") == 0)       return DODO_OIL;
-    if (strcasecmp(name, "fuel") == 0)      return DODO_FUEL;
-    if (strcasecmp(name, "diamond") == 0)   return DODO_DIAMOND;
-    if (strcasecmp(name, "ruby") == 0)      return DODO_RUBY;
-    if (strcasecmp(name, "emerald") == 0)   return DODO_EMERALD;
-    if (strcasecmp(name, "sapphire") == 0)  return DODO_SAPPHIRE;
-    if (strcasecmp(name, "amethyst") == 0)  return DODO_AMETHYST;
-    if (strcasecmp(name, "rainbow") == 0)   return DODO_RAINBOW;
-    if (strcasecmp(name, "glass") == 0)     return DODO_GLASS;
-    if (strcasecmp(name, "stone") == 0)     return DODO_STONE;
-    if (strcasecmp(name, "dirt") == 0)      return DODO_DIRT;
-    if (strcasecmp(name, "wood") == 0)      return DODO_WOOD;
-    if (strcasecmp(name, "ice") == 0)       return DODO_GLASS;
-    if (strcasecmp(name, "lapis") == 0)     return DODO_LAPIS;
-    if (strcasecmp(name, "red_marble") == 0) return DODO_RED_MARBLE;
-    if (strcasecmp(name, "marble") == 0)    return DODO_MARBLE;
-    if (strcasecmp(name, "sand") == 0)      return DODO_SAND;
-    if (strcasecmp(name, "flint") == 0)     return DODO_FLINT;
-    if (strcasecmp(name, "clay") == 0)      return DODO_CLAY;
-    return -1;
-}
-
-static int ParseDonkey(const char* name) {
-    if (!name) return -1;
-    if (strcasecmp(name, "rainbow") == 0) return DONK_RAINBOW;
-    if (strcasecmp(name, "unicorn") == 0)         return DONK_UNI_RAINBOW;
-    if (strcasecmp(name, "unicorn_rainbow") == 0) return DONK_UNI_RAINBOW;
-    if (strcasecmp(name, "unicorn_white") == 0)   return DONK_UNI_WHITE;
-    if (strcasecmp(name, "unicorn_black") == 0)   return DONK_UNI_BLACK;
-    if (strcasecmp(name, "unicorn_pink") == 0)    return DONK_UNI_PINK;
-    if (strcasecmp(name, "unicorn_red") == 0)     return DONK_UNI_RED;
-    if (strcasecmp(name, "unicorn_blue") == 0)    return DONK_UNI_BLUE;
-    if (strcasecmp(name, "unicorn_green") == 0)   return DONK_UNI_GREEN;
-    if (strcasecmp(name, "unicorn_yellow") == 0)  return DONK_UNI_YELLOW;
-    if (strcasecmp(name, "unicorn_purple") == 0)  return DONK_UNI_PURPLE;
-    return -1;
-}
-
-// --- LOGIC ---
-static id MS_FindPlayer(id dynWorld, const char* name) {
-    if (!dynWorld || !name) return nil;
-    id targetStr = MS_AllocStr(name);
-    
-    id list = nil;
+id MSpawn_FindPlayer(id dynWorld, const char* name) {
+    if (!dynWorld) return nil;
     Ivar iv = class_getInstanceVariable(object_getClass(dynWorld), "netBlockheads");
-    if (iv) list = *(id*)((char*)dynWorld + ivar_getOffset(iv));
-    if (!list) return nil;
+    if (!iv) return nil;
+    id list = *(id*)((char*)dynWorld + ivar_getOffset(iv));
     
-    SEL sCount = sel_registerName("count");
+    SEL sCnt = sel_registerName("count");
     SEL sIdx = sel_registerName("objectAtIndex:");
+    SEL sClientName = sel_registerName("clientName");
     SEL sComp = sel_registerName("caseInsensitiveCompare:");
     
-    int (*fCount)(id, SEL) = (void*)class_getMethodImplementation(object_getClass(list), sCount);
-    id (*fIdx)(id, SEL, unsigned long) = (void*)class_getMethodImplementation(object_getClass(list), sIdx);
+    MS_IntFunc fCnt = (MS_IntFunc)method_getImplementation(class_getInstanceMethod(object_getClass(list), sCnt));
+    MS_IdxFunc fIdx = (MS_IdxFunc)method_getImplementation(class_getInstanceMethod(object_getClass(list), sIdx));
     
-    if (!fCount || !fIdx) return nil;
-
-    int count = fCount(list, sCount);
-    for(int i=0; i<count; i++) {
+    int count = fCnt(list, sCnt);
+    id target = MSpawn_Str(name);
+    
+    for (int i=0; i<count; i++) {
+        id pool = MSpawn_Pool();
         id bh = fIdx(list, sIdx, i);
-        if(bh) {
-            id bName = nil;
-            Ivar ivName = class_getInstanceVariable(object_getClass(bh), "_clientName");
-            if (ivName) bName = *(id*)((char*)bh + ivar_getOffset(ivName));
-            
-            if (!bName) {
-                ivName = class_getInstanceVariable(object_getClass(bh), "clientName");
-                if (ivName) bName = *(id*)((char*)bh + ivar_getOffset(ivName));
-            }
-            
-            if(bName) {
-                long (*fC)(id, SEL, id) = (void*)class_getMethodImplementation(object_getClass(bName), sComp);
-                if(fC && fC(bName, sComp, targetStr) == 0) return bh;
-            }
+        id cName = nil;
+        Method mName = class_getInstanceMethod(object_getClass(bh), sClientName);
+        if (mName) {
+            MS_GetterFunc fName = (MS_GetterFunc)method_getImplementation(mName);
+            cName = fName(bh, sClientName);
         }
+        
+        if (cName) {
+            MS_CompFunc fComp = (MS_CompFunc)method_getImplementation(class_getInstanceMethod(object_getClass(cName), sComp));
+            if (fComp(cName, sComp, target) == 0) return bh;
+        }
+        MSpawn_Drain(pool);
     }
     return nil;
 }
 
-static void MS_SpawnAction(id dynWorld, id player, int mobID, int qty, int breedID, bool isBaby) {
-    MS_IntPair pos = {0,0};
-    void* posPtr = NULL;
-    object_getInstanceVariable(player, "_pos", &posPtr);
-    if (!posPtr) object_getInstanceVariable(player, "pos", &posPtr);
-    if (posPtr) pos = *(MS_IntPair*)posPtr;
-    else return;
+// --- FULL ID LIST ---
+int MSpawn_ParseDodo(const char* v) {
+    if (!v) return -1;
+    if (isdigit(v[0])) return atoi(v);
+    if (strcasecmp(v, "stone")==0) return 1;
+    if (strcasecmp(v, "dirt")==0) return 7;
+    if (strcasecmp(v, "wood")==0) return 9;
+    if (strcasecmp(v, "sand")==0) return 11;
+    if (strcasecmp(v, "flint")==0) return 17;
+    if (strcasecmp(v, "coal")==0) return 18;
+    if (strcasecmp(v, "copper")==0) return 21;
+    if (strcasecmp(v, "iron")==0) return 23;
+    if (strcasecmp(v, "gold")==0) return 24;
+    if (strcasecmp(v, "titanium")==0) return 25;
+    if (strcasecmp(v, "platinum")==0) return 26;
+    if (strcasecmp(v, "tin")==0) return 22;
+    if (strcasecmp(v, "oil")==0) return 19;
+    if (strcasecmp(v, "fuel")==0) return 20;
+    if (strcasecmp(v, "clay")==0) return 15;
+    if (strcasecmp(v, "brick")==0) return 16;
+    if (strcasecmp(v, "glass")==0) return 13;
+    if (strcasecmp(v, "black_glass")==0) return 14;
+    if (strcasecmp(v, "marble")==0) return 4;
+    if (strcasecmp(v, "red_marble")==0) return 5;
+    if (strcasecmp(v, "lapis")==0) return 6;
+    if (strcasecmp(v, "compost")==0) return 8;
+    if (strcasecmp(v, "gravel")==0) return 10;
+    if (strcasecmp(v, "black_sand")==0) return 12;
+    if (strcasecmp(v, "limestone")==0) return 2;
+    if (strcasecmp(v, "sandstone")==0) return 3;
+    if (strcasecmp(v, "amethyst")==0) return 27;
+    if (strcasecmp(v, "sapphire")==0) return 28;
+    if (strcasecmp(v, "emerald")==0) return 29;
+    if (strcasecmp(v, "ruby")==0) return 30;
+    if (strcasecmp(v, "diamond")==0) return 31;
+    if (strcasecmp(v, "rainbow")==0) return 32;
+    return 0; 
+}
 
-    SEL sel = sel_registerName("loadNPCAtPosition:type:saveDict:isAdult:wasPlaced:placedByClient:");
-    Method m = class_getInstanceMethod(object_getClass(dynWorld), sel);
-    
-    if (m) {
-        id (*f)(id, SEL, MS_IntPair, int, id, BOOL, BOOL, id) = (void*)method_getImplementation(m);
-        id saveDict = MS_MkGeneDict(breedID);
-        for(int i=0; i<qty; i++) {
-            f(dynWorld, sel, pos, mobID, saveDict, !isBaby, 0, nil);
-        }
+int MSpawn_ParseDonkey(const char* v) {
+    if (!v) return -1;
+    if (isdigit(v[0])) return atoi(v);
+    if (strcasecmp(v, "rainbow")==0) return 11;
+    if (strcasecmp(v, "unicorn")==0) return 23; 
+    if (strcasecmp(v, "white")==0) return 22;
+    if (strcasecmp(v, "black")==0) return 14;
+    if (strcasecmp(v, "pink")==0) return 21;
+    if (strcasecmp(v, "blue")==0) return 15;
+    if (strcasecmp(v, "green")==0) return 16;
+    if (strcasecmp(v, "yellow")==0) return 17;
+    if (strcasecmp(v, "red")==0) return 19;
+    if (strcasecmp(v, "purple")==0) return 20;
+    if (strcasecmp(v, "orange")==0) return 18;
+    if (strcasecmp(v, "brown")==0) return 13;
+    if (strcasecmp(v, "grey")==0) return 12;
+    return 0;
+}
+
+void MSpawn_Execute(id dynWorld, id player, int mobID, int qty, int breed, bool baby) {
+    Ivar ivP = class_getInstanceVariable(object_getClass(player), "pos");
+    long long pos = *(long long*)((char*)player + ivar_getOffset(ivP));
+    SEL sLoad = sel_registerName("loadNPCAtPosition:type:saveDict:isAdult:wasPlaced:placedByClient:");
+    MS_SpawnFunc fLoad = (MS_SpawnFunc)method_getImplementation(class_getInstanceMethod(object_getClass(dynWorld), sLoad));
+    id dict = MSpawn_MakeBreedDict(breed);
+    for(int i=0; i<qty; i++) {
+        fLoad(dynWorld, sLoad, pos, mobID, dict, !baby, 0, nil);
     }
 }
 
-// --- HOOK ---
-static id Hook_MobCmd(id self, SEL _cmd, id cmdStr, id client) {
-    const char* raw = MS_GetCStr(cmdStr);
-    if (!raw) return MS_Real_HandleCmd(self, _cmd, cmdStr, client);
+id Hook_MSpawn_Cmd(id self, SEL _cmd, id cmdStr, id client) {
+    const char* raw = MSpawn_CStr(cmdStr);
+    if (!raw || strncmp(raw, "/spawn", 6) != 0) return Real_MSpawn_Cmd(self, _cmd, cmdStr, client);
     
-    char text[256]; strncpy(text, raw, 255); text[255] = 0;
-
-    if (strcasecmp(text, "/help_dodo") == 0) {
-        PrintDodoHelp(self); return nil;
+    id pool = MSpawn_Pool();
+    char buf[256]; strncpy(buf, raw, 255);
+    char* tok = strtok(buf, " ");
+    char* sMob = strtok(NULL, " ");
+    char* sQty = strtok(NULL, " ");
+    char* sPl = strtok(NULL, " ");
+    char* args[4] = {0};
+    int argCount = 0;
+    while(argCount < 4) {
+        char* a = strtok(NULL, " ");
+        if (!a) break;
+        args[argCount++] = a;
     }
-    if (strcasecmp(text, "/help_donkey") == 0) {
-        PrintDonkeyHelp(self); return nil;
-    }
-
-    if (strncmp(text, "/spawn", 6) == 0) {
-        id world = nil;
-        object_getInstanceVariable(self, "world", (void**)&world);
-        id dynWorld = nil;
-        if (world) object_getInstanceVariable(world, "dynamicWorld", (void**)&dynWorld);
-        
-        if (!dynWorld) { 
-            MS_SendChat(self, "[Mob] Error: World not ready."); 
-            return nil; 
-        }
-
-        char *saveptr; 
-        char *t = strtok_r(text, " ", &saveptr);
-        char *sID = strtok_r(NULL, " ", &saveptr);
-        char *sQty = strtok_r(NULL, " ", &saveptr);
-        char *sPl = strtok_r(NULL, " ", &saveptr);
-        char *sVar = strtok_r(NULL, " ", &saveptr); 
-        char *sBaby = strtok_r(NULL, " ", &saveptr);
-
-        if (!sID || !sPl) {
-            MS_SendChat(self, "Usage: /spawn <mob> <qty> <player> [variant] [baby]");
-            return nil;
-        }
-
-        id target = MS_FindPlayer(dynWorld, sPl);
-        if (!target) { 
-            MS_SendChat(self, "Player not found."); 
-            return nil; 
-        }
-
-        int qty = sQty ? atoi(sQty) : 1;
-        if (qty > 20) qty = 20;
-
-        int mobID = 0;
-        int breedID = -1;
-        bool isBaby = false;
-
-        if (sBaby && strcasecmp(sBaby, "baby") == 0) isBaby = true;
-        if (sVar && strcasecmp(sVar, "baby") == 0) { isBaby = true; sVar = NULL; }
-
-        if (strcasecmp(sID, "dodo") == 0) {
-            mobID = MOB_DODO;
-            if (sVar) breedID = ParseDodo(sVar);
-        }
-        else if (strcasecmp(sID, "donkey") == 0 || strcasecmp(sID, "unicorn") == 0) {
-            mobID = MOB_DONKEY;
-            if (strcasecmp(sID, "unicorn") == 0 && !sVar) breedID = DONK_UNI_RAINBOW;
-            else if (sVar) breedID = ParseDonkey(sVar);
-        }
-        else if (strcasecmp(sID, "shark") == 0) mobID = MOB_SHARK;
-        else if (strcasecmp(sID, "fish") == 0) mobID = MOB_FISH;
-        else if (strcasecmp(sID, "yak") == 0) mobID = MOB_YAK;
-        else if (strcasecmp(sID, "scorpion") == 0) mobID = MOB_SCORPION;
-        else if (strcasecmp(sID, "troll") == 0) mobID = MOB_TROLL;
-        else if (strcasecmp(sID, "dropbear") == 0) mobID = 2; // Fixed ID from context
-
-        if (mobID > 0) {
-            MS_SpawnAction(dynWorld, target, mobID, qty, breedID, isBaby);
-            char msg[128];
-            snprintf(msg, 128, ">> Summoned %d %s for %s.", qty, sID, sPl);
-            MS_SendChat(self, msg);
-        } else {
-            MS_SendChat(self, "Unknown Mob.");
-        }
-        
+    
+    if (!sMob || !sPl) {
+        MSpawn_Chat(self, "[Usage] /spawn <mob> <qty> <player> [variant/baby/force]");
+        MSpawn_Drain(pool);
         return nil;
     }
-
-    return MS_Real_HandleCmd(self, _cmd, cmdStr, client);
+    
+    id world = nil;
+    object_getInstanceVariable(self, "world", (void**)&world);
+    id dynWorld = nil;
+    object_getInstanceVariable(world, "dynamicWorld", (void**)&dynWorld);
+    
+    id target = MSpawn_FindPlayer(dynWorld, sPl);
+    if (!target) {
+        MSpawn_Chat(self, "[Error] Player not found.");
+        MSpawn_Drain(pool);
+        return nil;
+    }
+    
+    int qty = sQty ? atoi(sQty) : 1;
+    if (qty < 1) qty = 1;
+    bool isBaby = false;
+    bool force = false;
+    const char* variant = NULL;
+    
+    for(int i=0; i<argCount; i++) {
+        if (strcasecmp(args[i], "baby") == 0) isBaby = true;
+        else if (strcasecmp(args[i], "force") == 0) force = true;
+        else variant = args[i]; 
+    }
+    
+    if (!force && qty > 10) {
+        qty = 10;
+        MSpawn_Chat(self, "[Warn] Qty capped at 10. Use 'force' to override.");
+    }
+    
+    int mobID = 0;
+    int breed = -1;
+    
+    if (strcasecmp(sMob, "dodo")==0) {
+        mobID = 1; breed = MSpawn_ParseDodo(variant);
+    }
+    else if (strcasecmp(sMob, "donkey")==0) {
+        mobID = 3; breed = MSpawn_ParseDonkey(variant);
+    }
+    else if (strcasecmp(sMob, "unicorn")==0) {
+        mobID = 3; breed = 23; 
+        if (variant) breed = MSpawn_ParseDonkey(variant);
+    }
+    else if (strcasecmp(sMob, "shark")==0) mobID = 5;
+    else if (strcasecmp(sMob, "troll")==0) mobID = 6;
+    else if (strcasecmp(sMob, "scorpion")==0) mobID = 7;
+    else if (strcasecmp(sMob, "yak")==0) mobID = 8;
+    else if (strcasecmp(sMob, "dropbear")==0) mobID = 2;
+    else if (strcasecmp(sMob, "fish")==0) mobID = 4;
+    
+    if (mobID > 0) {
+        MSpawn_Execute(dynWorld, target, mobID, qty, breed, isBaby);
+        char msg[128];
+        snprintf(msg, 128, "[Spawn] Summoned %d %s near %s.", qty, sMob, sPl);
+        MSpawn_Chat(self, msg);
+    } else {
+        MSpawn_Chat(self, "[Error] Unknown Mob.");
+    }
+    
+    MSpawn_Drain(pool);
+    return nil;
 }
 
-// --- INIT ---
-static void* Mob_Init(void* arg) {
+static void* MSpawn_Init(void* arg) {
     sleep(1);
-    Class clsSrv = objc_getClass("BHServer");
-    if (clsSrv) {
-        Method mC = class_getInstanceMethod(clsSrv, sel_registerName("handleCommand:issueClient:"));
-        Method mT = class_getInstanceMethod(clsSrv, sel_registerName("sendChatMessage:sendToClients:"));
-        MS_Real_HandleCmd = (void*)method_getImplementation(mC);
-        MS_Real_SendChat  = (void*)method_getImplementation(mT);
-        method_setImplementation(mC, (IMP)Hook_MobCmd);
+    Class cls = objc_getClass(MS_SERVER_CLASS);
+    if (cls) {
+        Method mC = class_getInstanceMethod(cls, sel_registerName("handleCommand:issueClient:"));
+        Real_MSpawn_Cmd = (MS_CmdFunc)method_getImplementation(mC);
+        method_setImplementation(mC, (IMP)Hook_MSpawn_Cmd);
+        
+        Method mT = class_getInstanceMethod(cls, sel_registerName("sendChatMessage:displayNotification:sendToClients:"));
+        Real_MSpawn_Chat = (MS_ChatFunc)method_getImplementation(mT);
     }
     return NULL;
 }
 
-__attribute__((constructor)) static void Mob_Entry() {
-    pthread_t t; pthread_create(&t, NULL, Mob_Init, NULL);
+__attribute__((constructor)) static void MSpawn_Entry() {
+    pthread_t t; pthread_create(&t, NULL, MSpawn_Init, NULL);
 }
