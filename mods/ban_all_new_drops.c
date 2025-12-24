@@ -1,7 +1,7 @@
 /*
- * Ban All New Drops
- * -----------------------------------
- * Description: Prevents new items from spawning using only function pointers.
+ * Clear All New Drops (Compatible Version)
+ * ----------------------------------------
+ * Prefix: CD_
  * Commands: /ban_drops
  */
 
@@ -16,14 +16,13 @@
 #include <objc/runtime.h>
 #include <objc/message.h>
 
-// --- CONFIG ---
 #define CD_SERVER_CLASS "BHServer"
 #define CD_DYN_WORLD    "DynamicWorld"
 
 // --- GLOBALS ---
 static bool g_CD_Active = false;
 
-// --- TYPEDEFS (IMPs) ---
+// --- IMP TYPES ---
 typedef id (*CD_CmdFunc)(id, SEL, id, id);
 typedef void (*CD_ChatFunc)(id, SEL, id, BOOL, id);
 typedef id (*CD_DropFunc)(id, SEL, id);
@@ -34,91 +33,72 @@ static CD_CmdFunc  Real_CD_HandleCmd = NULL;
 static CD_ChatFunc Real_CD_SendChat = NULL;
 static CD_DropFunc Real_CD_ClientDrop = NULL;
 
-// --- IMP HELPERS ---
-static id CD_AllocStr(const char* text) {
-    if (!text) return nil;
+// --- UTILS ---
+static id CD_Str(const char* txt) {
+    if (!txt) return nil;
     Class cls = objc_getClass("NSString");
-    SEL sel = sel_registerName("stringWithUTF8String:");
-    Method m = class_getClassMethod(cls, sel);
-    if (!m) return nil;
-    CD_StrFunc f = (CD_StrFunc)method_getImplementation(m);
-    return f ? f((id)cls, sel, text) : nil;
+    SEL s = sel_registerName("stringWithUTF8String:");
+    CD_StrFunc f = (CD_StrFunc)method_getImplementation(class_getClassMethod(cls, s));
+    return f ? f((id)cls, s, txt) : nil;
 }
 
-static const char* CD_GetCStr(id str) {
+static const char* CD_CStr(id str) {
     if (!str) return "";
-    SEL sel = sel_registerName("UTF8String");
-    Method m = class_getInstanceMethod(object_getClass(str), sel);
-    if (!m) return "";
-    CD_Utf8Func f = (CD_Utf8Func)method_getImplementation(m);
-    return f ? f(str, sel) : "";
+    SEL s = sel_registerName("UTF8String");
+    CD_Utf8Func f = (CD_Utf8Func)method_getImplementation(class_getInstanceMethod(object_getClass(str), s));
+    return f ? f(str, s) : "";
 }
 
-static void CD_SendMsg(id server, const char* msg) {
+static void CD_Msg(id server, const char* msg) {
     if (server && Real_CD_SendChat) {
-        Real_CD_SendChat(server, 
-                         sel_registerName("sendChatMessage:displayNotification:sendToClients:"), 
-                         CD_AllocStr(msg), 
-                         true, 
-                         nil);
+        Real_CD_SendChat(server, sel_registerName("sendChatMessage:displayNotification:sendToClients:"), CD_Str(msg), true, nil);
     }
 }
 
 // --- HOOKS ---
-
 id Hook_CD_ClientDrop(id self, SEL _cmd, id data) {
-    if (g_CD_Active) return nil; 
+    if (g_CD_Active) return nil;
     if (Real_CD_ClientDrop) return Real_CD_ClientDrop(self, _cmd, data);
     return nil;
 }
 
 id Hook_CD_Cmd(id self, SEL _cmd, id cmdStr, id client) {
-    const char* raw = CD_GetCStr(cmdStr);
+    const char* raw = CD_CStr(cmdStr);
+    if (!raw) return Real_CD_HandleCmd(self, _cmd, cmdStr, client);
     
-    if (raw && strncmp(raw, "/ban_drops", 12) == 0) {
+    if (strncmp(raw, "/ban_drops", 12) == 0) {
         g_CD_Active = !g_CD_Active;
         char msg[128];
         snprintf(msg, 128, "[System] Drop Cleaner: %s", g_CD_Active ? "ON" : "OFF");
-        CD_SendMsg(self, msg);
+        CD_Msg(self, msg);
         return nil;
     }
-
-    if (Real_CD_HandleCmd) return Real_CD_HandleCmd(self, _cmd, cmdStr, client);
-    return nil;
+    return Real_CD_HandleCmd(self, _cmd, cmdStr, client);
 }
 
 // --- INIT ---
-static void* CD_InitThread(void* arg) {
+static void* CD_Init(void* arg) {
     sleep(1);
-    
     Class clsSrv = objc_getClass(CD_SERVER_CLASS);
     Class clsDW = objc_getClass(CD_DYN_WORLD);
 
     if (clsSrv) {
-        Method mCmd = class_getInstanceMethod(clsSrv, sel_registerName("handleCommand:issueClient:"));
-        if (mCmd) {
-            Real_CD_HandleCmd = (CD_CmdFunc)method_getImplementation(mCmd);
-            method_setImplementation(mCmd, (IMP)Hook_CD_Cmd);
-        }
+        Method mC = class_getInstanceMethod(clsSrv, sel_registerName("handleCommand:issueClient:"));
+        Real_CD_HandleCmd = (CD_CmdFunc)method_getImplementation(mC);
+        method_setImplementation(mC, (IMP)Hook_CD_Cmd);
         
-        Method mChat = class_getInstanceMethod(clsSrv, sel_registerName("sendChatMessage:displayNotification:sendToClients:"));
-        if (mChat) {
-            Real_CD_SendChat = (CD_ChatFunc)method_getImplementation(mChat);
-        }
+        Method mT = class_getInstanceMethod(clsSrv, sel_registerName("sendChatMessage:displayNotification:sendToClients:"));
+        Real_CD_SendChat = (CD_ChatFunc)method_getImplementation(mT);
     }
 
     if (clsDW) {
-        SEL sDrop = sel_registerName("createClientFreeblocksWithData:");
-        Method mDrop = class_getInstanceMethod(clsDW, sDrop);
-        if (mDrop) {
-            Real_CD_ClientDrop = (CD_DropFunc)method_getImplementation(mDrop);
-            method_setImplementation(mDrop, (IMP)Hook_CD_ClientDrop);
-        }
+        Method mD = class_getInstanceMethod(clsDW, sel_registerName("createClientFreeblocksWithData:"));
+        Real_CD_ClientDrop = (CD_DropFunc)method_getImplementation(mD);
+        method_setImplementation(mD, (IMP)Hook_CD_ClientDrop);
     }
     return NULL;
 }
 
 __attribute__((constructor)) static void CD_Entry() {
-    pthread_t t; 
-    pthread_create(&t, NULL, CD_InitThread, NULL);
+    pthread_t t; pthread_create(&t, NULL, CD_Init, NULL);
 }
