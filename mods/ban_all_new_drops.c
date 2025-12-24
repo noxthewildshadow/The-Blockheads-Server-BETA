@@ -1,8 +1,9 @@
 /*
- * Clear All New Drops v2.3
+ * Ban All New Drops
  * ------------------------
- * Description: Prevents new items from spawning (reduces lag).
+ * Description: Prevents new FreeBlocks from dropping into the world.
  * Commands: /ban_drops
+ * Note: Uses BHServer chat signature.
  */
 
 #define _GNU_SOURCE
@@ -25,7 +26,7 @@ static bool g_CD_Active = false;
 
 // --- TYPES ---
 typedef id (*CD_CmdFunc)(id, SEL, id, id);
-// Updated signature based on BHServer.h: sendChatMessage:displayNotification:sendToClients:
+// Signature validated against BHServer.h
 typedef void (*CD_ChatFunc)(id, SEL, id, BOOL, id); 
 typedef id (*CD_DropFunc)(id, SEL, id);
 
@@ -51,7 +52,7 @@ static const char* CD_GetCStr(id str) {
 
 static void CD_SendMsg(id server, const char* msg) {
     if (server && Real_CD_SendChat) {
-        // Correct signature: Msg (id), Notification (BOOL), Clients (NSArray*)
+        // Correct signature: Msg(id), DisplayNotification(BOOL), SendToClients(NSArray*)
         Real_CD_SendChat(server, 
                          sel_registerName("sendChatMessage:displayNotification:sendToClients:"), 
                          CD_AllocStr(msg), 
@@ -63,7 +64,7 @@ static void CD_SendMsg(id server, const char* msg) {
 // --- HOOKS ---
 
 id Hook_CD_ClientDrop(id self, SEL _cmd, id data) {
-    if (g_CD_Active) return nil; // Block drop creation
+    if (g_CD_Active) return nil; // Return nil to prevent drop creation
     if (Real_CD_ClientDrop) return Real_CD_ClientDrop(self, _cmd, data);
     return nil;
 }
