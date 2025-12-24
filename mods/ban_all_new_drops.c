@@ -1,5 +1,5 @@
 /*
- * Clear All New Drops (Compatible Version)
+ * Ban All New Drops
  * ----------------------------------------
  * Prefix: CD_
  * Commands: /ban_drops
