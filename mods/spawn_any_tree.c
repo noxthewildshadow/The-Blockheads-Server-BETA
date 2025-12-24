@@ -1,9 +1,3 @@
-/*
- * BLOCKHEADS TREE GENERATOR
- * - Usage: Type /tree <Name> and then place stone on any ping and will spawn the desired tree.
- * - Type again /tree and will turn OFF
- */
-
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,233 +11,252 @@
 #include <objc/message.h>
 
 // --- CONFIG ---
-#define TG_SERVER_CLASS "BHServer"
-#define TG_WORLD_CLASS  "World"
-#define TG_GEM_CLASS    "GemTree"
-#define TG_BAIT_ITEM    1024 // Stone (Piedra)
+#define TREE_SERVER_CLASS "BHServer"
+#define TREE_WORLD_CLASS  "World"
+#define TREE_GEM_CLASS    "GemTree"
 
-// --- SELECTORS ---
-#define SEL_FILL      "fillTile:atPos:withType:dataA:dataB:placedByClient:saveDict:placedByBlockhead:placedByClientName:"
-#define SEL_CMD       "handleCommand:issueClient:"
-#define SEL_CHAT      "sendChatMessage:sendToClients:"
-#define SEL_UTF8      "UTF8String"
-#define SEL_STR       "stringWithUTF8String:"
-#define SEL_ALLOC     "alloc"
-
-// Normal Tree Loader
-#define SEL_LOAD_TREE "loadTreeAtPosition:type:maxHeight:growthRate:adultTree:adultMaxAge:"
-
-// Gem Tree Init
-#define SEL_INIT_GEM  "initWithWorld:dynamicWorld:atPosition:cache:treeDensityNoiseFunction:seasonOffsetNoiseFunction:gemTreeType:"
-
-// --- ENUMS ---
-enum TreeType {
-    TREE_APPLE = 1, TREE_MANGO = 2, TREE_MAPLE = 3, TREE_PINE = 4,
-    TREE_CACTUS = 5, TREE_COCONUT = 6, TREE_ORANGE = 7, TREE_CHERRY = 8,
-    TREE_COFFEE = 9, TREE_LIME = 10,
-    TREE_GEM_AMETHYST = 11, TREE_GEM_SAPPHIRE = 12, TREE_GEM_EMERALD = 13,
-    TREE_GEM_RUBY = 14, TREE_GEM_DIAMOND = 15
-};
-
-// --- STRUCTURES ---
+// --- TYPES ---
+// CRITICAL: Must match game structure to avoid Segfault
 typedef struct { int x; int y; } IntPair;
 
-// --- FUNC TYPES ---
-typedef void (*FillTileFunc)(id, SEL, void*, IntPair, int, uint16_t, uint16_t, id, id, id, id);
-typedef id   (*CmdFunc)(id, SEL, id, id);
-typedef void (*ChatFunc)(id, SEL, id, id);
-typedef const char* (*StrFunc)(id, SEL);
-typedef id   (*StringFactoryFunc)(id, SEL, const char*);
-typedef id   (*AllocFunc)(id, SEL);
+// --- IMP SIGNATURES (Based on Reference) ---
 
-typedef void (*LoadTreeFunc)(id, SEL, IntPair, int, short, short, BOOL, float);
-typedef id   (*InitGemFunc)(id, SEL, id, id, IntPair, id, id, id, int);
+// fillTile...
+typedef void (*TREE_FillFunc)(id, SEL, void*, IntPair, int, uint16_t, uint16_t, id, id, id, id);
 
-// --- STATE ---
-static FillTileFunc TreeGen_Real_FillTile = NULL;
-static CmdFunc      TreeGen_Real_HandleCmd = NULL;
-static ChatFunc     TreeGen_Real_SendChat = NULL;
+// handleCommand...
+typedef id (*TREE_CmdFunc)(id, SEL, id, id);
 
-static bool TreeGen_Active = false;
-static int  TreeGen_Type = 0;   
-static bool TreeGen_IsGem = false;
+// sendChatMessage...
+typedef void (*TREE_ChatFunc)(id, SEL, id, BOOL, id);
+
+// loadTreeAtPosition... (For Normal Trees)
+typedef void (*TREE_LoadFunc)(id, SEL, IntPair, int, short, short, BOOL, float);
+
+// initWithWorld... (For Gem Trees)
+typedef id (*TREE_InitGemFunc)(id, SEL, id, id, IntPair, id, id, id, int);
+
+// Alloc/Init Utils
+typedef id (*TREE_AllocFunc)(id, SEL);
+typedef id (*TREE_StrFunc)(id, SEL, const char*);
+typedef const char* (*TREE_Utf8Func)(id, SEL);
+
+// --- GLOBALS ---
+static TREE_FillFunc Real_TREE_Fill = NULL;
+static TREE_CmdFunc  Real_TREE_Cmd = NULL;
+static TREE_ChatFunc Real_TREE_Chat = NULL;
+
+static bool g_TREE_Active = false;
+static int  g_TREE_Type = 0;
+static bool g_TREE_IsGem = false;
+static char g_TREE_Name[64] = {0};
 
 // --- UTILS ---
-static const char* TG_GetStr(id strObj) {
-    if (!strObj) return "";
-    SEL sel = sel_registerName(SEL_UTF8);
-    StrFunc f = (StrFunc)class_getMethodImplementation(object_getClass(strObj), sel);
-    return f ? f(strObj, sel) : "";
+
+// Helper to get Ivar safely (Pointer Arithmetic)
+static id TREE_GetIvar(id obj, const char* name) {
+    if (!obj) return nil;
+    Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
+    if (iv) return *(id*)((char*)obj + ivar_getOffset(iv));
+    return nil;
 }
 
-static id TG_AllocStr(const char* text) {
-    Class cls = objc_getClass("NSString");
-    SEL sel = sel_registerName(SEL_STR);
-    StringFactoryFunc f = (StringFactoryFunc)method_getImplementation(class_getClassMethod(cls, sel));
-    return f ? f((id)cls, sel, text) : nil;
+static id TREE_Pool() {
+    Class cls = objc_getClass("NSAutoreleasePool");
+    SEL sA = sel_registerName("alloc");
+    SEL sI = sel_registerName("init");
+    TREE_AllocFunc fA = (TREE_AllocFunc)method_getImplementation(class_getClassMethod(cls, sA));
+    TREE_AllocFunc fI = (TREE_AllocFunc)method_getImplementation(class_getInstanceMethod(cls, sI));
+    return fI(fA((id)cls, sA), sI);
 }
 
-static void TG_Chat(id server, const char* msg) {
-    if (server && TreeGen_Real_SendChat) {
-        TreeGen_Real_SendChat(server, sel_registerName(SEL_CHAT), TG_AllocStr(msg), nil);
-    }
+static void TREE_Drain(id pool) {
+    if (!pool) return;
+    SEL s = sel_registerName("drain");
+    void (*f)(id,SEL) = (void (*)(id,SEL))method_getImplementation(class_getInstanceMethod(object_getClass(pool), s));
+    f(pool, s);
 }
 
-static id TG_GetIvar(id obj, const char* name) {
-    if (!obj) return nil;
-    Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
-    if (iv) return *(id*)((char*)obj + ivar_getOffset(iv));
-    return nil;
+static id TREE_Str(const char* txt) {
+    if (!txt) return nil;
+    Class cls = objc_getClass("NSString");
+    SEL s = sel_registerName("stringWithUTF8String:");
+    TREE_StrFunc f = (TREE_StrFunc)method_getImplementation(class_getClassMethod(cls, s));
+    return f((id)cls, s, txt);
 }
 
-// --- LOGIC: SPAWNERS ---
-void TG_SpawnNormalTree(id dynWorld, IntPair pos, int type) {
-    SEL sel = sel_registerName(SEL_LOAD_TREE);
-    if (class_getInstanceMethod(object_getClass(dynWorld), sel)) {
-        LoadTreeFunc f = (LoadTreeFunc)method_getImplementation(class_getInstanceMethod(object_getClass(dynWorld), sel));
-        f(dynWorld, sel, pos, type, 20, 20, 1, 100.0f);
-    }
+static const char* TREE_CStr(id str) {
+    if (!str) return "";
+    SEL s = sel_registerName("UTF8String");
+    TREE_Utf8Func f = (TREE_Utf8Func)method_getImplementation(class_getInstanceMethod(object_getClass(str), s));
+    return f(str, s);
 }
 
-void TG_SpawnGemTree(id world, id dynWorld, IntPair pos, int gemType) {
-    Class clsGem = objc_getClass(TG_GEM_CLASS);
-    if (!clsGem) {
-        printf("[TreeGen] Error: GemTree class not found.\n");
-        return;
-    }
-
-    id noise1 = TG_GetIvar(dynWorld, "treeDensityNoiseFunction");
-    id noise2 = TG_GetIvar(dynWorld, "seasonOffsetNoiseFunction");
-    id cache  = TG_GetIvar(dynWorld, "cache");
-
-    if (!noise1 || !noise2) return; 
-
-    // ALLOC
-    SEL sAlloc = sel_registerName(SEL_ALLOC);
-    Method mAlloc = class_getClassMethod(clsGem, sAlloc);
-    if (!mAlloc) return;
-    AllocFunc fAlloc = (AllocFunc)method_getImplementation(mAlloc);
-    id rawTree = fAlloc((id)clsGem, sAlloc);
-    if (!rawTree) return;
-
-    // INIT
-    SEL sInit = sel_registerName(SEL_INIT_GEM);
-    Method mInit = class_getInstanceMethod(clsGem, sInit);
-    if (mInit) {
-        InitGemFunc fInit = (InitGemFunc)method_getImplementation(mInit);
-        fInit(rawTree, sInit, world, dynWorld, pos, cache, noise1, noise2, gemType);
-    }
+static void TREE_Msg(id server, const char* msg) {
+    if (server && Real_TREE_Chat) {
+        Real_TREE_Chat(server, sel_registerName("sendChatMessage:displayNotification:sendToClients:"), TREE_Str(msg), true, nil);
+    }
 }
 
-// --- HOOK: FILL TILE ---
-void TreeGen_Hook_FillTile(id self, SEL _cmd, void* tilePtr, IntPair pos, int type, uint16_t dataA, uint16_t dataB, id client, id saveDict, id bh, id clientName) {
-    
-    if (TreeGen_Active && type == TG_BAIT_ITEM) {
-        id dynWorld = TG_GetIvar(self, "dynamicWorld");
-        if (dynWorld) {
-            if (TreeGen_IsGem) {
-                TG_SpawnGemTree(self, dynWorld, pos, TreeGen_Type);
-            } else {
-                TG_SpawnNormalTree(dynWorld, pos, TreeGen_Type);
-            }
-        }
-        return; // Cancel Stone
-    }
+// --- SPAWN LOGIC (FROM REFERENCE) ---
 
-    if (TreeGen_Real_FillTile) {
-        TreeGen_Real_FillTile(self, _cmd, tilePtr, pos, type, dataA, dataB, client, saveDict, bh, clientName);
-    }
+void TREE_SpawnNormal(id dynWorld, IntPair pos, int type) {
+    SEL sel = sel_registerName("loadTreeAtPosition:type:maxHeight:growthRate:adultTree:adultMaxAge:");
+    if (class_getInstanceMethod(object_getClass(dynWorld), sel)) {
+        TREE_LoadFunc f = (TREE_LoadFunc)method_getImplementation(class_getInstanceMethod(object_getClass(dynWorld), sel));
+        // Args: pos, type, height(20), rate(20), adult(1), maxAge(100.0)
+        f(dynWorld, sel, pos, type, 20, 20, 1, 100.0f);
+    }
 }
 
-// --- COMMANDS ---
-id TreeGen_Cmd_Hook(id self, SEL _cmd, id commandStr, id client) {
-    const char* raw = TG_GetStr(commandStr);
-    if (!raw) return TreeGen_Real_HandleCmd(self, _cmd, commandStr, client);
-    char text[256]; strncpy(text, raw, 255); text[255] = 0;
+void TREE_SpawnGem(id world, id dynWorld, IntPair pos, int gemType) {
+    Class clsGem = objc_getClass(TREE_GEM_CLASS);
+    if (!clsGem) return;
 
-    if (strncmp(text, "/tree", 5) == 0) {
-        char* token = strtok(text, " ");
-        char* sType = strtok(NULL, " ");
+    // Retrieve required objects from DynamicWorld using Ivars
+    id noise1 = TREE_GetIvar(dynWorld, "treeDensityNoiseFunction");
+    id noise2 = TREE_GetIvar(dynWorld, "seasonOffsetNoiseFunction");
+    id cache  = TREE_GetIvar(dynWorld, "cache");
 
-        // LOGICA DE TOGGLE: Si no hay argumento, apaga si está encendido.
-        if (!sType) {
-            if (TreeGen_Active) {
-                TreeGen_Active = false;
-                TG_Chat(self, "[TREE] Disabled.");
-            } else {
-                TG_Chat(self, "[HELP] Usage: /tree <type> (e.g. /tree diamond, /tree pine)");
-            }
-            return nil;
-        }
+    if (!noise1 || !noise2) return;
 
-        if (strcasecmp(sType, "off") == 0) {
-            TreeGen_Active = false;
-            TG_Chat(self, "[TREE] Disabled.");
-            return nil;
-        }
+    // Alloc
+    SEL sAlloc = sel_registerName("alloc");
+    TREE_AllocFunc fAlloc = (TREE_AllocFunc)method_getImplementation(class_getClassMethod(clsGem, sAlloc));
+    id rawTree = fAlloc((id)clsGem, sAlloc);
+    if (!rawTree) return;
 
-        TreeGen_Active = true;
-        TreeGen_IsGem = false;
+    // Init
+    SEL sInit = sel_registerName("initWithWorld:dynamicWorld:atPosition:cache:treeDensityNoiseFunction:seasonOffsetNoiseFunction:gemTreeType:");
+    if (class_getInstanceMethod(clsGem, sInit)) {
+        TREE_InitGemFunc fInit = (TREE_InitGemFunc)method_getImplementation(class_getInstanceMethod(clsGem, sInit));
+        fInit(rawTree, sInit, world, dynWorld, pos, cache, noise1, noise2, gemType);
+    }
+}
 
-        // Map Types
-        if (strcasecmp(sType, "apple") == 0)       TreeGen_Type = TREE_APPLE;
-        else if (strcasecmp(sType, "mango") == 0)  TreeGen_Type = TREE_MANGO;
-        else if (strcasecmp(sType, "maple") == 0)  TreeGen_Type = TREE_MAPLE;
-        else if (strcasecmp(sType, "pine") == 0)   TreeGen_Type = TREE_PINE;
-        else if (strcasecmp(sType, "cactus") == 0) TreeGen_Type = TREE_CACTUS;
-        else if (strcasecmp(sType, "coco") == 0)   TreeGen_Type = TREE_COCONUT;
-        else if (strcasecmp(sType, "orange") == 0) TreeGen_Type = TREE_ORANGE;
-        else if (strcasecmp(sType, "cherry") == 0) TreeGen_Type = TREE_CHERRY;
-        else if (strcasecmp(sType, "coffee") == 0) TreeGen_Type = TREE_COFFEE;
-        else if (strcasecmp(sType, "lime") == 0)   TreeGen_Type = TREE_LIME;
-        else {
-            TreeGen_IsGem = true;
-            if (strcasecmp(sType, "amethyst") == 0)      TreeGen_Type = TREE_GEM_AMETHYST;
-            else if (strcasecmp(sType, "sapphire") == 0) TreeGen_Type = TREE_GEM_SAPPHIRE;
-            else if (strcasecmp(sType, "emerald") == 0)  TreeGen_Type = TREE_GEM_EMERALD;
-            else if (strcasecmp(sType, "ruby") == 0)     TreeGen_Type = TREE_GEM_RUBY;
-            else if (strcasecmp(sType, "diamond") == 0)  TreeGen_Type = TREE_GEM_DIAMOND;
-            else {
-                TreeGen_Active = false;
-                TG_Chat(self, "[ERROR] Unknown Tree Type.");
-                return nil;
-            }
-        }
+// --- HOOKS ---
 
-        char msg[128];
-        snprintf(msg, 128, "[TREE] Selected: %s. Place Stone to plant.", sType);
-        TG_Chat(self, msg);
-        return nil;
-    }
+// Hook fillTile with IntPair structure
+void Hook_TREE_Fill(id self, SEL _cmd, void* tilePtr, IntPair pos, int type, uint16_t dA, uint16_t dB, id client, id saveDict, id bh, id cName) {
+    
+    // Check ID 1 (Block) or 1024 (Item)
+    if (g_TREE_Active && (type == 1 || type == 1024)) {
+        
+        id dynWorld = TREE_GetIvar(self, "dynamicWorld");
+        
+        if (dynWorld) {
+            if (g_TREE_IsGem) {
+                TREE_SpawnGem(self, dynWorld, pos, g_TREE_Type);
+            } else {
+                TREE_SpawnNormal(dynWorld, pos, g_TREE_Type);
+            }
+        }
+        
+        // Cancel Stone Placement (Return without calling original)
+        return; 
+    }
+    
+    if (Real_TREE_Fill) {
+        Real_TREE_Fill(self, _cmd, tilePtr, pos, type, dA, dB, client, saveDict, bh, cName);
+    }
+}
 
-    return TreeGen_Real_HandleCmd(self, _cmd, commandStr, client);
+id Hook_TREE_Cmd(id self, SEL _cmd, id cmdStr, id client) {
+    const char* raw = TREE_CStr(cmdStr);
+    if (!raw) return Real_TREE_Cmd(self, _cmd, cmdStr, client);
+    
+    if (strncmp(raw, "/tree", 5) == 0) {
+        id pool = TREE_Pool();
+        
+        char buffer[256]; strncpy(buffer, raw, 255);
+        char* token = strtok(buffer, " ");
+        char* arg = strtok(NULL, " ");
+        
+        if (!arg) {
+            if (g_TREE_Active) {
+                g_TREE_Active = false;
+                TREE_Msg(self, "[Tree] OFF.");
+            } else {
+                TREE_Msg(self, "[Usage] /tree <type> (e.g. apple, diamond)");
+            }
+            TREE_Drain(pool);
+            return nil;
+        }
+        
+        if (strcasecmp(arg, "off") == 0) {
+            g_TREE_Active = false;
+            TREE_Msg(self, "[Tree] OFF.");
+            TREE_Drain(pool);
+            return nil;
+        }
+        
+        g_TREE_Active = true;
+        g_TREE_IsGem = false;
+        strncpy(g_TREE_Name, arg, 63);
+        
+        // --- PARSER (Reference Based) ---
+        if (strcasecmp(arg, "apple")==0) g_TREE_Type=1;
+        else if (strcasecmp(arg, "mango")==0) g_TREE_Type=2;
+        else if (strcasecmp(arg, "maple")==0) g_TREE_Type=3;
+        else if (strcasecmp(arg, "pine")==0) g_TREE_Type=4;
+        else if (strcasecmp(arg, "cactus")==0) g_TREE_Type=5;
+        else if (strcasecmp(arg, "coconut")==0) g_TREE_Type=6;
+        else if (strcasecmp(arg, "orange")==0) g_TREE_Type=7;
+        else if (strcasecmp(arg, "cherry")==0) g_TREE_Type=8;
+        else if (strcasecmp(arg, "coffee")==0) g_TREE_Type=9;
+        else if (strcasecmp(arg, "lime")==0) g_TREE_Type=10;
+        else {
+            // Gem Trees
+            g_TREE_IsGem = true;
+            if (strcasecmp(arg, "amethyst")==0) g_TREE_Type=11;
+            else if (strcasecmp(arg, "sapphire")==0) g_TREE_Type=12;
+            else if (strcasecmp(arg, "emerald")==0) g_TREE_Type=13;
+            else if (strcasecmp(arg, "ruby")==0) g_TREE_Type=14;
+            else if (strcasecmp(arg, "diamond")==0) g_TREE_Type=15;
+            else {
+                g_TREE_Active = false;
+                TREE_Msg(self, "[Tree] Unknown Type.");
+                TREE_Drain(pool);
+                return nil;
+            }
+        }
+        
+        char msg[128];
+        snprintf(msg, 128, "[Tree] %s selected. Place STONE to plant.", g_TREE_Name);
+        TREE_Msg(self, msg);
+        
+        TREE_Drain(pool);
+        return nil;
+    }
+    
+    return Real_TREE_Cmd(self, _cmd, cmdStr, client);
 }
 
 // --- INIT ---
-static void* TreeGen_InitThread(void* arg) {
-    sleep(1);
-    
-    Class clsWorld = objc_getClass(TG_WORLD_CLASS);
-    if (clsWorld) {
-        Method m = class_getInstanceMethod(clsWorld, sel_registerName(SEL_FILL));
-        if (m) {
-            TreeGen_Real_FillTile = (FillTileFunc)method_getImplementation(m);
-            method_setImplementation(m, (IMP)TreeGen_Hook_FillTile);
-        }
-    }
-
-    Class clsServer = objc_getClass(TG_SERVER_CLASS);
-    if (clsServer) {
-        Method mCmd = class_getInstanceMethod(clsServer, sel_registerName(SEL_CMD));
-        TreeGen_Real_HandleCmd = (CmdFunc)method_getImplementation(mCmd);
-        method_setImplementation(mCmd, (IMP)TreeGen_Cmd_Hook);
-        
-        Method mChat = class_getInstanceMethod(clsServer, sel_registerName(SEL_CHAT));
-        TreeGen_Real_SendChat = (ChatFunc)method_getImplementation(mChat);
-    }
-    return NULL;
+static void* TREE_Init(void* arg) {
+    sleep(1);
+    
+    Class clsWorld = objc_getClass(TREE_WORLD_CLASS);
+    if (clsWorld) {
+        SEL sFill = sel_registerName("fillTile:atPos:withType:dataA:dataB:placedByClient:saveDict:placedByBlockhead:placedByClientName:");
+        if (class_getInstanceMethod(clsWorld, sFill)) {
+            Real_TREE_Fill = (TREE_FillFunc)method_getImplementation(class_getInstanceMethod(clsWorld, sFill));
+            method_setImplementation(class_getInstanceMethod(clsWorld, sFill), (IMP)Hook_TREE_Fill);
+        }
+    }
+    
+    Class clsSrv = objc_getClass(TREE_SERVER_CLASS);
+    if (clsSrv) {
+        Method mC = class_getInstanceMethod(clsSrv, sel_registerName("handleCommand:issueClient:"));
+        Real_TREE_Cmd = (TREE_CmdFunc)method_getImplementation(mC);
+        method_setImplementation(mC, (IMP)Hook_TREE_Cmd);
+        
+        Method mT = class_getInstanceMethod(clsSrv, sel_registerName("sendChatMessage:displayNotification:sendToClients:"));
+        Real_TREE_Chat = (TREE_ChatFunc)method_getImplementation(mT);
+    }
+    return NULL;
 }
 
-__attribute__((constructor)) static void TreeGen_Entry() {
-    pthread_t t; pthread_create(&t, NULL, TreeGen_InitThread, NULL);
+__attribute__((constructor)) static void TREE_Entry() {
+    pthread_t t; pthread_create(&t, NULL, TREE_Init, NULL);
 }
