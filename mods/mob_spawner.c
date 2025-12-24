@@ -1,10 +1,3 @@
-/*
- * Mob Spawner
- * --------------------------------------------------
- * Prefix: MSpawn_
- * Example of command: /spawn dodo 13 MyUsername baby diamond force
- */
-
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
