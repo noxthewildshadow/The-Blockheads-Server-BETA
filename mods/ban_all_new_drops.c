@@ -1,7 +1,8 @@
 /*
- * Script: Clear Drops
- * Command: /ban_drops
- * Description: Prevents items from dropping on the ground to reduce lag.
+ * Clear All New Drops v2.3
+ * ------------------------
+ * Description: Prevents new items from spawning (reduces lag).
+ * Commands: /ban_drops
  */
 
 #define _GNU_SOURCE
@@ -12,90 +13,108 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <objc/runtime.h>
 #include <objc/message.h>
 
-#define BAN_SERVER_CLASS "BHServer"
-#define BAN_DYN_WORLD    "DynamicWorld"
+// --- CONFIG ---
+#define CD_SERVER_CLASS "BHServer"
+#define CD_DYN_WORLD    "DynamicWorld"
 
-// --- GLOBALS (Static for isolation) ---
-static bool g_ClearDrops_Active = false;
-static id (*Ban_Real_HandleCmd)(id, SEL, id, id) = NULL;
-static void (*Ban_Real_SendChat)(id, SEL, id, id) = NULL;
-static id (*Ban_Real_ClientDrop)(id, SEL, id) = NULL;
+// --- GLOBALS ---
+static bool g_CD_Active = false;
+
+// --- TYPES ---
+typedef id (*CD_CmdFunc)(id, SEL, id, id);
+// Updated signature based on BHServer.h: sendChatMessage:displayNotification:sendToClients:
+typedef void (*CD_ChatFunc)(id, SEL, id, BOOL, id); 
+typedef id (*CD_DropFunc)(id, SEL, id);
+
+static CD_CmdFunc  Real_CD_HandleCmd = NULL;
+static CD_ChatFunc Real_CD_SendChat = NULL;
+static CD_DropFunc Real_CD_ClientDrop = NULL;
 
 // --- HELPERS ---
-static id Ban_AllocStr(const char* text) {
+static id CD_AllocStr(const char* text) {
     if (!text) return nil;
     Class cls = objc_getClass("NSString");
     SEL sel = sel_registerName("stringWithUTF8String:");
-    id (*f)(id, SEL, const char*) = (void*)method_getImplementation(class_getClassMethod(cls, sel));
+    id (*f)(id,SEL,const char*) = (void*)method_getImplementation(class_getClassMethod(cls, sel));
     return f ? f((id)cls, sel, text) : nil;
 }
 
-static const char* Ban_GetCStr(id str) {
+static const char* CD_GetCStr(id str) {
     if (!str) return "";
     SEL sel = sel_registerName("UTF8String");
-    const char* (*f)(id, SEL) = (void*)class_getMethodImplementation(object_getClass(str), sel);
+    const char* (*f)(id, SEL) = (void*)method_getImplementation(class_getInstanceMethod(object_getClass(str), sel));
     return f ? f(str, sel) : "";
 }
 
-static void Ban_SendMsg(id server, const char* msg) {
-    if (server && Ban_Real_SendChat) {
-        Ban_Real_SendChat(server, sel_registerName("sendChatMessage:sendToClients:"), Ban_AllocStr(msg), nil);
+static void CD_SendMsg(id server, const char* msg) {
+    if (server && Real_CD_SendChat) {
+        // Correct signature: Msg (id), Notification (BOOL), Clients (NSArray*)
+        Real_CD_SendChat(server, 
+                         sel_registerName("sendChatMessage:displayNotification:sendToClients:"), 
+                         CD_AllocStr(msg), 
+                         true, 
+                         nil);
     }
 }
 
 // --- HOOKS ---
-static id Hook_Ban_ClientDrop(id self, SEL _cmd, id data) {
-    if (g_ClearDrops_Active) return nil; // Block the drop
-    if (Ban_Real_ClientDrop) return Ban_Real_ClientDrop(self, _cmd, data);
+
+id Hook_CD_ClientDrop(id self, SEL _cmd, id data) {
+    if (g_CD_Active) return nil; // Block drop creation
+    if (Real_CD_ClientDrop) return Real_CD_ClientDrop(self, _cmd, data);
     return nil;
 }
 
-static id Hook_Ban_Cmd(id self, SEL _cmd, id cmdStr, id client) {
-    const char* raw = Ban_GetCStr(cmdStr);
+id Hook_CD_Cmd(id self, SEL _cmd, id cmdStr, id client) {
+    const char* raw = CD_GetCStr(cmdStr);
     
     if (raw && strncmp(raw, "/ban_drops", 12) == 0) {
-        g_ClearDrops_Active = !g_ClearDrops_Active;
+        g_CD_Active = !g_CD_Active;
         char msg[128];
-        snprintf(msg, 128, "[System] Clear Drops: %s", g_ClearDrops_Active ? "ON" : "OFF");
-        Ban_SendMsg(self, msg);
+        snprintf(msg, 128, "[System] Drop Cleaner: %s", g_CD_Active ? "ON (Drops Disabled)" : "OFF (Drops Enabled)");
+        CD_SendMsg(self, msg);
         return nil;
     }
 
-    if (Ban_Real_HandleCmd) return Ban_Real_HandleCmd(self, _cmd, cmdStr, client);
+    if (Real_CD_HandleCmd) return Real_CD_HandleCmd(self, _cmd, cmdStr, client);
     return nil;
 }
 
 // --- INIT ---
-static void* BanDrops_InitThread(void* arg) {
+static void* CD_InitThread(void* arg) {
     sleep(1);
-    Class clsSrv = objc_getClass(BAN_SERVER_CLASS);
-    Class clsDW = objc_getClass(BAN_DYN_WORLD);
+    
+    Class clsSrv = objc_getClass(CD_SERVER_CLASS);
+    Class clsDW = objc_getClass(CD_DYN_WORLD);
 
     if (clsSrv) {
         Method mCmd = class_getInstanceMethod(clsSrv, sel_registerName("handleCommand:issueClient:"));
         if (mCmd) {
-            Ban_Real_HandleCmd = (void*)method_getImplementation(mCmd);
-            method_setImplementation(mCmd, (IMP)Hook_Ban_Cmd);
+            Real_CD_HandleCmd = (CD_CmdFunc)method_getImplementation(mCmd);
+            method_setImplementation(mCmd, (IMP)Hook_CD_Cmd);
         }
-        Method mChat = class_getInstanceMethod(clsSrv, sel_registerName("sendChatMessage:sendToClients:"));
-        if (mChat) Ban_Real_SendChat = (void*)method_getImplementation(mChat);
+        
+        Method mChat = class_getInstanceMethod(clsSrv, sel_registerName("sendChatMessage:displayNotification:sendToClients:"));
+        if (mChat) {
+            Real_CD_SendChat = (CD_ChatFunc)method_getImplementation(mChat);
+        }
     }
 
     if (clsDW) {
         SEL sDrop = sel_registerName("createClientFreeblocksWithData:");
         Method mDrop = class_getInstanceMethod(clsDW, sDrop);
         if (mDrop) {
-            Ban_Real_ClientDrop = (void*)method_getImplementation(mDrop);
-            method_setImplementation(mDrop, (IMP)Hook_Ban_ClientDrop);
+            Real_CD_ClientDrop = (CD_DropFunc)method_getImplementation(mDrop);
+            method_setImplementation(mDrop, (IMP)Hook_CD_ClientDrop);
         }
     }
     return NULL;
 }
 
-__attribute__((constructor)) static void BanDrops_Entry() {
-    pthread_t t; pthread_create(&t, NULL, BanDrops_InitThread, NULL);
+__attribute__((constructor)) static void CD_Entry() {
+    pthread_t t; 
+    pthread_create(&t, NULL, CD_InitThread, NULL);
 }
