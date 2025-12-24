@@ -1,19 +1,3 @@
-/*
- * BLOCKHEADS SERVER PATCH - OMNI TOOL
- * -----------------------------------
- * COMMANDS:
- * /place <name|id>
- * - Supports Ores (Copper, Gold, Flint, Clay, Oil...)
- * - Supports Solids (Glass, Carbon, Steel, Marble...)
- * - Auto-fixes base block (Dirt for Flint, Limestone for Oil).
- *
- * /wall <name|id>
- * - Places Backwalls. Mine the foreground stone to reveal.
- *
- * /build <b0> <b1> ...
- * - Raw byte injection.
- */
-
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,347 +7,301 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <ctype.h>
 #include <objc/runtime.h>
 #include <objc/message.h>
-#include <strings.h> 
 
-// --- Configuration ---
-#define TARGET_SERVER_CLASS "BHServer"
-#define TARGET_WORLD_CLASS  "World"
+// --- CONFIG ---
+#define OMNI_SERVER_CLASS "BHServer"
+#define OMNI_WORLD_CLASS  "World"
 
-// --- IDs & Constants ---
-#define BLOCK_STONE      1
-#define BLOCK_DIRT       6
-#define BLOCK_LIMESTONE  12
-#define ITEM_STONE       1024
+// --- IMP TYPES ---
+typedef void (*OMNI_FillFunc)(id, SEL, void*, long long, int, uint16_t, uint16_t, id, id, id, id);
+typedef id (*OMNI_CmdFunc)(id, SEL, id, id);
+typedef void (*OMNI_ChatFunc)(id, SEL, id, BOOL, id);
 
-// --- Operation Modes ---
-enum BuildMode { 
-    MODE_OFF = 0, 
-    MODE_PLACE, 
-    MODE_WALL, 
-    MODE_BUILD 
-};
+typedef id (*OMNI_AllocFunc)(id, SEL);
+typedef id (*OMNI_InitFunc)(id, SEL);
+typedef void (*OMNI_VoidFunc)(id, SEL);
+typedef id (*OMNI_StrFunc)(id, SEL, const char*);
+typedef const char* (*OMNI_Utf8Func)(id, SEL);
 
-// --- Selectors ---
-#define SEL_FILL      "fillTile:atPos:withType:dataA:dataB:placedByClient:saveDict:placedByBlockhead:placedByClientName:"
-#define SEL_CMD       "handleCommand:issueClient:"
-#define SEL_CHAT      "sendChatMessage:sendToClients:"
-#define SEL_UTF8      "UTF8String"
-#define SEL_STR       "stringWithUTF8String:"
+// --- GLOBALS ---
+static OMNI_FillFunc Real_OMNI_Fill = NULL;
+static OMNI_CmdFunc  Real_OMNI_Cmd = NULL;
+static OMNI_ChatFunc Real_OMNI_Chat = NULL;
 
-// --- Structures ---
-typedef struct { int x; int y; } IntPair;
+static int  g_OMNI_Mode = 0; 
+static int  g_OMNI_TargetID = 0;
+static bool g_OMNI_IsContent = false;
 
-// --- Function Prototypes ---
-typedef void (*FillTileFunc)(id, SEL, void*, IntPair, int, uint16_t, uint16_t, id, id, id, id);
-typedef id   (*CmdFunc)(id, SEL, id, id);
-typedef void (*ChatFunc)(id, SEL, id, id);
-typedef const char* (*StrFunc)(id, SEL);
-typedef id   (*StringFactoryFunc)(id, SEL, const char*);
-
-// --- Global State ---
-static FillTileFunc Real_FillTile = NULL;
-static CmdFunc      Real_HandleCmd = NULL;
-static ChatFunc     Real_SendChat = NULL;
-
-static int     G_Mode = MODE_OFF;
-static int     G_TargetID = 0;       
-static bool    G_IsContent = false; 
-
-// Raw Build Buffer (Up to 12 bytes for Tile Struct)
-static uint8_t G_BuildBytes[12];
-static int     G_BuildCount = 0;
-
-// --- Helper Functions ---
-
-static const char* GetString(id strObj) {
-    if (!strObj) return "";
-    SEL sel = sel_registerName(SEL_UTF8);
-    StrFunc f = (StrFunc)class_getMethodImplementation(object_getClass(strObj), sel);
-    return f ? f(strObj, sel) : "";
+// --- UTILS ---
+static id OMNI_Pool() {
+    Class cls = objc_getClass("NSAutoreleasePool");
+    SEL sA = sel_registerName("alloc");
+    SEL sI = sel_registerName("init");
+    OMNI_AllocFunc fA = (OMNI_AllocFunc)method_getImplementation(class_getClassMethod(cls, sA));
+    OMNI_InitFunc fI = (OMNI_InitFunc)method_getImplementation(class_getInstanceMethod(cls, sI));
+    return fI(fA((id)cls, sA), sI);
 }
 
-static id CreateNSString(const char* text) {
-    Class cls = objc_getClass("NSString");
-    SEL sel = sel_registerName(SEL_STR);
-    StringFactoryFunc f = (StringFactoryFunc)method_getImplementation(class_getClassMethod(cls, sel));
-    return f ? f((id)cls, sel, text) : nil;
+static void OMNI_Drain(id pool) {
+    if (!pool) return;
+    SEL s = sel_registerName("drain");
+    OMNI_VoidFunc f = (OMNI_VoidFunc)method_getImplementation(class_getInstanceMethod(object_getClass(pool), s));
+    f(pool, s);
 }
 
-static void SendChat(id server, const char* msg) {
-    if (server && Real_SendChat) {
-        Real_SendChat(server, sel_registerName(SEL_CHAT), CreateNSString(msg), nil);
-    }
+static id OMNI_Str(const char* txt) {
+    if (!txt) return nil;
+    Class cls = objc_getClass("NSString");
+    SEL s = sel_registerName("stringWithUTF8String:");
+    OMNI_StrFunc f = (OMNI_StrFunc)method_getImplementation(class_getClassMethod(cls, s));
+    return f ? f((id)cls, s, txt) : nil;
 }
 
-// --- ID Parser ---
-static int ParseID(const char* input, bool* isContent) {
-    if (isContent) *isContent = true; // Default assumption, fixed below if solid
-    
-    // --- Walls / Poles ---
-    if (strcasecmp(input, "north") == 0) return 38;
-    if (strcasecmp(input, "south") == 0) return 39;
-    if (strcasecmp(input, "west") == 0)  return 40;
-    if (strcasecmp(input, "east") == 0)  return 41;
-    
-    // --- Solid Blocks (TileTypes) ---
-    // These are NOT contents. They replace the block itself.
-    bool foundSolid = false;
-    int solidID = 0;
-
-    if (strcasecmp(input, "carbon") == 0)    { solidID = 69; foundSolid = true; }
-    if (strcasecmp(input, "steel") == 0)     { solidID = 57; foundSolid = true; }
-    if (strcasecmp(input, "bronze") == 0)    { solidID = 55; foundSolid = true; }
-    if (strcasecmp(input, "glass") == 0)     { solidID = 24; foundSolid = true; }
-    if (strcasecmp(input, "marble") == 0)    { solidID = 14; foundSolid = true; }
-    if (strcasecmp(input, "redmarble") == 0) { solidID = 19; foundSolid = true; }
-    if (strcasecmp(input, "sandstone") == 0) { solidID = 17; foundSolid = true; }
-    if (strcasecmp(input, "basalt") == 0)    { solidID = 51; foundSolid = true; }
-    if (strcasecmp(input, "gravel") == 0)    { solidID = 70; foundSolid = true; }
-    if (strcasecmp(input, "brick") == 0)     { solidID = 11; foundSolid = true; }
-    if (strcasecmp(input, "ice") == 0)       { solidID = 4;  foundSolid = true; }
-    if (strcasecmp(input, "lapis") == 0)     { solidID = 29; foundSolid = true; }
-
-    if (foundSolid) {
-        if (isContent) *isContent = false;
-        return solidID;
-    }
-
-    // --- Contents (Ores, Gems, Dirt items) ---
-    if (strcasecmp(input, "flint") == 0) return 1;
-    if (strcasecmp(input, "clay") == 0)  return 2;
-    if (strcasecmp(input, "copper") == 0)   return 61;
-    if (strcasecmp(input, "tin") == 0)      return 62;
-    if (strcasecmp(input, "iron") == 0)     return 63;
-    if (strcasecmp(input, "oil") == 0)      return 64;
-    if (strcasecmp(input, "coal") == 0)     return 65;
-    if (strcasecmp(input, "gold") == 0)     return 77;
-    if (strcasecmp(input, "platinum") == 0) return 106;
-    if (strcasecmp(input, "titanium") == 0) return 107;
-    
-    // Gems
-    if (strcasecmp(input, "diamond") == 0)  return 75;
-    if (strcasecmp(input, "ruby") == 0)     return 74;
-    if (strcasecmp(input, "emerald") == 0)  return 73;
-    if (strcasecmp(input, "sapphire") == 0) return 72;
-    if (strcasecmp(input, "amethyst") == 0) return 71;
-    
-    // Structures
-    if (strcasecmp(input, "gate") == 0)      return 47;
-    if (strcasecmp(input, "portal") == 0)    return 47;
-    if (strcasecmp(input, "workbench") == 0) return 46;
-    if (strcasecmp(input, "tc") == 0)        return 16;
-
-    // Numeric Fallback (Direct ID input)
-    // We assume numeric input is a Block ID (not content) unless told otherwise,
-    // but for safety in this script, we default to block mode for numbers.
-    if (isContent) *isContent = false;
-    return atoi(input);
+static const char* OMNI_CStr(id str) {
+    if (!str) return "";
+    SEL s = sel_registerName("UTF8String");
+    OMNI_Utf8Func f = (OMNI_Utf8Func)method_getImplementation(class_getInstanceMethod(object_getClass(str), s));
+    return f ? f(str, s) : "";
 }
 
-// --- Core Logic: Tile Hook ---
-
-void Hook_FillTile(id self, SEL _cmd, void* tilePtr, IntPair pos, int type, uint16_t dataA, uint16_t dataB, id client, id saveDict, id bh, id clientName) {
-    
-    // Intercept only when Active AND placing Stone
-    bool isTrigger = (G_Mode != MODE_OFF && (type == BLOCK_STONE || type == ITEM_STONE));
-
-    if (isTrigger) {
-        // Remove ownership/save data for cleaner placement
-        client = nil;
-        bh = nil;
-        clientName = nil;
-        saveDict = nil;
-        
-        // Visual defaults for liquid/glow blocks
-        if (G_Mode == MODE_PLACE && !G_IsContent) {
-            if (G_TargetID == 16) dataA = 3;   // TC Glow
-            if (G_TargetID == 31) dataA = 255; // Lava
-            if (G_TargetID == 3)  dataA = 255; // Water
-        }
-    }
-
-    // Call Original Implementation
-    if (Real_FillTile) {
-        Real_FillTile(self, _cmd, tilePtr, pos, type, dataA, dataB, client, saveDict, bh, clientName);
-    }
-
-    // Apply Memory Injection
-    if (isTrigger && tilePtr) {
-        uint8_t* rawMem = (uint8_t*)tilePtr;
-        
-        switch (G_Mode) {
-            case MODE_PLACE: 
-                if (G_IsContent) {
-                    // --- Content Mode (Ores/Flint/Oil) ---
-                    // Determine correct base block to avoid glitches
-                    uint8_t baseBlock = BLOCK_STONE;
-                    
-                    if (G_TargetID == 64) {
-                        baseBlock = BLOCK_LIMESTONE; // Oil -> Limestone
-                    } else if (G_TargetID == 1 || G_TargetID == 2) {
-                        baseBlock = BLOCK_DIRT;      // Flint/Clay -> Dirt
-                    }
-                    
-                    rawMem[0] = baseBlock;
-                    rawMem[3] = (uint8_t)G_TargetID; // Set Content ID
-                } else {
-                    // --- Solid Block Mode (Carbon/Steel/Glass) ---
-                    // Directly replace the TileType (Byte 0)
-                    rawMem[0] = (uint8_t)G_TargetID;
-                    rawMem[3] = 0; // Ensure no content inside
-                }
-                rawMem[4] = 0; // Reset damage
-                break;
-
-            case MODE_WALL: 
-                rawMem[0] = BLOCK_STONE;         // Foreground
-                rawMem[1] = (uint8_t)G_TargetID; // Backwall (Layer 1)
-                rawMem[3] = 0;
-                rawMem[4] = 0;
-                break;
-
-            case MODE_BUILD: 
-                for (int i = 0; i < G_BuildCount; i++) {
-                    rawMem[i] = G_BuildBytes[i];
-                }
-                break;
-        }
-    }
+static void OMNI_Msg(id server, const char* msg) {
+    if (server && Real_OMNI_Chat) {
+        Real_OMNI_Chat(server, sel_registerName("sendChatMessage:displayNotification:sendToClients:"), OMNI_Str(msg), true, nil);
+    }
 }
 
-// --- Command Handler ---
+// --- ID PARSER (CORRECTED PRIORITY) ---
+int OMNI_ParseID(const char* v, bool* isContent) {
+    if (!v) return 0;
+    *isContent = false;
+    
+    // Numeric direct override
+    if (isdigit(v[0])) return atoi(v);
+    
+    // --- ORES / CONTENTS (Priority for common names) ---
+    // User wants "iron" to be ore, not block.
+    
+    if (strcasecmp(v, "flint")==0) { *isContent=true; return 1; }
+    if (strcasecmp(v, "clay")==0) { *isContent=true; return 2; }
+    if (strcasecmp(v, "oil")==0) { *isContent=true; return 64; }
+    if (strcasecmp(v, "coal")==0) { *isContent=true; return 65; }
+    
+    if (strcasecmp(v, "gold")==0 || strcasecmp(v, "gold_ore")==0) { *isContent=true; return 77; }
+    if (strcasecmp(v, "copper")==0 || strcasecmp(v, "copper_ore")==0) { *isContent=true; return 61; }
+    if (strcasecmp(v, "tin")==0 || strcasecmp(v, "tin_ore")==0) { *isContent=true; return 62; }
+    if (strcasecmp(v, "iron")==0 || strcasecmp(v, "iron_ore")==0) { *isContent=true; return 63; }
+    if (strcasecmp(v, "titanium")==0 || strcasecmp(v, "titanium_ore")==0) { *isContent=true; return 107; }
+    if (strcasecmp(v, "platinum")==0 || strcasecmp(v, "platinum_ore")==0) { *isContent=true; return 106; }
+    
+    if (strcasecmp(v, "emerald")==0) { *isContent=true; return 73; }
+    if (strcasecmp(v, "ruby")==0) { *isContent=true; return 74; }
+    if (strcasecmp(v, "diamond")==0) { *isContent=true; return 75; }
+    if (strcasecmp(v, "sapphire")==0) { *isContent=true; return 72; }
+    if (strcasecmp(v, "amethyst")==0) { *isContent=true; return 71; }
 
-id Hook_HandleCmd(id self, SEL _cmd, id commandStr, id client) {
-    const char* raw = GetString(commandStr);
-    if (!raw) return Real_HandleCmd(self, _cmd, commandStr, client);
-    char text[256]; strncpy(text, raw, 255); text[255] = 0;
-
-    // Command: /place
-    if (strncmp(text, "/place", 6) == 0) {
-        char* token = strtok(text, " ");
-        char* arg = strtok(NULL, " ");
-        
-        if (!arg || strcasecmp(arg, "off") == 0) {
-            G_Mode = MODE_OFF;
-            SendChat(self, ">> OMNI-TOOL: Deactivated.");
-            if (!arg) SendChat(self, "Usage: /place <gold|flint|carbon|glass|oil>");
-            return nil;
-        }
-
-        int target = ParseID(arg, &G_IsContent);
-        if (target > 0) {
-            G_TargetID = target;
-            G_Mode = MODE_PLACE;
-            
-            char msg[128];
-            if (G_IsContent) {
-                // Determine base block name for the user message
-                const char* baseName = "Stone";
-                if (target == 1 || target == 2) baseName = "Dirt";
-                if (target == 64) baseName = "Limestone";
-                
-                snprintf(msg, 128, ">> ORE MODE: Spawning %s (ID %d). Base: %s. Place Stone blocks.", arg, target, baseName);
-            } else {
-                snprintf(msg, 128, ">> SOLID MODE: Spawning %s (ID %d). Place Stone blocks.", arg, target);
-            }
-            SendChat(self, msg);
-        } else {
-            SendChat(self, ">> ERROR: Unknown Block/Ore ID.");
-        }
-        return nil;
-    }
-
-    // Command: /wall
-    if (strncmp(text, "/wall", 5) == 0) {
-        char* token = strtok(text, " ");
-        char* arg = strtok(NULL, " ");
-
-        if (!arg || strcasecmp(arg, "off") == 0) {
-            G_Mode = MODE_OFF;
-            SendChat(self, ">> OMNI-TOOL: Deactivated.");
-            return nil;
-        }
-
-        int target = ParseID(arg, NULL);
-        if (target > 0) {
-            G_TargetID = target;
-            G_Mode = MODE_WALL;
-            char msg[128]; 
-            snprintf(msg, 128, ">> WALL MODE: ID %d. Place Stone, then mine it to reveal.", target);
-            SendChat(self, msg);
-        } else {
-            SendChat(self, ">> ERROR: Invalid Wall ID.");
-        }
-        return nil;
-    }
-
-    // Command: /build
-    if (strncmp(text, "/build", 6) == 0) {
-        char bufferCopy[256]; strcpy(bufferCopy, text);
-        char* token = strtok(bufferCopy, " "); 
-        char* arg = strtok(NULL, " ");
-        
-        if (!arg || strcasecmp(arg, "off") == 0) {
-            G_Mode = MODE_OFF;
-            SendChat(self, ">> OMNI-TOOL: Deactivated.");
-            return nil;
-        }
-
-        G_BuildCount = 0;
-        while (arg != NULL && G_BuildCount < 12) {
-            G_BuildBytes[G_BuildCount] = (uint8_t)atoi(arg);
-            G_BuildCount++;
-            arg = strtok(NULL, " ");
-        }
-
-        if (G_BuildCount > 0) {
-            G_Mode = MODE_BUILD;
-            char msg[128];
-            snprintf(msg, 128, ">> RAW BUILD: Injecting %d bytes. Place Stone.", G_BuildCount);
-            SendChat(self, msg);
-        }
-        return nil;
-    }
-
-    return Real_HandleCmd(self, _cmd, commandStr, client);
+    // --- BLOCKS (Explicit names for solids) ---
+    if (strcasecmp(v, "stone")==0) return 1;
+    if (strcasecmp(v, "dirt")==0) return 6;
+    if (strcasecmp(v, "sand")==0) return 7;
+    if (strcasecmp(v, "wood")==0) return 9;
+    if (strcasecmp(v, "brick")==0) return 11;
+    if (strcasecmp(v, "limestone")==0) return 12;
+    if (strcasecmp(v, "marble")==0) return 14;
+    if (strcasecmp(v, "tc")==0) return 16;
+    if (strcasecmp(v, "sandstone")==0) return 17;
+    if (strcasecmp(v, "red_marble")==0) return 19;
+    if (strcasecmp(v, "glass")==0) return 24;
+    if (strcasecmp(v, "portal")==0) return 25; 
+    
+    if (strcasecmp(v, "gold_block")==0) return 26; 
+    if (strcasecmp(v, "lapis")==0) return 29;
+    if (strcasecmp(v, "lava")==0) return 31;
+    if (strcasecmp(v, "platform")==0) return 32;
+    if (strcasecmp(v, "compost")==0) return 48;
+    if (strcasecmp(v, "basalt")==0) return 51;
+    
+    if (strcasecmp(v, "copper_block")==0) return 53;
+    if (strcasecmp(v, "tin_block")==0) return 54;
+    if (strcasecmp(v, "bronze_block")==0) return 55;
+    if (strcasecmp(v, "iron_block")==0) return 56;
+    if (strcasecmp(v, "steel_block")==0) return 57; // or "steel"
+    if (strcasecmp(v, "steel")==0) return 57;
+    
+    if (strcasecmp(v, "black_glass")==0) return 59;
+    if (strcasecmp(v, "trade_portal")==0) return 60;
+    if (strcasecmp(v, "leaves")==0) return 66;
+    
+    if (strcasecmp(v, "platinum_block")==0) return 67;
+    if (strcasecmp(v, "titanium_block")==0) return 68;
+    
+    if (strcasecmp(v, "carbon")==0) return 69;
+    if (strcasecmp(v, "gravel")==0) return 70;
+    if (strcasecmp(v, "plaster")==0) return 76;
+    if (strcasecmp(v, "luminous")==0) return 77;
+    if (strcasecmp(v, "ice")==0) return 4;
+    if (strcasecmp(v, "snow")==0) return 5;
+    
+    return 0;
 }
 
-// --- Initialization ---
+// --- HOOKS ---
 
-static void* InitThread(void* arg) {
-    sleep(1);
-
-    // Hook FillTile (World)
-    Class clsWorld = objc_getClass(TARGET_WORLD_CLASS);
-    if (clsWorld) {
-        Method m = class_getInstanceMethod(clsWorld, sel_registerName(SEL_FILL));
-        if (m) {
-            Real_FillTile = (FillTileFunc)method_getImplementation(m);
-            method_setImplementation(m, (IMP)Hook_FillTile);
-        } else {
-            printf("Error: Could not find fillTile method!\n");
-        }
-    }
-
-    // Hook Commands & Chat (BHServer)
-    Class clsServer = objc_getClass(TARGET_SERVER_CLASS);
-    if (clsServer) {
-        Method mCmd = class_getInstanceMethod(clsServer, sel_registerName(SEL_CMD));
-        if (mCmd) {
-            Real_HandleCmd = (CmdFunc)method_getImplementation(mCmd);
-            method_setImplementation(mCmd, (IMP)Hook_HandleCmd);
-        }
-
-        Method mChat = class_getInstanceMethod(clsServer, sel_registerName(SEL_CHAT));
-        if (mChat) {
-            Real_SendChat = (ChatFunc)method_getImplementation(mChat);
-        }
-    }
-    return NULL;
+void Hook_OMNI_Fill(id self, SEL _cmd, void* tile, long long pos, int type, uint16_t dA, uint16_t dB, id client, id saveDict, id bh, id name) {
+    
+    // Call Original
+    if (Real_OMNI_Fill) {
+        Real_OMNI_Fill(self, _cmd, tile, pos, type, dA, dB, client, saveDict, bh, name);
+    }
+    
+    // Check Trigger (Stone ID 1 or 1024)
+    if (tile && g_OMNI_Mode > 0 && (type == 1 || type == 1024)) {
+        
+        uint8_t* bytes = (uint8_t*)tile;
+        
+        // Mode 1: PLACE
+        if (g_OMNI_Mode == 1) {
+            if (g_OMNI_IsContent) {
+                // --- ORE/CONTENT LOGIC ---
+                // We MUST set the correct base block for the content to exist validly.
+                
+                // Flint (1) or Clay (2) -> Requires DIRT (6)
+                if (g_OMNI_TargetID == 1 || g_OMNI_TargetID == 2) {
+                    bytes[0] = 6; // Set Foreground to Dirt
+                }
+                // Oil (64) -> Requires LIMESTONE (12)
+                else if (g_OMNI_TargetID == 64) {
+                    bytes[0] = 12; // Set Foreground to Limestone
+                }
+                // Standard Ores/Gems -> Remain STONE (1)
+                else {
+                    bytes[0] = 1; // Default Stone
+                }
+                
+                // Set the Content (Offset 3)
+                bytes[3] = (uint8_t)g_OMNI_TargetID; 
+                
+            } else {
+                // --- SOLID BLOCK LOGIC ---
+                bytes[0] = (uint8_t)g_OMNI_TargetID; // Set FG
+                bytes[3] = 0; // Remove existing content (e.g. if we replace a block that had something)
+            }
+        }
+        
+        // Mode 2: WALL
+        if (g_OMNI_Mode == 2) {
+            bytes[1] = (uint8_t)g_OMNI_TargetID; // Set BG
+        }
+    }
 }
 
-__attribute__((constructor)) static void Entry() {
-    pthread_t t; pthread_create(&t, NULL, InitThread, NULL);
+id Hook_OMNI_Cmd(id self, SEL _cmd, id cmdStr, id client) {
+    const char* raw = OMNI_CStr(cmdStr);
+    if (!raw) return Real_OMNI_Cmd(self, _cmd, cmdStr, client);
+    
+    id pool = OMNI_Pool();
+    char buf[256]; strncpy(buf, raw, 255);
+    char* cmd = strtok(buf, " ");
+    char* arg = strtok(NULL, " ");
+    
+    // --- /PLACE ---
+    if (strcasecmp(cmd, "/place") == 0) {
+        if (!arg) {
+            if (g_OMNI_Mode == 1) {
+                g_OMNI_Mode = 0;
+                OMNI_Msg(self, "[Omni] Place Mode OFF.");
+            } else {
+                OMNI_Msg(self, "[Usage] /place <ID/Name>");
+            }
+            OMNI_Drain(pool);
+            return nil;
+        }
+        
+        if (strcasecmp(arg, "off") == 0) {
+            g_OMNI_Mode = 0;
+            OMNI_Msg(self, "[Omni] Place Mode OFF.");
+            OMNI_Drain(pool);
+            return nil;
+        }
+        
+        g_OMNI_TargetID = OMNI_ParseID(arg, &g_OMNI_IsContent);
+        if (g_OMNI_TargetID > 0) {
+            g_OMNI_Mode = 1; // Place Mode
+            char msg[128];
+            const char* typeStr = g_OMNI_IsContent ? "Content (Auto-Base)" : "Block";
+            snprintf(msg, 128, "[Omni] Place: %s (ID %d) [%s].", arg, g_OMNI_TargetID, typeStr);
+            OMNI_Msg(self, msg);
+        } else {
+            OMNI_Msg(self, "[Omni] Invalid Block Name/ID.");
+        }
+        
+        OMNI_Drain(pool);
+        return nil;
+    }
+    
+    // --- /WALL ---
+    if (strcasecmp(cmd, "/wall") == 0) {
+        if (!arg) {
+            if (g_OMNI_Mode == 2) {
+                g_OMNI_Mode = 0;
+                OMNI_Msg(self, "[Omni] Wall Mode OFF.");
+            } else {
+                OMNI_Msg(self, "[Usage] /wall <ID/Name>");
+            }
+            OMNI_Drain(pool);
+            return nil;
+        }
+        
+        if (strcasecmp(arg, "off") == 0) {
+            g_OMNI_Mode = 0;
+            OMNI_Msg(self, "[Omni] Wall Mode OFF.");
+            OMNI_Drain(pool);
+            return nil;
+        }
+        
+        bool dummy;
+        g_OMNI_TargetID = OMNI_ParseID(arg, &dummy);
+        if (g_OMNI_TargetID > 0) {
+            g_OMNI_Mode = 2; // Wall Mode
+            char msg[128];
+            snprintf(msg, 128, "[Omni] Wall: %s (ID %d).", arg, g_OMNI_TargetID);
+            OMNI_Msg(self, msg);
+        } else {
+            OMNI_Msg(self, "[Omni] Invalid Block.");
+        }
+        OMNI_Drain(pool);
+        return nil;
+    }
+    
+    OMNI_Drain(pool);
+    return Real_OMNI_Cmd(self, _cmd, cmdStr, client);
+}
+
+// --- INIT ---
+static void* OMNI_Init(void* arg) {
+    sleep(1);
+    Class clsSrv = objc_getClass(OMNI_SERVER_CLASS);
+    if (clsSrv) {
+        Method mC = class_getInstanceMethod(clsSrv, sel_registerName("handleCommand:issueClient:"));
+        Real_OMNI_Cmd = (OMNI_CmdFunc)method_getImplementation(mC);
+        method_setImplementation(mC, (IMP)Hook_OMNI_Cmd);
+        
+        Method mT = class_getInstanceMethod(clsSrv, sel_registerName("sendChatMessage:displayNotification:sendToClients:"));
+        Real_OMNI_Chat = (OMNI_ChatFunc)method_getImplementation(mT);
+    }
+    
+    Class clsWorld = objc_getClass(OMNI_WORLD_CLASS);
+    if (clsWorld) {
+        SEL sFill = sel_registerName("fillTile:atPos:withType:dataA:dataB:placedByClient:saveDict:placedByBlockhead:placedByClientName:");
+        Method mFill = class_getInstanceMethod(clsWorld, sFill);
+        Real_OMNI_Fill = (OMNI_FillFunc)method_getImplementation(mFill);
+        method_setImplementation(mFill, (IMP)Hook_OMNI_Fill);
+    }
+    return NULL;
+}
+
+__attribute__((constructor)) static void OMNI_Entry() {
+    pthread_t t; pthread_create(&t, NULL, OMNI_Init, NULL);
 }
