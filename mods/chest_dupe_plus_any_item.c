@@ -1,18 +1,10 @@
 /*
- * Chest Dupe + Drop Item (Reliable & Crash Fixed)
+ * Chest Dupe + Item/Block Spawner
  * -----------------------------------------------------
- * Description:
- * - Spawns items as "FreeBlocks" (drops) that fly to the player.
- * - Duplicates chests upon placement.
- * - FIXED: Player detection crash when >1 player is online.
- * - FIXED: Compilation errors.
- *
  * Commands:
- * /item <ID> <QTY> <PLAYER> [force]
- * /block <ID> <QTY> <PLAYER> [force]
- * /dupe [count]
- *
- * Compile: gcc -shared -o chest_mod.so chest_dupe_plus_any_item.c -fPIC -ldl
+ * /item <ID> <QTY> <PLAYER_NAME> [force]
+ * /block <ID> <QTY> <PLAYER_NAME> [force]
+ * /dupe <amount>
  */
 
 #define _GNU_SOURCE
@@ -23,291 +15,381 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <objc/runtime.h>
 #include <objc/message.h>
 
-// --- STRUCTS ---
-typedef struct {
-    int x;
-    int y;
-} IntPair;
-
 // --- CONFIG ---
-#define SERVER_CLASS  "BHServer"
-#define CHEST_CLASS   "Chest"
-#define TARGET_ITEM   1043
+#define ISP_SERVER_CLASS  "BHServer"
+#define ISP_CHEST_CLASS   "Chest"
+#define ISP_TARGET_ITEM   1043
 
-#define SEL_CMD       "handleCommand:issueClient:"
-#define SEL_CHAT      "sendChatMessage:sendToClients:"
-#define SEL_UTF8      "UTF8String"
-#define SEL_STR       "stringWithUTF8String:"
-#define SEL_PLACE     "initWithWorld:dynamicWorld:atPosition:cache:item:flipped:saveDict:placedByClient:clientName:"
-#define SEL_REMOVE    "remove:"
-#define SEL_TYPE      "itemType"
-// The original, reliable spawn method
-#define SEL_SPAWN     "createFreeBlockAtPosition:ofType:dataA:dataB:subItems:dynamicObjectSaveDict:hovers:playSound:priorityBlockhead:"
+// --- TYPES (IMPs) ---
+typedef id (*ISP_CmdFunc)(id, SEL, id, id);
+typedef void (*ISP_ChatFunc)(id, SEL, id, BOOL, id);
+typedef id (*ISP_PlaceFunc)(id, SEL, id, id, long long, id, id, unsigned char, id, id, id);
+typedef id (*ISP_SpawnFunc)(id, SEL, long long, int, int, int, id, id, BOOL, BOOL, id);
 
-// --- TYPES ---
-typedef id (*CmdFunc)(id, SEL, id, id);
-typedef void (*ChatFunc)(id, SEL, id, id);
-typedef id (*PlaceFunc)(id, SEL, id, id, long long, id, id, unsigned char, id, id, id);
-// SpawnFunc takes IntPair struct (passed in registers)
-typedef id (*SpawnFunc)(id, SEL, IntPair, int, int, int, id, id, BOOL, BOOL, id);
-typedef id (*StrFactoryFunc)(id, SEL, const char*);
-typedef const char* (*UTF8Func)(id, SEL);
-typedef int (*IntFunc)(id, SEL);
-typedef void (*VoidBoolFunc)(id, SEL, BOOL);
-typedef int (*CountFunc)(id, SEL);
-typedef id (*ObjIdxFunc)(id, SEL, unsigned long);
-typedef long (*CompareFunc)(id, SEL, id);
+// Memory & Strings
+typedef id (*ISP_AllocFunc)(id, SEL);
+typedef id (*ISP_InitFunc)(id, SEL);
+typedef void (*ISP_ReleaseFunc)(id, SEL);
+typedef id (*ISP_StrFacFunc)(id, SEL, const char*);
+typedef const char* (*ISP_Utf8Func)(id, SEL);
+typedef id (*ISP_GetterFunc)(id, SEL);
+typedef long (*ISP_CompFunc)(id, SEL, id);
+typedef int (*ISP_IntFunc)(id, SEL);
+typedef void (*ISP_VoidBoolFunc)(id, SEL, BOOL);
+typedef id (*ISP_IdxFunc)(id, SEL, int);
 
 // --- GLOBALS ---
-static CmdFunc    Real_HandleCmd = NULL;
-static ChatFunc   Real_SendChat = NULL;
-static PlaceFunc  Real_ChestPlace = NULL;
+static ISP_CmdFunc   Real_ISP_HandleCmd = NULL;
+static ISP_ChatFunc  Real_ISP_SendChat = NULL;
+static ISP_PlaceFunc Real_ISP_ChestPlace = NULL;
 
-static bool g_DupeEnabled = false;
-static int  g_DupeCount = 1;
+static bool g_ISP_DupeEnabled = false;
+static int  g_ISP_DupeCount = 1;
 
-// --- HELPERS ---
-id MkStr(const char* text) {
-    Class cls = objc_getClass("NSString");
-    SEL sel = sel_registerName(SEL_STR);
-    StrFactoryFunc f = (StrFactoryFunc)method_getImplementation(class_getClassMethod(cls, sel));
-    return f ? f((id)cls, sel, text) : nil;
-}
+// --- MEMORY HELPERS (PURE IMP) ---
 
-const char* GetCStr(id strObj) {
-    if (!strObj) return "";
-    SEL sel = sel_registerName(SEL_UTF8);
-    UTF8Func f = (UTF8Func)class_getMethodImplementation(object_getClass(strObj), sel);
-    return f ? f(strObj, sel) : "";
-}
-
-void SendChat(id server, const char* msg) {
-    if (server && Real_SendChat) {
-        Real_SendChat(server, sel_registerName(SEL_CHAT), MkStr(msg), nil);
-    }
-}
-
-int GetItemID(id obj) {
-    if (!obj) return 0;
-    SEL sel = sel_registerName(SEL_TYPE);
-    IntFunc f = (IntFunc)class_getMethodImplementation(object_getClass(obj), sel);
-    return f ? f(obj, sel) : 0;
-}
-
-// --- PLAYER LOOKUP (CRASH FIX) ---
-id FindPlayer(id dynWorld, const char* name) {
-    if (!dynWorld || !name) return nil;
-    id targetStr = MkStr(name);
+static id ISP_CreatePool() {
+    Class cls = objc_getClass("NSAutoreleasePool");
+    if (!cls) return nil;
     
-    // 1. Safe access to netBlockheads using Ivar
-    id list = nil;
-    Ivar ivList = class_getInstanceVariable(object_getClass(dynWorld), "netBlockheads");
-    if (ivList) {
-        list = *(id*)((char*)dynWorld + ivar_getOffset(ivList));
-    }
+    SEL sAlloc = sel_registerName("alloc");
+    SEL sInit = sel_registerName("init");
     
-    if (!list) return nil;
-
-    SEL sCount = sel_registerName("count");
-    SEL sIdx = sel_registerName("objectAtIndex:");
-    SEL sComp = sel_registerName("caseInsensitiveCompare:");
-
-    CountFunc fCount = (CountFunc)class_getMethodImplementation(object_getClass(list), sCount);
-    ObjIdxFunc fIdx = (ObjIdxFunc)class_getMethodImplementation(object_getClass(list), sIdx);
-
-    if (!fCount || !fIdx) return nil;
-
-    int count = fCount(list, sCount);
-    for (int i = 0; i < count; i++) {
-        id bh = fIdx(list, sIdx, i);
-        if (bh) {
-            id nsName = nil;
-            // FIX: Check _clientName (Ivar) specifically first
-            Ivar ivName = class_getInstanceVariable(object_getClass(bh), "_clientName");
-            if (ivName) {
-                nsName = *(id*)((char*)bh + ivar_getOffset(ivName));
-            }
-            
-            // Fallback: Check clientName (Ivar)
-            if (!nsName) {
-                ivName = class_getInstanceVariable(object_getClass(bh), "clientName");
-                if (ivName) nsName = *(id*)((char*)bh + ivar_getOffset(ivName));
-            }
-
-            if (nsName) {
-                CompareFunc fComp = (CompareFunc)class_getMethodImplementation(object_getClass(nsName), sComp);
-                if (fComp && fComp(nsName, sComp, targetStr) == 0) return bh;
-            }
+    Method mAlloc = class_getClassMethod(cls, sAlloc);
+    Method mInit = class_getInstanceMethod(cls, sInit);
+    
+    if (mAlloc && mInit) {
+        ISP_AllocFunc fAlloc = (ISP_AllocFunc)method_getImplementation(mAlloc);
+        ISP_InitFunc fInit = (ISP_InitFunc)method_getImplementation(mInit);
+        if (fAlloc && fInit) {
+            return fInit(fAlloc((id)cls, sAlloc), sInit);
         }
     }
     return nil;
 }
 
-// --- SPAWN LOGIC (Original & Reliable) ---
-void SpawnItemAtPlayer(id dynWorld, id player, int idVal, int qty) {
+static void ISP_ReleasePool(id pool) {
+    if (!pool) return;
+    SEL sRel = sel_registerName("release");
+    Method mRel = class_getInstanceMethod(object_getClass(pool), sRel);
+    if (mRel) {
+        ISP_ReleaseFunc fRel = (ISP_ReleaseFunc)method_getImplementation(mRel);
+        if (fRel) fRel(pool, sRel);
+    }
+}
+
+static id ISP_AllocStr(const char* text) {
+    if (!text) return nil;
+    Class cls = objc_getClass("NSString");
+    SEL sel = sel_registerName("stringWithUTF8String:");
+    Method m = class_getClassMethod(cls, sel);
+    if (!m) return nil;
+    ISP_StrFacFunc f = (ISP_StrFacFunc)method_getImplementation(m);
+    return f ? f((id)cls, sel, text) : nil;
+}
+
+static const char* ISP_GetCStr(id str) {
+    if (!str) return "";
+    SEL sel = sel_registerName("UTF8String");
+    Method m = class_getInstanceMethod(object_getClass(str), sel);
+    if (!m) return "";
+    ISP_Utf8Func f = (ISP_Utf8Func)method_getImplementation(m);
+    return f ? f(str, sel) : "";
+}
+
+static void ISP_SendChat(id server, const char* msg) {
+    if (server && Real_ISP_SendChat) {
+        Real_ISP_SendChat(server, 
+                          sel_registerName("sendChatMessage:displayNotification:sendToClients:"), 
+                          ISP_AllocStr(msg), 
+                          true, 
+                          nil);
+    }
+}
+
+// --- LOGIC: FIND PLAYER (PURE IMP) ---
+id ISP_FindBlockheadForPlayer(id dynWorld, const char* targetName) {
+    if (!dynWorld || !targetName) return nil;
+    
+    Ivar iv = class_getInstanceVariable(object_getClass(dynWorld), "netBlockheads");
+    if (!iv) return nil;
+    
+    id list = *(id*)((char*)dynWorld + ivar_getOffset(iv));
+    if (!list) return nil;
+
+    SEL sCount = sel_registerName("count");
+    SEL sIdx = sel_registerName("objectAtIndex:");
+    SEL sClientName = sel_registerName("clientName"); 
+    SEL sComp = sel_registerName("caseInsensitiveCompare:");
+
+    Method mCount = class_getInstanceMethod(object_getClass(list), sCount);
+    Method mIdx = class_getInstanceMethod(object_getClass(list), sIdx);
+
+    if (!mCount || !mIdx) return nil;
+
+    ISP_IntFunc fCount = (ISP_IntFunc)method_getImplementation(mCount);
+    ISP_IdxFunc fIdx = (ISP_IdxFunc)method_getImplementation(mIdx);
+
+    int count = fCount(list, sCount);
+    id targetStr = ISP_AllocStr(targetName);
+    id foundBH = nil;
+
+    for (int i = 0; i < count; i++) {
+        id pool = ISP_CreatePool();
+        id bh = fIdx(list, sIdx, i);
+        if (bh) {
+            id nsName = nil;
+            // Use property getter for clientName (safer than ivar)
+            Method mName = class_getInstanceMethod(object_getClass(bh), sClientName);
+            if (mName) {
+                ISP_GetterFunc fName = (ISP_GetterFunc)method_getImplementation(mName);
+                nsName = fName(bh, sClientName);
+            } else {
+                Ivar ivN = class_getInstanceVariable(object_getClass(bh), "clientName");
+                if (ivN) nsName = *(id*)((char*)bh + ivar_getOffset(ivN));
+            }
+
+            if (nsName) {
+                Method mComp = class_getInstanceMethod(object_getClass(nsName), sComp);
+                if (mComp) {
+                    ISP_CompFunc fComp = (ISP_CompFunc)method_getImplementation(mComp);
+                    if (fComp(nsName, sComp, targetStr) == 0) {
+                        foundBH = bh; 
+                    }
+                }
+            }
+        }
+        ISP_ReleasePool(pool);
+        if (foundBH) break; 
+    }
+    return foundBH;
+}
+
+// --- LOGIC: FULL BLOCK-TO-ITEM MAP ---
+int ISP_ParseBlockID(int blockID) {
+    if (blockID > 255) return blockID; 
+    
+    // FULL List restored
+    switch (blockID) {
+        case 1: return 1024; // Stone
+        case 2: return 0;    // Dirt (Block vs Item diff)
+        case 3: return 105;  // Water
+        case 4: return 1060; // Ice
+        case 6: return 1048; // Dirt item
+        case 7: return 1051; // Sand
+        case 9: return 1049; // Wood
+        case 11: return 1026; // Red Brick
+        case 12: return 1027; // Limestone
+        case 14: return 1029; // Marble
+        case 16: return 11;   // Time Crystal
+        case 17: return 1035; // Sandstone
+        case 19: return 1037; // Red Marble
+        case 24: return 1042; // Glass
+        case 25: return 134;  // Portal Base
+        case 26: return 1045; // North Pole
+        case 29: return 1053; // Lapis
+        case 32: return 1057; // Wooden Platform
+        case 48: return 1062; // Compost
+        case 51: return 1063; // Basalt
+        case 53: return 1066; // Copper Block
+        case 54: return 1067; // Tin Block
+        case 55: return 1068; // Bronze Block
+        case 56: return 1069; // Iron Block
+        case 57: return 1070; // Steel Block
+        case 59: return 1076; // Black Glass
+        case 60: return 210;  // Trade Portal
+        case 67: return 1089; // Platinum Block
+        case 68: return 1090; // Titanium Block
+        case 69: return 1091; // Carbon Fiber Block
+        case 70: return 1092; // Gravel
+        default: return blockID;
+    }
+}
+
+void ISP_Spawn(id dynWorld, id player, int idVal, int qty, id saveDict) {
     if (!player) return;
     
-    // FIX: Read _pos struct correctly
-    IntPair pos = {0,0};
-    void* posPtr = NULL;
+    Ivar ivP = class_getInstanceVariable(object_getClass(player), "pos");
+    if (!ivP) return;
     
-    Ivar ivPos = class_getInstanceVariable(object_getClass(player), "_pos");
-    if (!ivPos) ivPos = class_getInstanceVariable(object_getClass(player), "pos"); // Fallback
-    
-    if (ivPos) {
-        pos = *(IntPair*)((char*)player + ivar_getOffset(ivPos));
-    } else {
-        return;
-    }
+    long long pos = *(long long*)((char*)player + ivar_getOffset(ivP));
+    if (pos == 0) return;
 
-    if (pos.x == 0 && pos.y == 0) return;
-
-    SEL sel = sel_registerName(SEL_SPAWN);
+    SEL sel = sel_registerName("createFreeBlockAtPosition:ofType:dataA:dataB:subItems:dynamicObjectSaveDict:hovers:playSound:priorityBlockhead:");
     Method mSpawn = class_getInstanceMethod(object_getClass(dynWorld), sel);
-    
     if (mSpawn) {
-        SpawnFunc f = (SpawnFunc)method_getImplementation(mSpawn);
+        ISP_SpawnFunc f = (ISP_SpawnFunc)method_getImplementation(mSpawn);
         for(int i=0; i<qty; i++) {
-            // Args: pos, type, dataA, dataB, subItems, saveDict, hovers(YES), sound(NO), priority(player)
-            // Setting priorityBlockhead (last arg) makes it fly to the player.
-            f(dynWorld, sel, pos, idVal, 0, 0, nil, nil, 1, 0, player);
+            f(dynWorld, sel, pos, idVal, 1, 0, nil, saveDict, 1, 0, player);
         }
     }
 }
 
 // --- HOOKS ---
-id Hook_ChestPlace(id self, SEL _cmd, id w, id dw, long long pos, id cache, id item, unsigned char flip, id save, id client, id cName) {
-    id ret = Real_ChestPlace(self, _cmd, w, dw, pos, cache, item, flip, save, client, cName);
+
+id Hook_ISP_ChestPlace(id self, SEL _cmd, id w, id dw, long long pos, id cache, id item, unsigned char flip, id save, id client, id cName) {
+    id ret = Real_ISP_ChestPlace(self, _cmd, w, dw, pos, cache, item, flip, save, client, cName);
     
-    if (g_DupeEnabled && ret && item && GetItemID(item) == TARGET_ITEM) {
-        const char* name = GetCStr(cName);
-        id player = FindPlayer(dw, name);
-        
-        if (player) {
-            SpawnItemAtPlayer(dw, player, TARGET_ITEM, 1 + g_DupeCount);
+    if (g_ISP_DupeEnabled && ret && item) {
+        SEL sType = sel_registerName("itemType");
+        Method mType = class_getInstanceMethod(object_getClass(item), sType);
+        ISP_IntFunc fType = mType ? (ISP_IntFunc)method_getImplementation(mType) : NULL;
+        int type = fType ? fType(item, sType) : 0;
+
+        if (type == ISP_TARGET_ITEM) {
+            const char* name = ISP_GetCStr(cName);
+            id pool = ISP_CreatePool();
             
-            SEL sRem = sel_registerName(SEL_REMOVE);
-            VoidBoolFunc fRem = (VoidBoolFunc)class_getMethodImplementation(object_getClass(ret), sRem);
-            if (fRem) fRem(ret, sRem, 1);
+            // Search by Client Name
+            id player = ISP_FindBlockheadForPlayer(dw, name);
+            
+            if (player) {
+                // Refund Original (1) + Add Copies (g_ISP_DupeCount)
+                ISP_Spawn(dw, player, ISP_TARGET_ITEM, 1 + g_ISP_DupeCount, save);
+                
+                // Remove placed item immediately
+                SEL sRem = sel_registerName("remove:");
+                Method mRem = class_getInstanceMethod(object_getClass(ret), sRem);
+                if (mRem) {
+                    ISP_VoidBoolFunc fRem = (ISP_VoidBoolFunc)method_getImplementation(mRem);
+                    fRem(ret, sRem, 1);
+                }
+            }
+            ISP_ReleasePool(pool);
         }
     }
     return ret;
 }
 
-id Hook_HandleCmd(id self, SEL _cmd, id cmdStr, id client) {
-    const char* raw = GetCStr(cmdStr);
-    if (!raw) return Real_HandleCmd(self, _cmd, cmdStr, client);
+id Hook_ISP_Cmd(id self, SEL _cmd, id cmdStr, id client) {
+    const char* raw = ISP_GetCStr(cmdStr);
+    if (!raw || strlen(raw) == 0) return Real_ISP_HandleCmd(self, _cmd, cmdStr, client);
 
-    char text[256]; strncpy(text, raw, 255); text[255] = 0;
+    id pool = ISP_CreatePool();
+    char buffer[256]; 
+    strncpy(buffer, raw, 255); 
+    buffer[255] = 0;
     
-    bool isItem  = (strncmp(text, "/item", 5) == 0);
-    bool isBlock = (strncmp(text, "/block", 6) == 0);
-    bool isDupe  = (strncmp(text, "/dupe", 5) == 0);
+    bool isItem  = (strncmp(buffer, "/item", 5) == 0);
+    bool isBlock = (strncmp(buffer, "/block", 6) == 0);
+    bool isDupe  = (strncmp(buffer, "/dupe", 5) == 0);
 
     if (!isItem && !isBlock && !isDupe) {
-        return Real_HandleCmd(self, _cmd, cmdStr, client);
+        ISP_ReleasePool(pool);
+        return Real_ISP_HandleCmd(self, _cmd, cmdStr, client);
     }
 
     id world = nil;
-    Ivar ivWorld = class_getInstanceVariable(object_getClass(self), "world");
-    if (ivWorld) world = *(id*)((char*)self + ivar_getOffset(ivWorld));
-    
+    Ivar ivW = class_getInstanceVariable(object_getClass(self), "world");
+    if (ivW) world = *(id*)((char*)self + ivar_getOffset(ivW));
+
     id dynWorld = nil;
     if (world) {
-        Ivar ivDyn = class_getInstanceVariable(object_getClass(world), "dynamicWorld");
-        if (ivDyn) dynWorld = *(id*)((char*)world + ivar_getOffset(ivDyn));
+        Ivar ivD = class_getInstanceVariable(object_getClass(world), "dynamicWorld");
+        if (ivD) dynWorld = *(id*)((char*)world + ivar_getOffset(ivD));
     }
 
     if (!dynWorld) {
-        SendChat(self, "[Mod] Error: World not ready.");
+        ISP_SendChat(self, "[Error] World not initialized.");
+        ISP_ReleasePool(pool);
         return nil;
     }
 
-    char *saveptr;
-    char *token = strtok_r(text, " ", &saveptr);
-
+    // --- DUPE ---
     if (isDupe) {
+        char *saveptr;
+        strtok_r(buffer, " ", &saveptr);
         char* arg1 = strtok_r(NULL, " ", &saveptr);
+        
         if (!arg1) {
-            g_DupeEnabled = !g_DupeEnabled;
-            if (g_DupeEnabled) g_DupeCount = 1;
+            g_ISP_DupeEnabled = !g_ISP_DupeEnabled;
+            if (g_ISP_DupeEnabled) g_ISP_DupeCount = 1;
         } else {
-            g_DupeEnabled = true;
-            g_DupeCount = atoi(arg1);
-            if(g_DupeCount < 1) g_DupeCount = 1;
-            if(g_DupeCount > 50) g_DupeCount = 50;
+            g_ISP_DupeEnabled = true;
+            g_ISP_DupeCount = atoi(arg1);
+            if (g_ISP_DupeCount < 1) g_ISP_DupeCount = 1;
+            if (g_ISP_DupeCount > 5) g_ISP_DupeCount = 5;
         }
+
         char msg[128];
-        snprintf(msg, 128, "[Mod] Chest Dupe: %s (%d Copies)", g_DupeEnabled ? "ON" : "OFF", g_DupeCount);
-        SendChat(self, msg);
+        snprintf(msg, 128, "[Dupe] %s. (Original + %d copies)", g_ISP_DupeEnabled ? "ON" : "OFF", g_ISP_DupeCount);
+        ISP_SendChat(self, msg);
+        ISP_ReleasePool(pool);
         return nil;
     }
 
+    // --- ITEM/BLOCK ---
+    char *saveptr;
+    strtok_r(buffer, " ", &saveptr);
     char *sID = strtok_r(NULL, " ", &saveptr);
     char *sQty = strtok_r(NULL, " ", &saveptr);
-    char *sPlayer = strtok_r(NULL, " ", &saveptr);
+    char *sPlayer = strtok_r(NULL, " ", &saveptr); 
+    char *sForce = strtok_r(NULL, " ", &saveptr);
 
     if (!sID || !sPlayer) {
-        SendChat(self, "Usage: /item <ID> <QTY> <PLAYER>");
+        ISP_SendChat(self, "[Usage] /item <ID> <QTY> <CLIENT_NAME> [force]");
+        ISP_ReleasePool(pool);
         return nil;
     }
 
-    id targetBH = FindPlayer(dynWorld, sPlayer);
+    // Find Player
+    id targetBH = ISP_FindBlockheadForPlayer(dynWorld, sPlayer);
+    
     if (!targetBH) {
         char err[128];
-        snprintf(err, 128, "Error: Player '%s' not found.", sPlayer);
-        SendChat(self, err);
+        snprintf(err, 128, "[Error] Client '%s' not found.", sPlayer);
+        ISP_SendChat(self, err);
+        ISP_ReleasePool(pool);
         return nil;
     }
 
     int qty = sQty ? atoi(sQty) : 1;
-    if (qty > 99) {
+    if (qty < 1) qty = 1;
+    bool force = (sForce && strcasecmp(sForce, "force") == 0);
+    
+    if (!force && qty > 99) {
         qty = 99;
-        SendChat(self, "Warning: Capped at 99.");
+        ISP_SendChat(self, "[Warn] Capped at 99. Use 'force' to override.");
     }
 
     int itemID = atoi(sID);
-    // Block ID conversion logic (Basic mapping)
-    if (isBlock && itemID < 256) {
-        if(itemID == 1) itemID = 1024; // Stone
-        else if(itemID == 2) itemID = 0; // Air
-        else if(itemID == 6) itemID = 1048; // Dirt
-        else if(itemID == 7) itemID = 1051; // Sand
-        else if(itemID == 9) itemID = 1049; // Wood
-    }
-
-    SpawnItemAtPlayer(dynWorld, targetBH, itemID, qty);
+    if (isBlock) itemID = ISP_ParseBlockID(itemID);
     
-    char msg[128];
-    snprintf(msg, 128, "Spawned %d x ID:%d for %s.", qty, itemID, sPlayer);
-    SendChat(self, msg);
+    ISP_Spawn(dynWorld, targetBH, itemID, qty, nil);
+    
+    char successMsg[128];
+    snprintf(successMsg, 128, "[System] Gave %d x (ID: %d) to %s.", qty, itemID, sPlayer);
+    ISP_SendChat(self, successMsg);
 
+    ISP_ReleasePool(pool);
     return nil;
 }
 
-static void* InitThread(void* arg) {
+static void* ISP_InitThread(void* arg) {
     sleep(1);
-    Class clsServer = objc_getClass(SERVER_CLASS);
+    Class clsServer = objc_getClass(ISP_SERVER_CLASS);
     if (clsServer) {
-        SEL sC = sel_registerName(SEL_CMD);
-        SEL sT = sel_registerName(SEL_CHAT);
-        Real_HandleCmd = (CmdFunc)method_getImplementation(class_getInstanceMethod(clsServer, sC));
-        Real_SendChat  = (ChatFunc)method_getImplementation(class_getInstanceMethod(clsServer, sT));
-        method_setImplementation(class_getInstanceMethod(clsServer, sC), (IMP)Hook_HandleCmd);
+        Method mC = class_getInstanceMethod(clsServer, sel_registerName("handleCommand:issueClient:"));
+        Real_ISP_HandleCmd = (ISP_CmdFunc)method_getImplementation(mC);
+        method_setImplementation(mC, (IMP)Hook_ISP_Cmd);
+        
+        Method mT = class_getInstanceMethod(clsServer, sel_registerName("sendChatMessage:displayNotification:sendToClients:"));
+        Real_ISP_SendChat = (ISP_ChatFunc)method_getImplementation(mT);
     }
-    Class clsChest = objc_getClass(CHEST_CLASS);
+
+    Class clsChest = objc_getClass(ISP_CHEST_CLASS);
     if (clsChest) {
-        SEL sP = sel_registerName(SEL_PLACE);
-        Real_ChestPlace = (PlaceFunc)method_getImplementation(class_getInstanceMethod(clsChest, sP));
-        method_setImplementation(class_getInstanceMethod(clsChest, sP), (IMP)Hook_ChestPlace);
+        Method mP = class_getInstanceMethod(clsChest, sel_registerName("initWithWorld:dynamicWorld:atPosition:cache:item:flipped:saveDict:placedByClient:clientName:"));
+        Real_ISP_ChestPlace = (ISP_PlaceFunc)method_getImplementation(mP);
+        method_setImplementation(mP, (IMP)Hook_ISP_ChestPlace);
     }
     return NULL;
 }
 
-__attribute__((constructor)) static void Entry() {
-    pthread_t t; pthread_create(&t, NULL, InitThread, NULL);
+__attribute__((constructor)) static void ISP_Entry() {
+    pthread_t t; 
+    pthread_create(&t, NULL, ISP_InitThread, NULL);
 }
