@@ -1,10 +1,3 @@
-/*
- * Ban All New Drops
- * ----------------------------------------
- * Prefix: CD_
- * Commands: /ban_drops
- */
-
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
