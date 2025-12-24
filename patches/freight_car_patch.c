@@ -1,8 +1,3 @@
-/*
- * Freight Car Ban
- * Target Class: FreightCar (ID 206)
- */
-
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
