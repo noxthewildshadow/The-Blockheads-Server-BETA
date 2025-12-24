@@ -1,11 +1,10 @@
 /*
- * * IN-GAME COMMANDS:
- * /fill <ID>                -> Activate filling with clean items (Data 0).
- * /fill <ID> <DataA>        -> Activate filling with custom DataA.
- * /fill <ID> <DataA> <DataB>-> Activate filling with custom DataA & DataB.
- * /fill                     -> Turn OFF / Disable mode.
- * /fill off                 -> Turn OFF / Disable mode.
- */
+ * Chest Filler
+ * ----------------------------------------------------
+ * Prefix: CFill_
+ * Commands: /fill <ID> [DataA] [DataB]
+ * /fill (Toggle OFF)
+ */
 
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -19,294 +18,255 @@
 #include <objc/runtime.h>
 #include <objc/message.h>
 
-// --- ISOLATION CONFIGURATION (Unique Prefixes) ---
-#define CFILL_SERVER_CLASS    "BHServer"
-#define CFILL_CHEST_CLASS     "Chest"
-#define CFILL_ITEM_CLASS      "InventoryItem"
-#define CFILL_BASKET_ID       12
+#define CF_SERVER_CLASS   "BHServer"
+#define CF_CHEST_CLASS    "Chest"
+#define CF_ITEM_CLASS     "InventoryItem"
+#define CF_ARRAY_CLASS    "NSMutableArray"
+#define CF_BASKET_ID      12
 
-// --- SELECTORS ---
-#define CFILL_SEL_PLACE     "initWithWorld:dynamicWorld:atPosition:cache:item:flipped:saveDict:placedByClient:clientName:"
-#define CFILL_SEL_CMD       "handleCommand:issueClient:"
-#define CFILL_SEL_CHAT      "sendChatMessage:sendToClients:"
-#define CFILL_SEL_UTF8      "UTF8String"
-#define CFILL_SEL_STR       "stringWithUTF8String:"
-#define CFILL_SEL_ALLOC     "alloc"
-#define CFILL_SEL_INIT_CAP  "initWithCapacity:"
-#define CFILL_SEL_ADD_OBJ   "addObject:"
-#define CFILL_SEL_UPDATE    "contentsDidChange"
-#define CFILL_SEL_INIT_ITEM "initWithType:dataA:dataB:subItems:dynamicObjectSaveDict:"
-#define CFILL_SEL_MAX_STACK "maxStackSize"
+// --- IMP TYPES ---
+typedef id (*CF_PlaceFunc)(id, SEL, id, id, long long, id, id, unsigned char, id, id, id);
+typedef id (*CF_CmdFunc)(id, SEL, id, id);
+typedef void (*CF_ChatFunc)(id, SEL, id, BOOL, id);
 
-// --- TYPES ---
-typedef id   (*CFill_PlaceFunc)(id, SEL, id, id, long long, id, id, unsigned char, id, id, id);
-typedef id   (*CFill_CmdFunc)(id, SEL, id, id);
-typedef void (*CFill_ChatFunc)(id, SEL, id, id);
-typedef const char* (*CFill_StrFunc)(id, SEL);
-typedef id   (*CFill_StringFactoryFunc)(id, SEL, const char*);
-typedef void (*CFill_VoidFunc)(id, SEL);
-typedef id   (*CFill_AllocFunc)(id, SEL);
-typedef void (*CFill_AddObjFunc)(id, SEL, id);
-typedef id   (*CFill_InitArrFunc)(id, SEL, unsigned long);
-typedef id   (*CFill_InitItemFunc)(id, SEL, int, uint16_t, uint16_t, id, id);
-typedef int  (*CFill_IntFunc)(id, SEL);
+// Memory
+typedef id (*CF_AllocFunc)(id, SEL);
+typedef id (*CF_InitArrFunc)(id, SEL, unsigned long);
+typedef id (*CF_InitItemFunc)(id, SEL, int, uint16_t, uint16_t, id, id);
+typedef void (*CF_AddObjFunc)(id, SEL, id);
+typedef void (*CF_RelFunc)(id, SEL);
+typedef void (*CF_VoidFunc)(id, SEL);
+typedef id (*CF_StrFunc)(id, SEL, const char*);
+typedef const char* (*CF_Utf8Func)(id, SEL);
 
-// --- STATE ---
-static CFill_PlaceFunc CFILL_Real_Place = NULL;
-static CFill_CmdFunc   CFILL_Real_Cmd   = NULL;
-static CFill_ChatFunc  CFILL_Real_Chat  = NULL;
-static CFill_IntFunc   CFILL_Real_Max   = NULL;
+// --- GLOBALS ---
+static CF_PlaceFunc Real_CFill_Place = NULL;
+static CF_CmdFunc   Real_CFill_Cmd = NULL;
+static CF_ChatFunc  Real_CFill_Chat = NULL;
 
-static bool    CFILL_Active = false;
-static int     CFILL_TargetID = 0;
-static int16_t CFILL_DataA = 0;
-static int16_t CFILL_DataB = 0;
+static bool g_CFill_Active = false;
+static int  g_CFill_TargetID = 0;
+static int  g_CFill_DataA = 0;
+static int  g_CFill_DataB = 0;
 
 // --- UTILS ---
-static const char* CFILL_GetStr(id strObj) {
-    if (!strObj) return "";
-    SEL sel = sel_registerName(CFILL_SEL_UTF8);
-    CFill_StrFunc f = (CFill_StrFunc)class_getMethodImplementation(object_getClass(strObj), sel);
-    return f ? f(strObj, sel) : "";
+static void CFill_Release(id obj) {
+    if (!obj) return;
+    SEL s = sel_registerName("release");
+    CF_RelFunc f = (CF_RelFunc)method_getImplementation(class_getInstanceMethod(object_getClass(obj), s));
+    f(obj, s);
 }
 
-static id CFILL_AllocStr(const char* text) {
-    Class cls = objc_getClass("NSString");
-    SEL sel = sel_registerName(CFILL_SEL_STR);
-    CFill_StringFactoryFunc f = (CFill_StringFactoryFunc)method_getImplementation(class_getClassMethod(cls, sel));
-    return f ? f((id)cls, sel, text) : nil;
+static id CFill_Pool() {
+    Class cls = objc_getClass("NSAutoreleasePool");
+    SEL sA = sel_registerName("alloc");
+    SEL sI = sel_registerName("init");
+    CF_AllocFunc fA = (CF_AllocFunc)method_getImplementation(class_getClassMethod(cls, sA));
+    CF_AllocFunc fI = (CF_AllocFunc)method_getImplementation(class_getInstanceMethod(cls, sI));
+    return fI(fA((id)cls, sA), sI);
 }
 
-static void CFILL_SendChat(id server, const char* msg) {
-    if (server && CFILL_Real_Chat) {
-        CFILL_Real_Chat(server, sel_registerName(CFILL_SEL_CHAT), CFILL_AllocStr(msg), nil);
-    }
+static void CFill_Drain(id pool) {
+    if (!pool) return;
+    SEL s = sel_registerName("drain");
+    CF_VoidFunc f = (CF_VoidFunc)method_getImplementation(class_getInstanceMethod(object_getClass(pool), s));
+    f(pool, s);
 }
 
-IMP CFILL_GetInstMethod(id instance, SEL sel) {
-    if (!instance) return NULL;
-    return method_getImplementation(class_getInstanceMethod(object_getClass(instance), sel));
+static id CFill_Str(const char* txt) {
+    if (!txt) return nil;
+    Class cls = objc_getClass("NSString");
+    SEL s = sel_registerName("stringWithUTF8String:");
+    CF_StrFunc f = (CF_StrFunc)method_getImplementation(class_getClassMethod(cls, s));
+    return f ? f((id)cls, s, txt) : nil;
 }
 
-// --- LOGIC: FORCE MAX STACK (Allow stacking unstackables) ---
-int CFILL_Hook_MaxStack(id self, SEL _cmd) { return 99; }
-
-// --- LOGIC: CREATE ITEM WITH DATA ---
-id CFILL_CreateItem(int itemID, int16_t dA, int16_t dB) {
-    Class clsItem = objc_getClass(CFILL_ITEM_CLASS);
-    if (!clsItem) return nil;
-
-    SEL sAlloc = sel_registerName(CFILL_SEL_ALLOC);
-    CFill_AllocFunc fAlloc = (CFill_AllocFunc)method_getImplementation(class_getClassMethod(clsItem, sAlloc));
-    id rawItem = fAlloc((id)clsItem, sAlloc);
-
-    SEL sInit = sel_registerName(CFILL_SEL_INIT_ITEM);
-    CFill_InitItemFunc fInit = (CFill_InitItemFunc)method_getImplementation(class_getInstanceMethod(clsItem, sInit));
-    rawItem = fInit(rawItem, sInit, itemID, 1, 0, nil, nil);
-
-    // Inject Custom Data (Bypasses constructor limits)
-    unsigned int outCount = 0;
-    Ivar *ivars = class_copyIvarList(object_getClass(rawItem), &outCount);
-    if (ivars) {
-        for (unsigned int i = 0; i < outCount; i++) {
-            const char* name = ivar_getName(ivars[i]);
-            // Look for dataA/DataA
-            if (strstr(name, "dataA") || strstr(name, "DataA")) {
-                int16_t* ptr = (int16_t*)((char*)rawItem + ivar_getOffset(ivars[i]));
-                *ptr = dA;
-            } 
-            // Look for dataB/DataB
-            else if (strstr(name, "dataB") || strstr(name, "DataB")) {
-                int16_t* ptr = (int16_t*)((char*)rawItem + ivar_getOffset(ivars[i]));
-                *ptr = dB;
-            }
-        }
-        free(ivars);
-    }
-    return rawItem;
+static const char* CFill_CStr(id str) {
+    if (!str) return "";
+    SEL s = sel_registerName("UTF8String");
+    CF_Utf8Func f = (CF_Utf8Func)method_getImplementation(class_getInstanceMethod(object_getClass(str), s));
+    return f ? f(str, s) : "";
 }
 
-// --- LOGIC: BASKET FILLER (The Trojan Horse) ---
-void CFILL_InjectSubItems(id basket, id array) {
-    unsigned int outCount = 0;
-    Ivar *ivars = class_copyIvarList(object_getClass(basket), &outCount);
-    if (ivars) {
-        for (unsigned int i = 0; i < outCount; i++) {
-            if (strcmp(ivar_getName(ivars[i]), "subItems") == 0) {
-                id* ptr = (id*)((char*)basket + ivar_getOffset(ivars[i]));
-                *ptr = array;
-                break;
-            }
-        }
-        free(ivars);
-    }
+static void CFill_Msg(id server, const char* msg) {
+    if (server && Real_CFill_Chat) {
+        Real_CFill_Chat(server, sel_registerName("sendChatMessage:displayNotification:sendToClients:"), CFill_Str(msg), true, nil);
+    }
 }
 
-id CFILL_CreateBasket() {
-    id basket = CFILL_CreateItem(CFILL_BASKET_ID, 0, 0);
-    
-    Class clsArray = objc_getClass("NSMutableArray");
-    SEL sAlloc = sel_registerName(CFILL_SEL_ALLOC);
-    SEL sInitCap = sel_registerName(CFILL_SEL_INIT_CAP);
-    SEL sAdd = sel_registerName(CFILL_SEL_ADD_OBJ);
-    
-    CFill_AllocFunc fAllocArr = (CFill_AllocFunc)method_getImplementation(class_getClassMethod(clsArray, sAlloc));
-    id subItems = fAllocArr((id)clsArray, sAlloc);
-    CFill_InitArrFunc fInitArr = (CFill_InitArrFunc)CFILL_GetInstMethod(subItems, sInitCap);
-    if(fInitArr) subItems = fInitArr(subItems, sInitCap, 4);
-    CFill_AddObjFunc fAdd = (CFill_AddObjFunc)CFILL_GetInstMethod(subItems, sAdd);
+// --- LOGIC ---
 
-    // Fill Basket Slots
-    for(int i=0; i<4; i++) {
-        id content = CFILL_CreateItem(CFILL_TargetID, CFILL_DataA, CFILL_DataB);
-        if(content) {
-            id slot = fAllocArr((id)clsArray, sAlloc);
-            CFill_InitArrFunc fInitSlot = (CFill_InitArrFunc)CFILL_GetInstMethod(slot, sInitCap);
-            if(fInitSlot) slot = fInitSlot(slot, sInitCap, 99);
-            CFill_AddObjFunc fAddSlot = (CFill_AddObjFunc)CFILL_GetInstMethod(slot, sAdd);
-            
-            // Loop Add to create a stack of 99
-            for(int k=0; k<99; k++) fAddSlot(slot, sAdd, content);
-            fAdd(subItems, sAdd, slot);
-        }
-    }
-    CFILL_InjectSubItems(basket, subItems);
-    return basket;
+id CFill_CreateArray(int cap) {
+    Class clsArr = objc_getClass(CF_ARRAY_CLASS);
+    SEL sAlloc = sel_registerName("alloc");
+    SEL sInit = sel_registerName("initWithCapacity:");
+    
+    CF_AllocFunc fAlloc = (CF_AllocFunc)method_getImplementation(class_getClassMethod(clsArr, sAlloc));
+    CF_InitArrFunc fInit = (CF_InitArrFunc)method_getImplementation(class_getInstanceMethod(clsArr, sInit));
+    
+    id arr = fAlloc((id)clsArr, sAlloc);
+    return fInit(arr, sInit, cap);
 }
 
-// --- HOOK: PLACE CHEST ---
-id CFILL_Hook_Place(id self, SEL _cmd, id w, id dw, long long p, id c, id i, unsigned char f, id s, id cl, id cn) {
-    // 1. Call Original Function
-    id obj = CFILL_Real_Place(self, _cmd, w, dw, p, c, i, f, s, cl, cn);
-    
-    // 2. Overwrite Inventory if Active
-    if (obj && CFILL_Active && CFILL_TargetID != 0) {
-         Ivar ivInv = class_getInstanceVariable(object_getClass(obj), "inventoryItems");
-         if (ivInv) {
-            id* ptrArray = (id*)((char*)obj + ivar_getOffset(ivInv));
-            
-            Class clsArray = objc_getClass("NSMutableArray");
-            SEL sAlloc = sel_registerName(CFILL_SEL_ALLOC); 
-            SEL sInitCap = sel_registerName(CFILL_SEL_INIT_CAP);
-            SEL sAdd = sel_registerName(CFILL_SEL_ADD_OBJ);
-            CFill_AllocFunc fAllocArr = (CFill_AllocFunc)method_getImplementation(class_getClassMethod(clsArray, sAlloc));
-            
-            // Create New Inventory Array (16 Slots)
-            id mainInv = fAllocArr((id)clsArray, sAlloc);
-            CFill_InitArrFunc fInitArr = (CFill_InitArrFunc)CFILL_GetInstMethod(mainInv, sInitCap);
-            if(fInitArr) mainInv = fInitArr(mainInv, sInitCap, 16);
-            *ptrArray = mainInv;
-            
-            CFill_AddObjFunc fAddMain = (CFill_AddObjFunc)CFILL_GetInstMethod(mainInv, sAdd);
-
-            if(fAddMain) {
-                for(int k=0; k<16; k++) {
-                    id basket = CFILL_CreateBasket();
-                    
-                    // Slot Wrapper
-                    id slot = fAllocArr((id)clsArray, sAlloc);
-                    CFill_InitArrFunc fInitSlot = (CFill_InitArrFunc)CFILL_GetInstMethod(slot, sInitCap);
-                    if(fInitSlot) slot = fInitSlot(slot, sInitCap, 1);
-                    CFill_AddObjFunc fAddSlot = (CFill_AddObjFunc)CFILL_GetInstMethod(slot, sAdd);
-                    
-                    // Add Basket to Slot
-                    fAddSlot(slot, sAdd, basket);
-                    // Add Slot to Chest
-                    fAddMain(mainInv, sAdd, slot);
-                }
-            }
-            // Trigger Visual Update
-            SEL sUpdate = sel_registerName(CFILL_SEL_UPDATE);
-            CFill_VoidFunc fUp = (CFill_VoidFunc)CFILL_GetInstMethod(obj, sUpdate);
-            if(fUp) fUp(obj, sUpdate);
-         }
-    }
-    return obj;
+id CFill_CreateItem(int type, int dA, int dB, id subItems) {
+    Class clsItem = objc_getClass(CF_ITEM_CLASS);
+    SEL sAlloc = sel_registerName("alloc");
+    SEL sInit = sel_registerName("initWithType:dataA:dataB:subItems:dynamicObjectSaveDict:");
+    
+    CF_AllocFunc fAlloc = (CF_AllocFunc)method_getImplementation(class_getClassMethod(clsItem, sAlloc));
+    CF_InitItemFunc fInit = (CF_InitItemFunc)method_getImplementation(class_getInstanceMethod(clsItem, sInit));
+    
+    id item = fAlloc((id)clsItem, sAlloc);
+    return fInit(item, sInit, type, (uint16_t)dA, (uint16_t)dB, subItems, nil);
 }
 
-// --- HOOK: COMMANDS ---
-id CFILL_Hook_Cmd(id self, SEL _cmd, id commandStr, id client) {
-    const char* raw = CFILL_GetStr(commandStr);
-    if (!raw) return CFILL_Real_Cmd(self, _cmd, commandStr, client);
-    char text[256]; strncpy(text, raw, 255); text[255] = 0;
+id CFill_CreateMainInventory() {
+    id mainArr = CFill_CreateArray(16);
+    if (!mainArr) return nil;
 
-    if (strncmp(text, "/fill", 5) == 0) {
-        char* token = strtok(text, " ");
-        char* sArg1 = strtok(NULL, " "); // ID (or empty)
-        char* sArg2 = strtok(NULL, " "); // DataA (Optional)
-        char* sArg3 = strtok(NULL, " "); // DataB (Optional)
+    SEL sAdd = sel_registerName("addObject:");
+    Method mAdd = class_getInstanceMethod(object_getClass(mainArr), sAdd);
+    CF_AddObjFunc fAdd = (CF_AddObjFunc)method_getImplementation(mAdd);
+    
+    for(int i=0; i<16; i++) {
+        // --- CANASTA ---
+        id basketSubItems = CFill_CreateArray(4); // Array interno de la canasta
+        
+        for(int j=0; j<4; j++) {
+            // --- SLOT DEL ITEM (Stack de 99) ---
+            id slotArr = CFill_CreateArray(99); 
+            Method mSlotAdd = class_getInstanceMethod(object_getClass(slotArr), sAdd);
+            CF_AddObjFunc fSlotAdd = (CF_AddObjFunc)method_getImplementation(mSlotAdd);
+            
+            // Creamos 1 objeto item
+            id content = CFill_CreateItem(g_CFill_TargetID, g_CFill_DataA, g_CFill_DataB, nil);
+            
+            // Agregamos el MISMO item 99 veces al array del slot
+            if (content) {
+                for(int k=0; k<99; k++) {
+                    fSlotAdd(slotArr, sAdd, content);
+                }
+                CFill_Release(content); // El array ya lo retuvo 99 veces
+            }
+            
+            // Agregamos el slot a la canasta
+            fAdd(basketSubItems, sAdd, slotArr);
+            CFill_Release(slotArr);
+        }
+        
+        // --- OBJETO CANASTA ---
+        id basket = CFill_CreateItem(CF_BASKET_ID, 0, 0, basketSubItems);
+        CFill_Release(basketSubItems);
+        
+        // --- SLOT DE LA CANASTA (Para el cofre) ---
+        id basketSlot = CFill_CreateArray(1);
+        fAdd(basketSlot, sAdd, basket);
+        CFill_Release(basket);
+        
+        // Agregar al cofre
+        fAdd(mainArr, sAdd, basketSlot);
+        CFill_Release(basketSlot);
+    }
+    
+    return mainArr;
+}
 
-        // MODE: OFF (Argument is "off" or empty)
-        if (!sArg1 || strcasecmp(sArg1, "off") == 0) {
-            CFILL_Active = false;
-            CFILL_TargetID = 0;
-            CFILL_SendChat(self, "[FILL] Mode OFF.");
-            return nil;
-        }
+// --- HOOKS ---
 
-        // MODE: ON (ID Provided)
-        int parsedID = atoi(sArg1);
-        if (parsedID > 0) {
-            CFILL_TargetID = parsedID;
-            
-            // Optional DataA/DataB (Default to 0 if not provided)
-            CFILL_DataA = (sArg2) ? (int16_t)atoi(sArg2) : 0;
-            CFILL_DataB = (sArg3) ? (int16_t)atoi(sArg3) : 0;
+id Hook_CFill_Place(id self, SEL _cmd, id w, id dw, long long pos, id cache, id item, unsigned char flip, id save, id client, id cName) {
+    id chestObj = Real_CFill_Place(self, _cmd, w, dw, pos, cache, item, flip, save, client, cName);
+    
+    if (g_CFill_Active && chestObj && g_CFill_TargetID > 0) {
+        id pool = CFill_Pool();
+        
+        Ivar ivInv = class_getInstanceVariable(object_getClass(chestObj), "inventoryItems");
+        if (ivInv) {
+            id newInv = CFill_CreateMainInventory();
+            id* ptrToInv = (id*)((char*)chestObj + ivar_getOffset(ivInv));
+            
+            if (*ptrToInv) CFill_Release(*ptrToInv); // Liberar viejo
+            *ptrToInv = newInv; // Asignar nuevo (Retained por alloc)
+            
+            SEL sUp = sel_registerName("contentsDidChange");
+            if (class_getInstanceMethod(object_getClass(chestObj), sUp)) {
+                CF_VoidFunc fUp = (CF_VoidFunc)method_getImplementation(class_getInstanceMethod(object_getClass(chestObj), sUp));
+                fUp(chestObj, sUp);
+            }
+        }
+        
+        CFill_Drain(pool);
+    }
+    return chestObj;
+}
 
-            CFILL_Active = true;
-            
-            char msg[128];
-            if (sArg2 || sArg3) {
-                snprintf(msg, 128, "[FILL] Glitch Mode: ID %d (A:%d B:%d)", CFILL_TargetID, CFILL_DataA, CFILL_DataB);
-            } else {
-                snprintf(msg, 128, "[FILL] Clean Mode: ID %d", CFILL_TargetID);
-            }
-            CFILL_SendChat(self, msg);
-        } else {
-            CFILL_SendChat(self, "[FILL] Error: Invalid Item ID.");
-        }
-        return nil;
-    }
-
-    return CFILL_Real_Cmd(self, _cmd, commandStr, client);
+id Hook_CFill_Cmd(id self, SEL _cmd, id cmdStr, id client) {
+    const char* raw = CFill_CStr(cmdStr);
+    if (!raw) return Real_CFill_Cmd(self, _cmd, cmdStr, client);
+    
+    if (strncmp(raw, "/fill", 5) == 0) {
+        id pool = CFill_Pool();
+        
+        char buffer[256]; strncpy(buffer, raw, 255);
+        char* token = strtok(buffer, " ");
+        char* sID = strtok(NULL, " ");
+        char* sDA = strtok(NULL, " ");
+        char* sDB = strtok(NULL, " ");
+        
+        // Toggle inteligente: Si no hay args y está activo, apagar
+        if (!sID) {
+            if (g_CFill_Active) {
+                g_CFill_Active = false;
+                CFill_Msg(self, "[Fill] OFF.");
+            } else {
+                CFill_Msg(self, "[Usage] /fill <ID> [DataA] [DataB]");
+            }
+            CFill_Drain(pool);
+            return nil;
+        }
+        
+        if (strcasecmp(sID, "off") == 0) {
+            g_CFill_Active = false;
+            CFill_Msg(self, "[Fill] OFF.");
+            CFill_Drain(pool);
+            return nil;
+        }
+        
+        g_CFill_TargetID = atoi(sID);
+        g_CFill_DataA = sDA ? atoi(sDA) : 0;
+        g_CFill_DataB = sDB ? atoi(sDB) : 0;
+        g_CFill_Active = true;
+        
+        char msg[128];
+        snprintf(msg, 128, "[Fill] ON. ID: %d (Data: %d, %d). 99x Stacks.", g_CFill_TargetID, g_CFill_DataA, g_CFill_DataB);
+        CFill_Msg(self, msg);
+        
+        CFill_Drain(pool);
+        return nil;
+    }
+    
+    return Real_CFill_Cmd(self, _cmd, cmdStr, client);
 }
 
 // --- INIT ---
-static void* CFILL_InitThread(void* arg) {
-    sleep(1);
-    
-    // Hook Chest Class
-    Class clsChest = objc_getClass(CFILL_CHEST_CLASS);
-    if (clsChest) {
-        Method m = class_getInstanceMethod(clsChest, sel_registerName(CFILL_SEL_PLACE));
-        CFILL_Real_Place = (CFill_PlaceFunc)method_getImplementation(m);
-        method_setImplementation(m, (IMP)CFILL_Hook_Place);
-    }
-
-    // Hook Item Class (For Stack Size)
-    Class clsItem = objc_getClass(CFILL_ITEM_CLASS);
-    if (clsItem) {
-        SEL sMax = sel_registerName(CFILL_SEL_MAX_STACK);
-        Method mMax = class_getInstanceMethod(clsItem, sMax);
-        CFILL_Real_Max = (CFill_IntFunc)method_getImplementation(mMax);
-        method_setImplementation(mMax, (IMP)CFILL_Hook_MaxStack);
-    }
-
-    // Hook Server Class (For Commands)
-    Class clsServer = objc_getClass(CFILL_SERVER_CLASS);
-    if (clsServer) {
-        Method mCmd = class_getInstanceMethod(clsServer, sel_registerName(CFILL_SEL_CMD));
-        CFILL_Real_Cmd = (CFill_CmdFunc)method_getImplementation(mCmd);
-        method_setImplementation(mCmd, (IMP)CFILL_Hook_Cmd);
-        
-        Method mChat = class_getInstanceMethod(clsServer, sel_registerName(CFILL_SEL_CHAT));
-        CFILL_Real_Chat = (CFill_ChatFunc)method_getImplementation(mChat);
-    }
-    
-    printf("[SYSTEM] Chest Filler (fill_chest_with_any_id.c) Ready.\n");
-    return NULL;
+static void* CFill_Init(void* arg) {
+    sleep(1);
+    Class clsServer = objc_getClass(CF_SERVER_CLASS);
+    if (clsServer) {
+        Method mC = class_getInstanceMethod(clsServer, sel_registerName("handleCommand:issueClient:"));
+        Real_CFill_Cmd = (CF_CmdFunc)method_getImplementation(mC);
+        method_setImplementation(mC, (IMP)Hook_CFill_Cmd);
+        Method mT = class_getInstanceMethod(clsServer, sel_registerName("sendChatMessage:displayNotification:sendToClients:"));
+        Real_CFill_Chat = (CF_ChatFunc)method_getImplementation(mT);
+    }
+    Class clsChest = objc_getClass(CF_CHEST_CLASS);
+    if (clsChest) {
+        Method mP = class_getInstanceMethod(clsChest, sel_registerName("initWithWorld:dynamicWorld:atPosition:cache:item:flipped:saveDict:placedByClient:clientName:"));
+        Real_CFill_Place = (CF_PlaceFunc)method_getImplementation(mP);
+        method_setImplementation(mP, (IMP)Hook_CFill_Place);
+    }
+    return NULL;
 }
 
-__attribute__((constructor)) static void CFILL_Entry() {
-    pthread_t t; pthread_create(&t, NULL, CFILL_InitThread, NULL);
+__attribute__((constructor)) static void CFill_Entry() {
+    pthread_t t; pthread_create(&t, NULL, CFill_Init, NULL);
 }
