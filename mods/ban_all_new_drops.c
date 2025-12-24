@@ -1,9 +1,8 @@
 /*
  * Ban All New Drops
- * ------------------------
- * Description: Prevents new FreeBlocks from dropping into the world.
+ * -----------------------------------
+ * Description: Prevents new items from spawning using only function pointers.
  * Commands: /ban_drops
- * Note: Uses BHServer chat signature.
  */
 
 #define _GNU_SOURCE
@@ -24,35 +23,39 @@
 // --- GLOBALS ---
 static bool g_CD_Active = false;
 
-// --- TYPES ---
+// --- TYPEDEFS (IMPs) ---
 typedef id (*CD_CmdFunc)(id, SEL, id, id);
-// Signature validated against BHServer.h
-typedef void (*CD_ChatFunc)(id, SEL, id, BOOL, id); 
+typedef void (*CD_ChatFunc)(id, SEL, id, BOOL, id);
 typedef id (*CD_DropFunc)(id, SEL, id);
+typedef id (*CD_StrFunc)(id, SEL, const char*);
+typedef const char* (*CD_Utf8Func)(id, SEL);
 
 static CD_CmdFunc  Real_CD_HandleCmd = NULL;
 static CD_ChatFunc Real_CD_SendChat = NULL;
 static CD_DropFunc Real_CD_ClientDrop = NULL;
 
-// --- HELPERS ---
+// --- IMP HELPERS ---
 static id CD_AllocStr(const char* text) {
     if (!text) return nil;
     Class cls = objc_getClass("NSString");
     SEL sel = sel_registerName("stringWithUTF8String:");
-    id (*f)(id,SEL,const char*) = (void*)method_getImplementation(class_getClassMethod(cls, sel));
+    Method m = class_getClassMethod(cls, sel);
+    if (!m) return nil;
+    CD_StrFunc f = (CD_StrFunc)method_getImplementation(m);
     return f ? f((id)cls, sel, text) : nil;
 }
 
 static const char* CD_GetCStr(id str) {
     if (!str) return "";
     SEL sel = sel_registerName("UTF8String");
-    const char* (*f)(id, SEL) = (void*)method_getImplementation(class_getInstanceMethod(object_getClass(str), sel));
+    Method m = class_getInstanceMethod(object_getClass(str), sel);
+    if (!m) return "";
+    CD_Utf8Func f = (CD_Utf8Func)method_getImplementation(m);
     return f ? f(str, sel) : "";
 }
 
 static void CD_SendMsg(id server, const char* msg) {
     if (server && Real_CD_SendChat) {
-        // Correct signature: Msg(id), DisplayNotification(BOOL), SendToClients(NSArray*)
         Real_CD_SendChat(server, 
                          sel_registerName("sendChatMessage:displayNotification:sendToClients:"), 
                          CD_AllocStr(msg), 
@@ -64,7 +67,7 @@ static void CD_SendMsg(id server, const char* msg) {
 // --- HOOKS ---
 
 id Hook_CD_ClientDrop(id self, SEL _cmd, id data) {
-    if (g_CD_Active) return nil; // Return nil to prevent drop creation
+    if (g_CD_Active) return nil; 
     if (Real_CD_ClientDrop) return Real_CD_ClientDrop(self, _cmd, data);
     return nil;
 }
@@ -75,7 +78,7 @@ id Hook_CD_Cmd(id self, SEL _cmd, id cmdStr, id client) {
     if (raw && strncmp(raw, "/ban_drops", 12) == 0) {
         g_CD_Active = !g_CD_Active;
         char msg[128];
-        snprintf(msg, 128, "[System] Drop Cleaner: %s", g_CD_Active ? "ON (Drops Disabled)" : "OFF (Drops Enabled)");
+        snprintf(msg, 128, "[System] Drop Cleaner: %s", g_CD_Active ? "ON" : "OFF");
         CD_SendMsg(self, msg);
         return nil;
     }
