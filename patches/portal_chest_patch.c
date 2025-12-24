@@ -1,8 +1,3 @@
-/*
- * Portal Chest Ban & Refund
- * Blocks ID 1074
- */
-
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
