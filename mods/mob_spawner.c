@@ -16,7 +16,6 @@
 typedef id (*MS_CmdFunc)(id, SEL, id, id);
 typedef void (*MS_ChatFunc)(id, SEL, id, BOOL, id);
 typedef id (*MS_SpawnFunc)(id, SEL, long long, int, id, BOOL, BOOL, id);
-
 typedef id (*MS_AllocFunc)(id, SEL);
 typedef id (*MS_InitFunc)(id, SEL);
 typedef id (*MS_DictFunc)(id, SEL, id, id);
@@ -120,62 +119,74 @@ id MSpawn_FindPlayer(id dynWorld, const char* name) {
     return nil;
 }
 
-// --- FULL ID LIST ---
+// --- PARSERS ---
+
+// Mapeado exacto del enum DodoBreed
 int MSpawn_ParseDodo(const char* v) {
-    if (!v) return -1;
+    if (!v) return 0; // Default Standard
     if (isdigit(v[0])) return atoi(v);
+    
+    if (strcasecmp(v, "standard")==0) return 0;
     if (strcasecmp(v, "stone")==0) return 1;
+    if (strcasecmp(v, "limestone")==0) return 2;
+    if (strcasecmp(v, "sandstone")==0) return 3;
+    if (strcasecmp(v, "marble")==0) return 4;
+    if (strcasecmp(v, "red_marble")==0) return 5;
+    if (strcasecmp(v, "lapis")==0) return 6;
     if (strcasecmp(v, "dirt")==0) return 7;
+    if (strcasecmp(v, "compost")==0) return 8;
     if (strcasecmp(v, "wood")==0) return 9;
+    if (strcasecmp(v, "gravel")==0) return 10;
     if (strcasecmp(v, "sand")==0) return 11;
+    if (strcasecmp(v, "black_sand")==0) return 12;
+    if (strcasecmp(v, "glass")==0) return 13;
+    if (strcasecmp(v, "black_glass")==0) return 14;
+    if (strcasecmp(v, "clay")==0) return 15;
+    if (strcasecmp(v, "red_brick")==0) return 16;
+    if (strcasecmp(v, "brick")==0) return 16; // Alias
     if (strcasecmp(v, "flint")==0) return 17;
     if (strcasecmp(v, "coal")==0) return 18;
+    if (strcasecmp(v, "oil")==0) return 19;
+    if (strcasecmp(v, "fuel")==0) return 20;
     if (strcasecmp(v, "copper")==0) return 21;
+    if (strcasecmp(v, "tin")==0) return 22;
     if (strcasecmp(v, "iron")==0) return 23;
     if (strcasecmp(v, "gold")==0) return 24;
     if (strcasecmp(v, "titanium")==0) return 25;
     if (strcasecmp(v, "platinum")==0) return 26;
-    if (strcasecmp(v, "tin")==0) return 22;
-    if (strcasecmp(v, "oil")==0) return 19;
-    if (strcasecmp(v, "fuel")==0) return 20;
-    if (strcasecmp(v, "clay")==0) return 15;
-    if (strcasecmp(v, "brick")==0) return 16;
-    if (strcasecmp(v, "glass")==0) return 13;
-    if (strcasecmp(v, "black_glass")==0) return 14;
-    if (strcasecmp(v, "marble")==0) return 4;
-    if (strcasecmp(v, "red_marble")==0) return 5;
-    if (strcasecmp(v, "lapis")==0) return 6;
-    if (strcasecmp(v, "compost")==0) return 8;
-    if (strcasecmp(v, "gravel")==0) return 10;
-    if (strcasecmp(v, "black_sand")==0) return 12;
-    if (strcasecmp(v, "limestone")==0) return 2;
-    if (strcasecmp(v, "sandstone")==0) return 3;
     if (strcasecmp(v, "amethyst")==0) return 27;
     if (strcasecmp(v, "sapphire")==0) return 28;
     if (strcasecmp(v, "emerald")==0) return 29;
     if (strcasecmp(v, "ruby")==0) return 30;
     if (strcasecmp(v, "diamond")==0) return 31;
     if (strcasecmp(v, "rainbow")==0) return 32;
+    
     return 0; 
 }
 
-int MSpawn_ParseDonkey(const char* v) {
-    if (!v) return -1;
+// Mapeado exacto del enum DonkeyBreeds y Unicorn Logic
+int MSpawn_ParseDonkey(const char* v, bool isUnicorn) {
+    if (!v) return isUnicorn ? 23 : 0; // Default Unicorn=Rainbow(23), Donkey=Standard(0)
     if (isdigit(v[0])) return atoi(v);
-    if (strcasecmp(v, "rainbow")==0) return 11;
-    if (strcasecmp(v, "unicorn")==0) return 23; 
-    if (strcasecmp(v, "white")==0) return 22;
-    if (strcasecmp(v, "black")==0) return 14;
-    if (strcasecmp(v, "pink")==0) return 21;
-    if (strcasecmp(v, "blue")==0) return 15;
-    if (strcasecmp(v, "green")==0) return 16;
-    if (strcasecmp(v, "yellow")==0) return 17;
-    if (strcasecmp(v, "red")==0) return 19;
-    if (strcasecmp(v, "purple")==0) return 20;
-    if (strcasecmp(v, "orange")==0) return 18;
-    if (strcasecmp(v, "brown")==0) return 13;
-    if (strcasecmp(v, "grey")==0) return 12;
-    return 0;
+
+    // Colores base comunes
+    if (strcasecmp(v, "standard")==0) return isUnicorn ? 12 : 0; // Unicorn standard is Grey(12)
+    if (strcasecmp(v, "brown")==0) return isUnicorn ? 13 : 1;
+    if (strcasecmp(v, "black")==0) return isUnicorn ? 14 : 2;
+    if (strcasecmp(v, "blue")==0) return isUnicorn ? 15 : 3;
+    if (strcasecmp(v, "green")==0) return isUnicorn ? 16 : 4;
+    if (strcasecmp(v, "yellow")==0) return isUnicorn ? 17 : 5;
+    if (strcasecmp(v, "orange")==0) return isUnicorn ? 18 : 6;
+    if (strcasecmp(v, "red")==0) return isUnicorn ? 19 : 7;
+    if (strcasecmp(v, "purple")==0) return isUnicorn ? 20 : 8;
+    if (strcasecmp(v, "pink")==0) return isUnicorn ? 21 : 9;
+    if (strcasecmp(v, "white")==0) return isUnicorn ? 22 : 10;
+    if (strcasecmp(v, "rainbow")==0) return isUnicorn ? 23 : 11;
+    
+    // Alias especificos de donkey
+    if (strcasecmp(v, "grey")==0) return isUnicorn ? 12 : 0; // Donkey normal no tiene grey explicito en enum, usa standard? Asumimos 0 o grey unicorn 12.
+
+    return isUnicorn ? 23 : 0;
 }
 
 void MSpawn_Execute(id dynWorld, id player, int mobID, int qty, int breed, bool baby) {
@@ -195,23 +206,28 @@ id Hook_MSpawn_Cmd(id self, SEL _cmd, id cmdStr, id client) {
     
     id pool = MSpawn_Pool();
     char buf[256]; strncpy(buf, raw, 255);
-    char* tok = strtok(buf, " ");
-    char* sMob = strtok(NULL, " ");
-    char* sQty = strtok(NULL, " ");
-    char* sPl = strtok(NULL, " ");
-    char* args[4] = {0};
+    
+    // Tokenization manual para evitar saltos raros
+    char* args[10] = {0};
     int argCount = 0;
-    while(argCount < 4) {
-        char* a = strtok(NULL, " ");
-        if (!a) break;
-        args[argCount++] = a;
+    char* token = strtok(buf, " "); // /spawn
+    
+    while(token && argCount < 10) {
+        token = strtok(NULL, " ");
+        if (token) args[argCount++] = token;
     }
     
-    if (!sMob || !sPl) {
-        MSpawn_Chat(self, "[Usage] /spawn <mob> <qty> <player> [variant/baby/force]");
+    // args[0]=mob, args[1]=qty, args[2]=player, args[3+]=options
+    
+    if (argCount < 3) {
+        MSpawn_Chat(self, "[Usage] /spawn <mob> <qty> <player> [variant/baby/force...]");
         MSpawn_Drain(pool);
         return nil;
     }
+    
+    char* sMob = args[0];
+    char* sQty = args[1];
+    char* sPl = args[2];
     
     id world = nil;
     object_getInstanceVariable(self, "world", (void**)&world);
@@ -225,16 +241,22 @@ id Hook_MSpawn_Cmd(id self, SEL _cmd, id cmdStr, id client) {
         return nil;
     }
     
-    int qty = sQty ? atoi(sQty) : 1;
+    int qty = atoi(sQty);
     if (qty < 1) qty = 1;
+    
     bool isBaby = false;
     bool force = false;
     const char* variant = NULL;
     
-    for(int i=0; i<argCount; i++) {
+    // Procesar argumentos extra en cualquier orden (index 3 en adelante)
+    for(int i=3; i<argCount; i++) {
+        if (!args[i]) continue;
         if (strcasecmp(args[i], "baby") == 0) isBaby = true;
         else if (strcasecmp(args[i], "force") == 0) force = true;
-        else variant = args[i]; 
+        else {
+            // Si no es flag, asumimos que es la variante
+            variant = args[i]; 
+        }
     }
     
     if (!force && qty > 10) {
@@ -246,14 +268,17 @@ id Hook_MSpawn_Cmd(id self, SEL _cmd, id cmdStr, id client) {
     int breed = -1;
     
     if (strcasecmp(sMob, "dodo")==0) {
-        mobID = 1; breed = MSpawn_ParseDodo(variant);
+        mobID = 1; 
+        breed = MSpawn_ParseDodo(variant);
     }
     else if (strcasecmp(sMob, "donkey")==0) {
-        mobID = 3; breed = MSpawn_ParseDonkey(variant);
+        mobID = 3; 
+        breed = MSpawn_ParseDonkey(variant, false);
     }
     else if (strcasecmp(sMob, "unicorn")==0) {
-        mobID = 3; breed = 23; 
-        if (variant) breed = MSpawn_ParseDonkey(variant);
+        mobID = 3; 
+        // Si no puso variante, default a rainbow(23), si puso "red", sera unicorn red(19)
+        breed = MSpawn_ParseDonkey(variant, true); 
     }
     else if (strcasecmp(sMob, "shark")==0) mobID = 5;
     else if (strcasecmp(sMob, "troll")==0) mobID = 6;
@@ -261,11 +286,12 @@ id Hook_MSpawn_Cmd(id self, SEL _cmd, id cmdStr, id client) {
     else if (strcasecmp(sMob, "yak")==0) mobID = 8;
     else if (strcasecmp(sMob, "dropbear")==0) mobID = 2;
     else if (strcasecmp(sMob, "fish")==0) mobID = 4;
+    else if (strcasecmp(sMob, "cave_troll")==0) mobID = 6; // Alias
     
     if (mobID > 0) {
         MSpawn_Execute(dynWorld, target, mobID, qty, breed, isBaby);
         char msg[128];
-        snprintf(msg, 128, "[Spawn] Summoned %d %s near %s.", qty, sMob, sPl);
+        snprintf(msg, 128, "[Spawn] Summoned %d %s (%d) near %s.", qty, sMob, breed, sPl);
         MSpawn_Chat(self, msg);
     } else {
         MSpawn_Chat(self, "[Error] Unknown Mob.");
@@ -285,6 +311,7 @@ static void* MSpawn_Init(void* arg) {
         
         Method mT = class_getInstanceMethod(cls, sel_registerName("sendChatMessage:displayNotification:sendToClients:"));
         Real_MSpawn_Chat = (MS_ChatFunc)method_getImplementation(mT);
+        printf("[MSpawn] Hooked!\n");
     }
     return NULL;
 }
