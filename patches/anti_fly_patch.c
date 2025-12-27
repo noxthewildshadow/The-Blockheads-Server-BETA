@@ -2,242 +2,161 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <dlfcn.h>
-#include <pthread.h>
 #include <unistd.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <stddef.h>
 #include <string.h>
+#include <stddef.h>
+#include <pthread.h>
 
-// --- CONSTANTES ---
-#define AF_MAX_QUEUE 50
-#define AF_TRAVERSE_FLY 28
-#define AF_KICK_DELAY 3.0f
-#define AF_COOLDOWN_TIME 5.0f
+// --- CONFIGURACIÓN ---
+#define ZAF_GRACE_TIME 3.0f
+#define ZAF_KICK_COOLDOWN 2.0f
+#define ZAF_MAX_PLAYERS 64
 
-// --- TIPOS (Locales) ---
+// --- TIPOS ---
 typedef void* id;
 typedef void* SEL;
 typedef void* Class;
 typedef void* Method;
 typedef void* Ivar;
-typedef void (*AF_IMP)(id, SEL, ...);
+typedef void (*ZAF_IMP)(id, SEL, ...);
 
-typedef id (*AF_IMP_Str)(Class, SEL, const char*);
-typedef void (*AF_IMP_Chat)(id, SEL, id, char, id);
-typedef void (*AF_IMP_Cmd)(id, SEL, id, id);
-typedef const char* (*AF_IMP_UTF8)(id, SEL);
+// Firmas
+typedef void (*ZAF_IMP_Boot)(id, SEL, id, bool); 
+typedef id (*ZAF_IMP_Str)(id, SEL);
+typedef bool (*ZAF_IMP_Bool)(id, SEL); 
+typedef int (*ZAF_IMP_Int)(id, SEL);
+typedef const char* (*ZAF_IMP_UTF8)(id, SEL);
 
-// --- PUNTEROS RUNTIME (Static para no chocar) ---
-static Class (*AF_objc_getClass)(const char *name);
-static SEL (*AF_sel_registerName)(const char *name);
-static Method (*AF_class_getInstanceMethod)(Class cls, SEL name);
-static Method (*AF_class_getClassMethod)(Class cls, SEL name);
-static AF_IMP (*AF_method_setImplementation)(Method m, AF_IMP imp);
-static AF_IMP (*AF_method_getImplementation)(Method m);
-static Ivar (*AF_class_getInstanceVariable)(Class cls, const char *name);
-static ptrdiff_t (*AF_ivar_getOffset)(Ivar v);
+// --- RUNTIME ---
+static Class (*ZAF_objc_getClass)(const char *name);
+static SEL (*ZAF_sel_registerName)(const char *name);
+static Method (*ZAF_class_getInstanceMethod)(Class cls, SEL name);
+static ZAF_IMP (*ZAF_method_setImplementation)(Method m, ZAF_IMP imp);
+static ZAF_IMP (*ZAF_method_getImplementation)(Method m);
+static Ivar (*ZAF_class_getInstanceVariable)(Class cls, const char *name);
+static ptrdiff_t (*ZAF_ivar_getOffset)(Ivar v);
 
-// --- GLOBALES DEL PARCHE (Con Prefijo AF_) ---
-AF_IMP AF_orig_GC_update = NULL;
-AF_IMP AF_orig_BH_update = NULL;
+// --- GLOBALES ---
+static ZAF_IMP ZAF_orig_GC_update = NULL;
+static ZAF_IMP ZAF_orig_BH_update = NULL;
 
-// Offsets
-static ptrdiff_t AF_off_traverse = 0;
-static ptrdiff_t AF_off_isFlying = 0;
-static ptrdiff_t AF_off_bhServer = 0;
-static ptrdiff_t AF_off_clientName = 0;
-static bool AF_offsets_ready = false;
+static id ZAF_Global_BHServer = NULL;
 
-// =============================================================
-// GESTIÓN DE COOLDOWN (Anti-Rebote)
-// =============================================================
+static SEL ZAF_Sel_HasJet = NULL;
+static SEL ZAF_Sel_CanFly = NULL;
+static SEL ZAF_Sel_Trav = NULL;
+static SEL ZAF_Sel_ClientID = NULL;
+static SEL ZAF_Sel_Boot = NULL;
+static SEL ZAF_Sel_UTF8 = NULL;
+
+static ZAF_IMP_Bool ZAF_Func_HasJet = NULL;
+static ZAF_IMP_Bool ZAF_Func_CanFly = NULL;
+static ZAF_IMP_Int  ZAF_Func_Trav = NULL;
+static ZAF_IMP_Str  ZAF_Func_ClientID = NULL;
+static ZAF_IMP_Boot ZAF_Func_Boot = NULL;
+static ZAF_IMP_UTF8 ZAF_Func_UTF8 = NULL;
+
+static ptrdiff_t ZAF_off_bhServer = 0;
+static bool ZAF_ready = false;
+
+// --- GESTIÓN DE JUGADORES ---
 typedef struct {
-    char name[128];
-    float timer;
+    char idStr[64];
+    float grace_timer;
+    float kick_cooldown;
+    float seen_timer;
     bool active;
-} AF_CooldownEntry;
+} ZAF_PlayerInfo;
 
-static AF_CooldownEntry AF_cooldown_list[AF_MAX_QUEUE];
+static ZAF_PlayerInfo ZAF_tracker[ZAF_MAX_PLAYERS];
 
-bool AF_IsOnCooldown(const char* name) {
-    for (int i = 0; i < AF_MAX_QUEUE; i++) {
-        if (AF_cooldown_list[i].active && strcmp(AF_cooldown_list[i].name, name) == 0) {
-            return true;
+static ZAF_PlayerInfo* ZAF_GetPlayer(const char* idStr) {
+    for (int i = 0; i < ZAF_MAX_PLAYERS; i++) {
+        if (ZAF_tracker[i].active && strcmp(ZAF_tracker[i].idStr, idStr) == 0) {
+            ZAF_tracker[i].seen_timer = 0.0f;
+            return &ZAF_tracker[i];
         }
     }
-    return false;
-}
-
-void AF_AddToCooldown(const char* name) {
-    for (int i = 0; i < AF_MAX_QUEUE; i++) {
-        if (!AF_cooldown_list[i].active) {
-            strncpy(AF_cooldown_list[i].name, name, 127);
-            AF_cooldown_list[i].timer = AF_COOLDOWN_TIME;
-            AF_cooldown_list[i].active = true;
-            return;
+    for (int i = 0; i < ZAF_MAX_PLAYERS; i++) {
+        if (!ZAF_tracker[i].active) {
+            strncpy(ZAF_tracker[i].idStr, idStr, 63);
+            ZAF_tracker[i].grace_timer = ZAF_GRACE_TIME;
+            ZAF_tracker[i].kick_cooldown = 0.0f;
+            ZAF_tracker[i].seen_timer = 0.0f;
+            ZAF_tracker[i].active = true;
+            return &ZAF_tracker[i];
         }
     }
+    return &ZAF_tracker[0];
 }
 
-// =============================================================
-// GESTIÓN DE COLA (QUEUE)
-// =============================================================
-static char AF_kick_queue[AF_MAX_QUEUE][128];
-static int AF_queue_read = 0;
-static int AF_queue_write = 0;
-static int AF_queue_count = 0;
-
-const char* AF_PeekQueue() {
-    if (AF_queue_count == 0) return NULL;
-    return AF_kick_queue[AF_queue_read];
-}
-
-void AF_PopQueue() {
-    if (AF_queue_count > 0) {
-        AF_queue_read = (AF_queue_read + 1) % AF_MAX_QUEUE;
-        AF_queue_count--;
-    }
-}
-
-void AF_AddToQueue(const char* name) {
-    if (AF_queue_count >= AF_MAX_QUEUE) return;
-    if (!name || strlen(name) < 1 || strcmp(name, "Unknown") == 0) return;
-
-    // Verificar duplicados
-    for (int i = 0; i < AF_queue_count; i++) {
-        int idx = (AF_queue_read + i) % AF_MAX_QUEUE;
-        if (strcmp(AF_kick_queue[idx], name) == 0) return;
-    }
-
-    // Verificar Cooldown
-    if (AF_IsOnCooldown(name)) return;
-
-    // Agregar
-    strncpy(AF_kick_queue[AF_queue_write], name, 127);
-    AF_queue_write = (AF_queue_write + 1) % AF_MAX_QUEUE;
-    AF_queue_count++;
-    
-    // Log mínimo
-    printf("[Anti-Fly] Detectado: %s\n", name);
-}
-
-// Variables de Estado
-static float AF_kick_timer = 0.0f;
-static bool AF_warning_sent = false;
-
-// =============================================================
-// HELPERS (Con Prefijo AF_)
-// =============================================================
-id AF_MakeString(const char* text) {
-    if (!text) return NULL;
-    Class cls = AF_objc_getClass("NSString");
-    SEL sel = AF_sel_registerName("stringWithUTF8String:");
-    Method m = AF_class_getClassMethod(cls, sel);
-    if (!m) return NULL;
-    AF_IMP_Str func = (AF_IMP_Str)AF_method_getImplementation(m);
-    return func(cls, sel, text);
-}
-
-const char* AF_ObjC_To_C(id nsStr) {
+// --- HELPERS ---
+static const char* ZAF_ObjC_To_C(id nsStr) {
     if (!nsStr) return NULL;
-    Class cls = AF_objc_getClass("NSString");
-    SEL sel = AF_sel_registerName("UTF8String");
-    Method m = AF_class_getInstanceMethod(cls, sel);
-    if (!m) return NULL;
-    AF_IMP_UTF8 func = (AF_IMP_UTF8)AF_method_getImplementation(m);
+    Class cls = ZAF_objc_getClass("NSString");
+    SEL sel = ZAF_sel_registerName("UTF8String");
+    ZAF_IMP_UTF8 func = (ZAF_IMP_UTF8)ZAF_method_getImplementation(ZAF_class_getInstanceMethod(cls, sel));
     return func(nsStr, sel);
 }
 
-void AF_SendChat(id server, const char* msgC) {
-    if (!server || !msgC) return;
-    id nsMsg = AF_MakeString(msgC);
-    Class cls = AF_objc_getClass("BHServer");
-    SEL sel = AF_sel_registerName("sendChatMessage:displayNotification:sendToClients:");
-    Method m = AF_class_getInstanceMethod(cls, sel);
-    if (m) {
-        AF_IMP_Chat f = (AF_IMP_Chat)AF_method_getImplementation(m);
-        f(server, sel, nsMsg, 1, NULL);
-    }
-}
-
-void AF_ExecuteCommand(id gc, const char* cmdC) {
-    if (!gc || !cmdC) return;
-    id nsCmd = AF_MakeString(cmdC);
-    Class cls = AF_objc_getClass("GameController");
-    SEL sel = AF_sel_registerName("handleCommand:issueClient:");
-    Method m = AF_class_getInstanceMethod(cls, sel);
-    if (m) {
-        AF_IMP_Cmd f = (AF_IMP_Cmd)AF_method_getImplementation(m);
-        f(gc, sel, nsCmd, NULL);
-    }
-}
-
 // =============================================================
-// HOOKS (Con Prefijo AF_)
+// HOOKS
 // =============================================================
 
-// Hook 1: GameController (Main Loop)
-void AF_Hook_GC_Update(id self, SEL _cmd, float dt, float accDt) {
-    if (AF_orig_GC_update) ((void(*)(id, SEL, float, float))AF_orig_GC_update)(self, _cmd, dt, accDt);
+static void ZAF_Hook_GC_Update(id self, SEL _cmd, float dt, float accDt) {
+    if (ZAF_orig_GC_update) ((void(*)(id, SEL, float, float))ZAF_orig_GC_update)(self, _cmd, dt, accDt);
 
-    static id myServer = NULL;
-    if (!myServer && AF_off_bhServer) {
-        myServer = *(id*)((char*)self + AF_off_bhServer);
-        if (myServer) printf("[Anti-Fly] Servidor listo.\n");
+    if (!ZAF_Global_BHServer && ZAF_off_bhServer != 0) {
+        ZAF_Global_BHServer = *(id*)((char*)self + ZAF_off_bhServer);
+        if (ZAF_Global_BHServer) printf("[ZAF] Core System Active.\n");
     }
 
-    if (myServer) {
-        // Actualizar Cooldowns
-        for(int i=0; i<AF_MAX_QUEUE; i++) {
-            if(AF_cooldown_list[i].active) {
-                AF_cooldown_list[i].timer -= dt;
-                if(AF_cooldown_list[i].timer <= 0) AF_cooldown_list[i].active = false;
+    for (int i = 0; i < ZAF_MAX_PLAYERS; i++) {
+        if (ZAF_tracker[i].active) {
+            ZAF_tracker[i].seen_timer += dt;
+            if (ZAF_tracker[i].seen_timer > 10.0f) {
+                ZAF_tracker[i].active = false; 
             }
         }
+    }
+}
 
-        // Procesar Queue
-        const char* target = AF_PeekQueue();
-        if (target) {
-            if (!AF_warning_sent) {
-                char buf[512];
-                snprintf(buf, sizeof(buf), "⚠️ %s FLY is not allowed in this server. You will be kicked in 3 seconds.", target);
-                AF_SendChat(myServer, buf);
-                AF_kick_timer = AF_KICK_DELAY;
-                AF_warning_sent = true;
-            }
-            else if (AF_kick_timer > 0.0f) {
-                AF_kick_timer -= dt;
-            }
-            else {
-                char cmd[512];
-                snprintf(cmd, sizeof(cmd), "/kick %s", target);
-                printf("[Anti-Fly] Kicking: %s\n", target);
+static void ZAF_Hook_BH_Update(id self, SEL _cmd, float dt, float accDt, bool isSim) {
+    if (ZAF_orig_BH_update) ((void(*)(id, SEL, float, float, bool))ZAF_orig_BH_update)(self, _cmd, dt, accDt, isSim);
+
+    if (ZAF_ready && ZAF_Global_BHServer) {
+        
+        id nsID = NULL;
+        if (ZAF_Func_ClientID) nsID = ZAF_Func_ClientID(self, ZAF_Sel_ClientID);
+        
+        if (nsID) {
+            const char* strID = ZAF_ObjC_To_C(nsID);
+            if (strID) {
+                ZAF_PlayerInfo* player = ZAF_GetPlayer(strID);
+
+                if (player->grace_timer > 0.0f) player->grace_timer -= dt;
+                if (player->kick_cooldown > 0.0f) player->kick_cooldown -= dt;
+
+                bool detected = false;
                 
-                AF_ExecuteCommand(self, cmd);
-                AF_AddToCooldown(target);
-                AF_PopQueue();
-                AF_warning_sent = false;
-            }
-        }
-    }
-}
+                if (ZAF_Func_Trav) {
+                    int trav = ZAF_Func_Trav(self, ZAF_Sel_Trav);
+                    if (trav == 28) detected = true; 
+                }
+                if (!detected && ZAF_Func_CanFly && ZAF_Func_CanFly(self, ZAF_Sel_CanFly)) detected = true;
+                if (!detected && ZAF_Func_HasJet && ZAF_Func_HasJet(self, ZAF_Sel_HasJet)) detected = true;
 
-// Hook 2: Blockhead (Detector)
-void AF_Hook_BH_Update(id self, SEL _cmd, float dt, float accDt, bool isSim) {
-    if (AF_orig_BH_update) ((void(*)(id, SEL, float, float, bool))AF_orig_BH_update)(self, _cmd, dt, accDt, isSim);
+                if (detected) {
+                    if (player->grace_timer > 0.0f) return; 
 
-    if (AF_offsets_ready) {
-        int trav = *(int*)((char*)self + AF_off_traverse);
-        char fly = *(char*)((char*)self + AF_off_isFlying);
-
-        if (trav == AF_TRAVERSE_FLY || fly != 0) {
-            id nsName = NULL;
-            if (AF_off_clientName != 0) nsName = *(id*)((char*)self + AF_off_clientName);
-            const char* nameC = AF_ObjC_To_C(nsName);
-
-            if (nameC) {
-                AF_AddToQueue(nameC);
+                    if (player->kick_cooldown <= 0.0f) {
+                        printf("[ZAF] Kicking ID: %s (Illegal Flight/Item)\n", strID);
+                        ZAF_Func_Boot(ZAF_Global_BHServer, ZAF_Sel_Boot, nsID, false);
+                        player->kick_cooldown = 2.0f;
+                    }
+                }
             }
         }
     }
@@ -246,67 +165,76 @@ void AF_Hook_BH_Update(id self, SEL _cmd, float dt, float accDt, bool isSim) {
 // =============================================================
 // LOADER
 // =============================================================
-void* AF_install_thread(void* arg) {
-    printf("[Patch] Cargando Anti-Fly (Clean & Prefixed)...\n");
-    sleep(3); // Pequeña espera para que carguen otros libs
+static void* ZAF_install_thread(void* arg) {
+    sleep(2);
+    printf("[ZAF] Loading Anti-Fly Module...\n");
 
-    // Cargar Símbolos del Runtime
-    AF_objc_getClass = dlsym(RTLD_DEFAULT, "objc_getClass");
-    AF_sel_registerName = dlsym(RTLD_DEFAULT, "sel_registerName");
-    AF_class_getInstanceMethod = dlsym(RTLD_DEFAULT, "class_getInstanceMethod");
-    AF_class_getClassMethod = dlsym(RTLD_DEFAULT, "class_getClassMethod");
-    AF_method_setImplementation = dlsym(RTLD_DEFAULT, "method_setImplementation");
-    AF_method_getImplementation = dlsym(RTLD_DEFAULT, "method_getImplementation");
-    AF_class_getInstanceVariable = dlsym(RTLD_DEFAULT, "class_getInstanceVariable");
-    AF_ivar_getOffset = dlsym(RTLD_DEFAULT, "ivar_getOffset");
+    ZAF_objc_getClass = dlsym(RTLD_DEFAULT, "objc_getClass");
+    ZAF_sel_registerName = dlsym(RTLD_DEFAULT, "sel_registerName");
+    ZAF_class_getInstanceMethod = dlsym(RTLD_DEFAULT, "class_getInstanceMethod");
+    ZAF_method_setImplementation = dlsym(RTLD_DEFAULT, "method_setImplementation");
+    ZAF_method_getImplementation = dlsym(RTLD_DEFAULT, "method_getImplementation");
+    ZAF_class_getInstanceVariable = dlsym(RTLD_DEFAULT, "class_getInstanceVariable");
+    ZAF_ivar_getOffset = dlsym(RTLD_DEFAULT, "ivar_getOffset");
 
-    // Fallback libobjc
-    if (!AF_class_getClassMethod) {
-        void* lib = dlopen("libobjc.so", RTLD_LAZY);
-        if (lib) AF_class_getClassMethod = dlsym(lib, "class_getClassMethod");
-    }
+    Class clsGC = ZAF_objc_getClass("GameController");
+    Class clsBH = ZAF_objc_getClass("Blockhead");
+    Class clsSrv = ZAF_objc_getClass("BHServer");
+    Class clsStr = ZAF_objc_getClass("NSString");
 
-    Class clsGC = AF_objc_getClass("GameController");
-    Class clsBH = AF_objc_getClass("Blockhead");
-
-    // Hook GC
     if (clsGC) {
-        Ivar iv = AF_class_getInstanceVariable(clsGC, "bhServer");
-        if (iv) AF_off_bhServer = AF_ivar_getOffset(iv);
+        Ivar iv = ZAF_class_getInstanceVariable(clsGC, "bhServer");
+        if (iv) ZAF_off_bhServer = ZAF_ivar_getOffset(iv);
         
-        Method m = AF_class_getInstanceMethod(clsGC, AF_sel_registerName("update:accurateDT:"));
+        Method m = ZAF_class_getInstanceMethod(clsGC, ZAF_sel_registerName("update:accurateDT:"));
         if (m) {
-            AF_orig_GC_update = AF_method_getImplementation(m);
-            AF_method_setImplementation(m, (AF_IMP)AF_Hook_GC_Update);
+            ZAF_orig_GC_update = ZAF_method_getImplementation(m);
+            ZAF_method_setImplementation(m, (ZAF_IMP)ZAF_Hook_GC_Update);
         }
     }
 
-    // Hook BH
+    if (clsSrv) {
+        ZAF_Sel_Boot = ZAF_sel_registerName("bootPlayer:wasBan:");
+        Method mBoot = ZAF_class_getInstanceMethod(clsSrv, ZAF_Sel_Boot);
+        if (mBoot) ZAF_Func_Boot = (ZAF_IMP_Boot)ZAF_method_getImplementation(mBoot);
+    }
+
+    if (clsStr) {
+        ZAF_Sel_UTF8 = ZAF_sel_registerName("UTF8String");
+        Method mUTF8 = ZAF_class_getInstanceMethod(clsStr, ZAF_Sel_UTF8);
+        if (mUTF8) ZAF_Func_UTF8 = (ZAF_IMP_UTF8)ZAF_method_getImplementation(mUTF8);
+    }
+
     if (clsBH) {
-        Ivar iv1 = AF_class_getInstanceVariable(clsBH, "traverseType");
-        Ivar iv2 = AF_class_getInstanceVariable(clsBH, "isInJetPackFreeFlightMode");
-        Ivar ivName = AF_class_getInstanceVariable(clsBH, "_clientName");
-        if (!ivName) ivName = AF_class_getInstanceVariable(clsBH, "clientName");
-        
-        if (iv1 && iv2 && ivName) {
-            AF_off_traverse = AF_ivar_getOffset(iv1);
-            AF_off_isFlying = AF_ivar_getOffset(iv2);
-            AF_off_clientName = AF_ivar_getOffset(ivName);
-            AF_offsets_ready = true;
-            
-            Method m = AF_class_getInstanceMethod(clsBH, AF_sel_registerName("update:accurateDT:isSimulation:"));
-            if (m) {
-                AF_orig_BH_update = AF_method_getImplementation(m);
-                AF_method_setImplementation(m, (AF_IMP)AF_Hook_BH_Update);
-                printf("[Anti-Fly] Sistema Activado.\n");
-            }
+        ZAF_Sel_ClientID = ZAF_sel_registerName("clientID");
+        Method mID = ZAF_class_getInstanceMethod(clsBH, ZAF_Sel_ClientID);
+        if (mID) ZAF_Func_ClientID = (ZAF_IMP_Str)ZAF_method_getImplementation(mID);
+
+        ZAF_Sel_HasJet = ZAF_sel_registerName("hasJetPackEquipped");
+        Method mHas = ZAF_class_getInstanceMethod(clsBH, ZAF_Sel_HasJet);
+        if (mHas) ZAF_Func_HasJet = (ZAF_IMP_Bool)ZAF_method_getImplementation(mHas);
+
+        ZAF_Sel_CanFly = ZAF_sel_registerName("canFly");
+        Method mFly = ZAF_class_getInstanceMethod(clsBH, ZAF_Sel_CanFly);
+        if (mFly) ZAF_Func_CanFly = (ZAF_IMP_Bool)ZAF_method_getImplementation(mFly);
+
+        ZAF_Sel_Trav = ZAF_sel_registerName("traverseType");
+        Method mTrav = ZAF_class_getInstanceMethod(clsBH, ZAF_Sel_Trav);
+        if (mTrav) ZAF_Func_Trav = (ZAF_IMP_Int)ZAF_method_getImplementation(mTrav);
+
+        Method mUpd = ZAF_class_getInstanceMethod(clsBH, ZAF_sel_registerName("update:accurateDT:isSimulation:"));
+        if (mUpd) {
+            ZAF_orig_BH_update = ZAF_method_getImplementation(mUpd);
+            ZAF_method_setImplementation(mUpd, (ZAF_IMP)ZAF_Hook_BH_Update);
+            ZAF_ready = true;
         }
     }
+
     return NULL;
 }
 
 __attribute__((constructor))
-void AF_init_entry() {
+void ZAF_init_entry() {
     pthread_t t;
-    pthread_create(&t, NULL, AF_install_thread, NULL);
+    pthread_create(&t, NULL, ZAF_install_thread, NULL);
 }
