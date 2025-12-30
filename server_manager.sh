@@ -278,6 +278,23 @@ start_server() {
     echo -n -e "${YELLOW}Start Rank Manager (Security & Ranks)? (y/N): ${NC}"
     read use_rank_manager < /dev/tty
     
+    # --- SELECT WORLD MODE (REQUIRED FOR change_world_mode.so) ---
+    echo -e "${YELLOW}Select World Mode (Critical patch change_world_mode.so):${NC}"
+    echo -e "1) ${GREEN}Keep Current/Normal${NC}"
+    echo -e "2) ${CYAN}Force Vanilla (Removes Custom Rules)${NC}"
+    echo -e "3) ${RED}Force Expert${NC}"
+    echo -e "4) ${MAGENTA}Convert to Custom Rules${NC}"
+    echo -n "Select option [1]: "
+    read wm_opt < /dev/tty
+    
+    local BH_MODE_VAR=""
+    case $wm_opt in
+        2) BH_MODE_VAR="export BH_MODE='VANILLA'" ;;
+        3) BH_MODE_VAR="export BH_MODE='EXPERT'" ;;
+        4) BH_MODE_VAR="export BH_MODE='CUSTOM'" ;;
+        *) BH_MODE_VAR="unset BH_MODE" ;;
+    esac
+    
     # ==========================================================================
     # MODIFICACIÓN CRÍTICA: CARGA AUTOMÁTICA DE TODOS LOS PARCHES CRÍTICOS
     # ==========================================================================
@@ -342,6 +359,7 @@ start_server() {
 #!/bin/bash
 cd '$PWD'
 export LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
+$BH_MODE_VAR
 while true; do
     echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting server..."
     # Inyectamos los parches aqui
