@@ -7,135 +7,160 @@
 #include <pthread.h>
 #include <dlfcn.h>
 #include <objc/runtime.h>
+#include <stddef.h>
 
-static bool hook_installed = false;
+// --- TYPEDEFS ---
+typedef void (*LoadWorld_PTR)(id, SEL, id, id, id, int, int, int, int, id, id, id, BOOL, BOOL);
+typedef BOOL (*LoadGame_PTR)(id, SEL);
+typedef void (*RulesChanged_PTR)(id, SEL);
 
-// --- IMP Typedefs to avoid objc_msgSend linking errors ---
-typedef id (*IMP_MutableCopy)(id, SEL);
-typedef id (*IMP_StringWithUTF8)(id, SEL, const char*);
-typedef id (*IMP_NumberWithBool)(id, SEL, BOOL);
-typedef void (*IMP_SetObject)(id, SEL, id, id);
-typedef void (*IMP_RemoveObject)(id, SEL, id);
-typedef void (*IMP_Release)(id, SEL);
+// --- VARIABLES GLOBALES ---
+static LoadWorld_PTR original_LoadWorld = NULL;
+static LoadGame_PTR original_LoadGame = NULL;
+static RulesChanged_PTR original_RulesChanged = NULL;
 
-// Pointer to the original method
-typedef void (*LoadWorld_ptr)(id, SEL, id, id, id, int, int, int, int, id, id, id, BOOL, BOOL);
-static LoadWorld_ptr original_LoadWorld;
+static bool hook_cmd_installed = false;
+static bool hook_world_installed = false;
 
-void hooked_LoadWorld(id self, SEL _cmd, id saveDict, id saveID, id port, int maxP, int delay, int width, int credit, id salt, id owner, id privacy, BOOL convert, BOOL noExit) {
-    
-    // 1. Check environment variable
-    char* mode_env = getenv("BH_MODE");
-    if (!mode_env || strlen(mode_env) == 0) {
-        original_LoadWorld(self, _cmd, saveDict, saveID, port, maxP, delay, width, credit, salt, owner, privacy, convert, noExit);
-        return;
-    }
+// --- HERRAMIENTAS DE MEMORIA (LOBOTOMÍA) ---
 
-    // 2. Clone dictionary (mutableCopy)
-    SEL mutableCopySel = sel_registerName("mutableCopy");
-    Class dictClass = object_getClass(saveDict); 
-    Method mCopyMethod = class_getInstanceMethod(dictClass, mutableCopySel);
-    
-    id mutableDict = nil;
-    if (mCopyMethod) {
-        IMP_MutableCopy copyFunc = (IMP_MutableCopy)method_getImplementation(mCopyMethod);
-        mutableDict = copyFunc(saveDict, mutableCopySel);
-    }
-
-    if (mutableDict) {
-        // --- Prepare Classes and Selectors ---
-        Class strClass = objc_getClass("NSString");
-        Class numClass = objc_getClass("NSNumber");
-        Class mutableDictClass = object_getClass(mutableDict);
-
-        SEL stringSel = sel_registerName("stringWithUTF8String:");
-        SEL boolNumberSel = sel_registerName("numberWithBool:");
-        SEL setObjSel = sel_registerName("setObject:forKey:");
-        SEL removeSel = sel_registerName("removeObjectForKey:");
-
-        // --- Get Implementations (IMPs) ---
-        Method stringMethod = class_getClassMethod(strClass, stringSel);
-        Method boolMethod = class_getClassMethod(numClass, boolNumberSel);
-        Method setMethod = class_getInstanceMethod(mutableDictClass, setObjSel);
-        Method removeMethod = class_getInstanceMethod(mutableDictClass, removeSel);
-
-        IMP_StringWithUTF8 stringFunc = (IMP_StringWithUTF8)method_getImplementation(stringMethod);
-        IMP_NumberWithBool numFunc = (IMP_NumberWithBool)method_getImplementation(boolMethod);
-        IMP_SetObject setFunc = (IMP_SetObject)method_getImplementation(setMethod);
-        IMP_RemoveObject removeFunc = (IMP_RemoveObject)method_getImplementation(removeMethod);
-
-        // --- Create Keys ---
-        id strExpertKey = stringFunc((id)strClass, stringSel, "expertMode");
-        id strRulesKey = stringFunc((id)strClass, stringSel, "customRules");
-
-        // --- Logic by Mode ---
-        BOOL targetExpert = NO;
-        BOOL targetConvert = NO; 
-        BOOL shouldInjectExpert = NO; 
-        BOOL shouldRemoveRules = NO;
-
-        if (strcmp(mode_env, "EXPERT") == 0) {
-            targetExpert = YES;
-            shouldInjectExpert = YES;
-        } 
-        else if (strcmp(mode_env, "VANILLA") == 0) {
-            targetExpert = NO;
-            shouldInjectExpert = YES;
-            shouldRemoveRules = YES;
-        }
-        else if (strcmp(mode_env, "CUSTOM") == 0) {
-            targetExpert = NO;
-            shouldInjectExpert = YES;
-            targetConvert = YES; // Triggers internal game conversion
-        }
-
-        // 3. Apply Changes
-        if (shouldInjectExpert && setFunc) {
-            id valExpert = numFunc((id)numClass, boolNumberSel, targetExpert);
-            setFunc(mutableDict, setObjSel, valExpert, strExpertKey);
-        }
-
-        if (shouldRemoveRules && removeFunc) {
-            removeFunc(mutableDict, removeSel, strRulesKey);
-        }
-
-        // 4. Call Original with modified data
-        // Force 'convert' argument if targetConvert is set
-        BOOL finalConvert = targetConvert ? YES : convert;
-        
-        original_LoadWorld(self, _cmd, mutableDict, saveID, port, maxP, delay, width, credit, salt, owner, privacy, finalConvert, noExit);
-        
-        // 5. Cleanup
-        SEL releaseSel = sel_registerName("release");
-        Method releaseMethod = class_getInstanceMethod(mutableDictClass, releaseSel);
-        if (releaseMethod) {
-            IMP_Release releaseFunc = (IMP_Release)method_getImplementation(releaseMethod);
-            releaseFunc(mutableDict, releaseSel);
-        }
-
-    } else {
-        // Fallback if copy fails
-        original_LoadWorld(self, _cmd, saveDict, saveID, port, maxP, delay, width, credit, salt, owner, privacy, convert, noExit);
+// Pone una variable de objeto en nil (Borrar reglas)
+void nuke_ivar(id object, const char* ivarName) {
+    if (!object) return;
+    Ivar ivar = class_getInstanceVariable(object_getClass(object), ivarName);
+    if (ivar) {
+        object_setIvar(object, ivar, nil);
+        printf("[MODE-MGR] Variable '%s' eliminada de RAM (nil).\n", ivarName);
     }
 }
 
+// Fuerza un valor booleano en memoria (YES/NO)
+void set_bool_ivar(id object, const char* ivarName, BOOL value) {
+    if (!object) return;
+    Ivar ivar = class_getInstanceVariable(object_getClass(object), ivarName);
+    if (ivar) {
+        ptrdiff_t offset = ivar_getOffset(ivar);
+        unsigned char* ptr = (unsigned char*)((char*)object + offset);
+        *ptr = value ? 1 : 0;
+        printf("[MODE-MGR] Variable '%s' forzada a %s en RAM.\n", ivarName, value ? "YES" : "NO");
+    }
+}
+
+// --- HOOK 1: COMMAND LINE DELEGATE (Argumentos de Entrada) ---
+// Este hook intercepta la orden de cargar y manipula los argumentos iniciales
+void hooked_LoadWorld(id self, SEL _cmd, id saveDict, id saveID, id port, int maxP, int delay, int width, int credit, id salt, id owner, id privacy, BOOL convert, BOOL noExit) {
+    
+    char* mode_env = getenv("BH_MODE");
+    printf("\n[MODE-MGR] LoadWorld interceptado. Modo solicitado: %s\n", mode_env ? mode_env : "NORMAL");
+
+    BOOL finalConvert = convert;
+    BOOL isVanillaTarget = false;
+
+    // Lógica de Manipulación de Argumentos
+    if (mode_env) {
+        if (strcmp(mode_env, "CUSTOM") == 0) {
+            printf("[MODE-MGR] Forzando conversión a Custom Rules...\n");
+            finalConvert = YES; // Esto le dice al juego que genere reglas nuevas
+        }
+        else if (strcmp(mode_env, "VANILLA") == 0) {
+            printf("[MODE-MGR] Preparando carga Vanilla...\n");
+            finalConvert = NO; 
+            isVanillaTarget = true;
+        }
+    }
+
+    // Llamamos al original. 
+    // Nota: No manipulamos saveDict aquí porque aprendimos que la DB lo sobreescribe.
+    // Dejamos que eso lo maneje el Hook 2 (Lobotomía).
+    original_LoadWorld(self, _cmd, saveDict, saveID, port, maxP, delay, width, credit, salt, owner, privacy, finalConvert, noExit);
+}
+
+// --- HOOK 2: WORLD LOAD GAME (Lobotomía Post-Carga) ---
+// Se ejecuta DESPUÉS de que el juego lee la base de datos. Aquí es donde reescribimos la realidad.
+BOOL hooked_LoadGame(id self, SEL _cmd) {
+    char* mode_env = getenv("BH_MODE");
+    
+    // 1. Dejar que cargue normalmente (leyendo la DB sucia)
+    BOOL result = NO;
+    if (original_LoadGame) {
+        result = original_LoadGame(self, _cmd);
+    }
+
+    if (result && mode_env) {
+        printf("[MODE-MGR] Carga de DB terminada. Aplicando parches de memoria para modo: %s\n", mode_env);
+
+        if (strcmp(mode_env, "VANILLA") == 0) {
+            // === LA LOBOTOMÍA ===
+            // Borramos cualquier regla que se haya cargado de la DB
+            nuke_ivar(self, "customRulesDict");
+            nuke_ivar(self, "customRules"); 
+            set_bool_ivar(self, "expertMode", NO);
+            
+            // Forzamos al motor a actualizarse
+            if (original_RulesChanged) {
+                printf("[MODE-MGR] Ejecutando customRulesChanged para purificar físicas...\n");
+                original_RulesChanged(self, sel_registerName("customRulesChanged"));
+            }
+            printf("[MODE-MGR] >>> MUNDO FORZADO A VANILLA (RAM LIMPIA) <<<\n");
+        }
+        else if (strcmp(mode_env, "EXPERT") == 0) {
+            // Forzamos modo experto en memoria (por si la DB decía que no)
+            set_bool_ivar(self, "expertMode", YES);
+            printf("[MODE-MGR] >>> MUNDO FORZADO A EXPERT MODE <<<\n");
+        }
+        // Para CUSTOM no hacemos nada aquí, ya que el Hook 1 forzó la conversión.
+    }
+
+    return result;
+}
+
+// --- INSTALADOR ---
 void* install_thread(void* arg) {
     int attempts = 0;
-    while (!hook_installed && attempts < 1000) {
-        Class targetClass = objc_getClass("CommandLineDelegate");
-        if (targetClass) {
-            SEL targetSel = sel_registerName("loadWorldWithSaveDict:saveID:port:maxPlayers:saveDelay:worldWidthMacro:credit:cloudSalt:ownerName:privacy:convertToCustomRules:noExit:");
-            Method targetMethod = class_getInstanceMethod(targetClass, targetSel);
-            
-            if (targetMethod) {
-                original_LoadWorld = (LoadWorld_ptr)method_getImplementation(targetMethod);
-                method_setImplementation(targetMethod, (IMP)hooked_LoadWorld);
-                hook_installed = true;
-                return NULL;
+    while ((!hook_cmd_installed || !hook_world_installed) && attempts < 2000) {
+        
+        // 1. Hookear CommandLineDelegate (Para CUSTOM/Init)
+        if (!hook_cmd_installed) {
+            Class cmdClass = objc_getClass("CommandLineDelegate");
+            if (cmdClass) {
+                SEL selLoad = sel_registerName("loadWorldWithSaveDict:saveID:port:maxPlayers:saveDelay:worldWidthMacro:credit:cloudSalt:ownerName:privacy:convertToCustomRules:noExit:");
+                Method mLoad = class_getInstanceMethod(cmdClass, selLoad);
+                if (mLoad) {
+                    original_LoadWorld = (LoadWorld_PTR)method_getImplementation(mLoad);
+                    method_setImplementation(mLoad, (IMP)hooked_LoadWorld);
+                    hook_cmd_installed = true;
+                    printf("[MODE-MGR] Hook instalado en CommandLineDelegate.\n");
+                }
             }
         }
+
+        // 2. Hookear World (Para VANILLA/EXPERT Post-Carga)
+        if (!hook_world_installed) {
+            Class worldClass = objc_getClass("World");
+            if (worldClass) {
+                SEL loadSel = sel_registerName("loadGame");
+                Method loadMethod = class_getInstanceMethod(worldClass, loadSel);
+                
+                SEL rulesSel = sel_registerName("customRulesChanged");
+                Method rulesMethod = class_getInstanceMethod(worldClass, rulesSel);
+
+                if (loadMethod && rulesMethod) {
+                    original_LoadGame = (LoadGame_PTR)method_getImplementation(loadMethod);
+                    original_RulesChanged = (RulesChanged_PTR)method_getImplementation(rulesMethod);
+                    
+                    method_setImplementation(loadMethod, (IMP)hooked_LoadGame);
+                    hook_world_installed = true;
+                    printf("[MODE-MGR] Hook instalado en World (LoadGame).\n");
+                }
+            }
+        }
+
         usleep(10000); // 10ms
         attempts++;
+    }
+    
+    if (!hook_cmd_installed || !hook_world_installed) {
+        printf("[MODE-MGR] ADVERTENCIA: No se pudieron instalar todos los hooks.\n");
     }
     return NULL;
 }
