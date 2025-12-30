@@ -38,9 +38,11 @@ REPO_RAW_URL="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-
 SERVER_MANAGER_URL="$REPO_RAW_URL/server_manager.sh"
 RANK_MANAGER_URL="$REPO_RAW_URL/rank_manager.sh"
 
-# --- LISTAS ACTUALIZADAS (change_world_mode.c y anti_fly_patch.c AGREGADOS) ---
+# --- LISTAS ACTUALIZADAS ---
+# change_world_mode.c agregado a CRITICAL
+# anti_fly_patch.c movido a OPTIONAL (porque en github esta en /patches/)
 CRITICAL_PATCHES=("name_exploit.c" "super_repair_mode.c" "change_world_mode.c")
-OPTIONAL_PATCHES=("freight_car_patch.c" "portal_chest_patch.c" "portal_patch.c" "trade_portal_patch.c")
+OPTIONAL_PATCHES=("freight_car_patch.c" "portal_chest_patch.c" "portal_patch.c" "trade_portal_patch.c" "anti_fly_patch.c")
 MODS_FILES=(
     "ban_all_new_drops.c"
     "chest_dupe_plus_any_item.c"
@@ -50,7 +52,6 @@ MODS_FILES=(
     "place_banned_blocks.c"
     "spawn_any_tree.c"
     "world_edit.c"
-    "anti_fly_patch.c"
 )
 
 declare -a PACKAGES_DEBIAN=(
