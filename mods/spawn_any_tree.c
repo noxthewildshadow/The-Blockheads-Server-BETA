@@ -1,3 +1,5 @@
+//Command: /tree <tree_type_or_id>
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
