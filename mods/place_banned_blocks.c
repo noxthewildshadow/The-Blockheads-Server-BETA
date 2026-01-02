@@ -1,3 +1,5 @@
+//Commands: /place <blocktype_id_or_name>   /wall <wall_id_or_name>
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
