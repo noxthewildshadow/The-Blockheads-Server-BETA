@@ -1,3 +1,5 @@
+//Command: /fill <any_item_id> (Then place the empty wood chest)
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
