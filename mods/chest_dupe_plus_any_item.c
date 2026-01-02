@@ -1,3 +1,5 @@
+//Commands: /item <any_item_id_here>   /dupe <quantity> (Then place the chest with all content inside)
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
