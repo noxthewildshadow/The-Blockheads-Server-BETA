@@ -1,4 +1,4 @@
-//command: /godchest (then place an empty wood chest)
+//Command: /godchest (then place an empty wood chest)
 
 #define _GNU_SOURCE
 #include <stdlib.h>
