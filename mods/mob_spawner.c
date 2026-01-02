@@ -1,3 +1,5 @@
+//Command: /spawn <mob_name> <quantity> <player_name> <variation_(optional)> <adult_or_baby_(optional)>
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
