@@ -1,3 +1,5 @@
+//Command: /pause (The command works for ON and OFF)
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
