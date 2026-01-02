@@ -1,3 +1,5 @@
+//Commands: /antifly status /antifly (Will turn ON or OFF automatically)
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
