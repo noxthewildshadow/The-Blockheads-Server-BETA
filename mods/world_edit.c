@@ -1,3 +1,5 @@
+//Commands: /p1   /p2   /set <blocktype_id_or_name>   /del <blocktype_id_or_name_(Or leave empty for del all)>
+//   /replace <old_blocktype_id_or_name> <new_blocktype_id_or_name>
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
