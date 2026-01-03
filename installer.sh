@@ -41,9 +41,10 @@ RANK_MANAGER_URL="$REPO_RAW_URL/rank_manager.sh"
 # --- LISTAS ACTUALIZADAS ---
 # change_world_mode.c agregado a CRITICAL
 # anti_fly_patch.c movido a OPTIONAL (porque en github esta en /patches/)
-CRITICAL_PATCHES=("name_exploit.c" "super_repair_mode.c" "change_world_mode.c")
+CRITICAL_PATCHES=("name_exploit.c" "super_repair_mode.c" "change_world_mode.c""anti_dos_and_crash_attacks.c")
 OPTIONAL_PATCHES=("freight_car_patch.c" "portal_chest_patch.c" "portal_patch.c" "trade_portal_patch.c" "anti_fly_patch.c")
 MODS_FILES=(
+    "all_items_one_chest.c"
     "ban_all_new_drops.c"
     "chest_dupe_plus_any_item.c"
     "fill_chest_with_any_id.c"
