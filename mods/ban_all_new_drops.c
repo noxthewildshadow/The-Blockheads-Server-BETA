@@ -1,4 +1,4 @@
-//Command: /ban_drops (This will ban newer drops)   /del_drops 
+//Commands: /ban_drops (This will ban newer drops)   /del_drops 
 
 #define _GNU_SOURCE
 #include <stdlib.h>
