@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# ==============================================================================
+# THE BLOCKHEADS SERVER MANAGER - FINAL VERSION
+# ==============================================================================
+
 # --- COLORS ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -182,6 +186,9 @@ start_server() {
     echo -n -e "${YELLOW}Start Rank Manager (Security & Ranks)? (y/N): ${NC}"
     read use_rank_manager < /dev/tty
     
+    # ==========================================================================
+    # PATCH DETECTION (CRITICAL FIRST, THEN OPTIONAL)
+    # ==========================================================================
     local PRELOAD_STR=""
     local PATCH_LIST=""
     local HAS_WORLD_MODE_PATCH=false
@@ -216,11 +223,7 @@ start_server() {
             read answer < /dev/tty
             
             if [[ "$answer" =~ ^[Yy]$ ]]; then
-                if [ -z "$PATCH_LIST" ]; then
-                    PATCH_LIST="$PWD/$patch_path"
-                else
-                    PATCH_LIST="$PATCH_LIST:$PWD/$patch_path"
-                fi
+                if [ -z "$PATCH_LIST" ]; then PATCH_LIST="$PWD/$patch_path"; else PATCH_LIST="$PATCH_LIST:$PWD/$patch_path"; fi
                 print_success "Enabled: $optional_name"
             else
                 print_status "Skipped: $optional_name"
@@ -231,15 +234,14 @@ start_server() {
         print_warning "Patches directory '$PATCHES_DIR' not found. No patches loaded."
     fi
     
-    # Construir variable LD_PRELOAD
-    if [ -n "$PATCH_LIST" ]; then
-        PRELOAD_STR="LD_PRELOAD=\"$PATCH_LIST\""
-        print_status "Patches Loaded."
-    fi
+    if [ -n "$PATCH_LIST" ]; then PRELOAD_STR="LD_PRELOAD=\"$PATCH_LIST\""; fi
 
-    # --- CONFIGURACION DE PARCHES DETECTADOS (AL FINAL) ---
+    # ==========================================================================
+    # FINAL CONFIGURATIONS (MODE & SIZE) - MOVED TO END
+    # ==========================================================================
     local BH_MODE_VAR=""
-    local WORLD_SIZE_VARS=""
+    # IMPORTANTE: Inicializamos las variables de tamaño como UNSET para asegurar Opción 1.
+    local WORLD_SIZE_VARS="unset BH_MUL; unset BH_RAW"
 
     # Configurar World Mode si existe el parche
     if [ "$HAS_WORLD_MODE_PATCH" = true ]; then
@@ -271,7 +273,7 @@ start_server() {
         if [[ "$ws_opt" == "2" || "$ws_opt" == "3" ]]; then
             echo -e ""
             echo -e "${RED}╔══════════════════════════════════════════════════════════════════╗${NC}"
-            echo -e "${RED}║                    ⚠️  CRITICAL WARNING  ⚠️                        ║${NC}"
+            echo -e "${RED}║                    ⚠️  CRITICAL WARNING  ⚠️                      ║${NC}"
             echo -e "${RED}╠══════════════════════════════════════════════════════════════════╣${NC}"
             echo -e "${RED}║ [!] EXISTING WORLDS:                                             ║${NC}"
             echo -e "${RED}║     Forcing size WILL CORRUPT the map (Cliffs, Broken Chunks).   ║${NC}"
@@ -296,12 +298,15 @@ start_server() {
                         ;;
                 esac
             else
+                # Usuario canceló o eligió opción 1 (implícitamente) -> Limpiamos vars
                 WORLD_SIZE_VARS="unset BH_MUL; unset BH_RAW"
             fi
         else
+            # Opción 1 seleccionada -> Limpiamos vars explícitamente
             WORLD_SIZE_VARS="unset BH_MUL; unset BH_RAW"
         fi
     fi
+    # ==========================================================================
 
     local start_script=$(mktemp)
     cat > "$start_script" << EOF
