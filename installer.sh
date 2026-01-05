@@ -39,8 +39,9 @@ SERVER_MANAGER_URL="$REPO_RAW_URL/server_manager.sh"
 RANK_MANAGER_URL="$REPO_RAW_URL/rank_manager.sh"
 
 # --- LISTAS ACTUALIZADAS ---
-# change_world_mode.c y change_world_size.c agregados a CRITICAL
-CRITICAL_PATCHES=("name_exploit.c" "super_repair_mode.c" "change_world_mode.c" "change_world_size.c" "anti_dos_and_crash_attacks.c")
+# change_world_mode.c agregado a CRITICAL
+# anti_fly_patch.c movido a OPTIONAL (porque en github esta en /patches/)
+CRITICAL_PATCHES=("name_exploit.c" "super_repair_mode.c" "change_world_mode.c" "anti_dos_and_crash_attacks.c")
 OPTIONAL_PATCHES=("freight_car_patch.c" "portal_chest_patch.c" "portal_patch.c" "trade_portal_patch.c" "anti_fly_patch.c")
 MODS_FILES=(
     "all_items_one_chest.c"
@@ -141,6 +142,7 @@ download_server_files() {
     print_step "Downloading Critical Patches to patches/critical..."
     for patch in "${CRITICAL_PATCHES[@]}"; do
         print_progress "Downloading $patch..."
+
         if wget --timeout=30 --tries=3 -O "patches/critical/$patch" "$REPO_RAW_URL/critical_patches/$patch" 2>/dev/null; then
             print_success "$patch downloaded."
         else
@@ -180,6 +182,7 @@ if ! install_packages; then
         print_error "Failed to update package list"
         exit 1
     fi
+
     if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget curl tar screen lsof inotify-tools bc build-essential gobjc libobjc-12-dev clang >/dev/null 2>&1; then
         print_error "Failed to install essential packages"
         exit 1
@@ -211,6 +214,7 @@ rm -rf "$EXTRACT_DIR"
 
 if [ ! -f "$SERVER_BINARY" ]; then
     ALTERNATIVE_BINARY=$(find . -name "*blockheads*" -type f -executable | head -n 1)
+
     [ -n "$ALTERNATIVE_BINARY" ] && mv "$ALTERNATIVE_BINARY" "blockheads_server171" && SERVER_BINARY="blockheads_server171"
 fi
 
@@ -317,6 +321,7 @@ fi
 # -----------------------------------------------------
 
 print_step "[8/8] Setting ownership and permissions..."
+
 chown -R "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_manager.sh" "patches" 2>/dev/null || true
 chmod 755 "$SERVER_BINARY" "server_manager.sh" "rank_manager.sh" 2>/dev/null || true
 chmod -R 755 "patches" 2>/dev/null || true
