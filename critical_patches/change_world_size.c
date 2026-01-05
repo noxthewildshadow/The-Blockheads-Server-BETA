@@ -7,19 +7,19 @@
 #include <getopt.h>
 
 // --- TYPEDEFS ---
-// IMPORTANTE: 'credit' es float para evitar corrupción de memoria (ABI mismatch)
+// CORRECCIÓN CRÍTICA: 'credit' cambiado a float. 
+// Si se deja en int, los registros de CPU se desalinean y el server se congela al cargar mundos x16.
 typedef void (*CWS_LoadWorld_PTR)(id, SEL, id, id, id, int, int, int, float, id, id, id, BOOL, BOOL);
 typedef id (*CWS_InitWorld_PTR)(id, SEL, id, id, id, id, id, id, id, id, id, int, int, id, BOOL);
 typedef int (*CWS_GetOpt_PTR)(int argc, char * const argv[], const char *optstring, const struct option *longopts, int *longindex);
 
-// --- VARIABLES GLOBALES ESTATICAS CON PREFIJO CWS ---
-// El prefijo evita conflictos con otros parches como change_world_mode.so
+// --- VARIABLES GLOBALES (Con prefijo CWS_ para evitar choques con change_world_mode) ---
 static CWS_LoadWorld_PTR CWS_original_LoadWorld = NULL;
 static CWS_InitWorld_PTR CWS_original_InitWorld = NULL;
 static CWS_GetOpt_PTR CWS_original_getopt_long_only = NULL;
 
 static int CWS_hooks_installed = 0;
-static int CWS_TARGET_WIDTH = 0; // 0 = Modo Pasivo (No tocar nada)
+static int CWS_TARGET_MACRO_WIDTH = 0;
 
 // --- HELPERS ---
 static int CWS_get_int_ivar(id object, const char* ivarName) {
@@ -33,69 +33,61 @@ static int CWS_get_int_ivar(id object, const char* ivarName) {
     return -2;
 }
 
-static void CWS_set_int_ivar(id object, const char* ivarName, int value) {
-    if (!object) return;
-    Ivar ivar = class_getInstanceVariable(object_getClass(object), ivarName);
-    if (ivar) {
-        ptrdiff_t offset = ivar_getOffset(ivar);
-        int* ptr = (int*)((char*)object + offset);
-        *ptr = value; 
-    }
-}
-
-// --- PAYLOAD: LoadWorld ---
-// Intercepta la carga para leer variables de entorno y pasar el tamaño inicial
+// --- PAYLOAD ---
+// Hook para loadWorldWithSaveDict...
 static void CWS_hooked_LoadWorld(id self, SEL _cmd, id saveDict, id saveID, id port, int maxP, int delay, int widthMacro, float credit, id salt, id owner, id privacy, BOOL convert, BOOL noExit) {
+    printf("\n[GOD-MODE] >>> LoadWorld Interceptado (Size Patcher) <<<\n");
     
+    // 1. BUSCAR VARIABLE DE TAMAÑO
     char* env_raw = getenv("BH_RAW");
     char* env_mul = getenv("BH_MUL");
     
-    int final_size = 0; // Default 0: Usar el del juego
+    // Si no hay variables, usamos el widthMacro que viene del juego (que lee del savefile)
+    int final_size = widthMacro; 
 
     if (env_raw) {
         final_size = atoi(env_raw);
+        printf("[GOD-MODE] 🔬 MODO MICRO/RAW DETECTADO. Forzando valor exacto: %d\n", final_size);
     } 
     else if (env_mul) {
         int mul = atoi(env_mul);
         final_size = 512 * mul;
+        printf("[GOD-MODE] 🚀 MODO MULTIPLICADOR. 512 x %d = %d\n", mul, final_size);
+    }
+    else {
+        printf("[GOD-MODE] ⚠️ Ninguna variable detectada. Usando valor del juego/save: %d\n", widthMacro);
     }
 
-    // Seguridad mínima
-    if (final_size > 0 && final_size < 16) final_size = 16;
+    CWS_TARGET_MACRO_WIDTH = final_size;
 
-    // Guardar objetivo globalmente
-    CWS_TARGET_WIDTH = final_size;
-
-    // Decidir qué pasar al siguiente eslabón de la cadena:
-    // Si target > 0, pasamos el nuestro. Si es 0, pasamos el original (widthMacro).
-    int size_to_pass = (CWS_TARGET_WIDTH > 0) ? CWS_TARGET_WIDTH : widthMacro;
-
+    // Llamamos al original con el tamaño (modificado o original)
     if (CWS_original_LoadWorld)
-        CWS_original_LoadWorld(self, _cmd, saveDict, saveID, port, maxP, delay, size_to_pass, credit, salt, owner, privacy, convert, noExit);
+        CWS_original_LoadWorld(self, _cmd, saveDict, saveID, port, maxP, delay, final_size, credit, salt, owner, privacy, convert, noExit);
 }
 
-// --- PAYLOAD: InitWorld ---
-// Intercepta la inicialización para SOBRESCRIBIR la memoria si el savefile restauró el tamaño original
+// --- VERIFICACION ---
+// Hook para initWithWindowInfo...
 static id CWS_hooked_InitWorld(id self, SEL _cmd, id winInfo, id cache, id delegate, id saveID, id name, id client, id server, id mpData, id hostData, int saveDelay, int widthMacro, id rules, BOOL expert) {
     
-    // 1. Llamar al original (Esto lee el savefile y resetea widthMacro al valor guardado)
     id result = CWS_original_InitWorld(self, _cmd, winInfo, cache, delegate, saveID, name, client, server, mpData, hostData, saveDelay, widthMacro, rules, expert);
     
-    // 2. FORZADO DE MEMORIA
-    // Solo actuamos si CWS_TARGET_WIDTH > 0 (O sea, si hay variables de entorno activas)
-    if (result && CWS_TARGET_WIDTH > 0) {
-        int current = CWS_get_int_ivar(result, "worldWidthMacro");
+    if (result) {
+        int val = CWS_get_int_ivar(result, "worldWidthMacro");
         
-        // Si el tamaño en memoria no coincide con lo que queremos, lo aplastamos.
-        if (current != CWS_TARGET_WIDTH) {
-            CWS_set_int_ivar(result, "worldWidthMacro", CWS_TARGET_WIDTH);
+        // Solo verificamos si teníamos un objetivo específico
+        if (CWS_TARGET_MACRO_WIDTH > 0) {
+            if (val == CWS_TARGET_MACRO_WIDTH) {
+                printf("[GOD-MODE] ✅ ÉXITO: Mundo cargado/generado con tamaño %d.\n", val);
+            } else {
+                printf("[GOD-MODE] ❌ AVISO: El tamaño en memoria es %d (Esperábamos %d). Si cargaste un save existente, el juego puede haber forzado su tamaño real.\n", val, CWS_TARGET_MACRO_WIDTH);
+            }
         }
     }
     return result;
 }
 
 // --- BOOTSTRAP ---
-static void CWS_install_hooks() {
+static void CWS_install_objc_hooks() {
     if (CWS_hooks_installed) return;
     
     Class cmdClass = objc_getClass("CommandLineDelegate");
@@ -118,14 +110,12 @@ static void CWS_install_hooks() {
         CWS_original_InitWorld = (CWS_InitWorld_PTR)method_getImplementation(mInit);
         method_setImplementation(mInit, (IMP)CWS_hooked_InitWorld);
     }
-
     CWS_hooks_installed = 1;
 }
 
-// --- ENTRY POINT ---
-// Usamos getopt como punto de entrada seguro al inicio del proceso
+// Interceptamos getopt para iniciar todo
 int getopt_long_only(int argc, char * const argv[], const char *optstring, const struct option *longopts, int *longindex) {
-    if (!CWS_hooks_installed) CWS_install_hooks();
+    if (!CWS_hooks_installed) CWS_install_objc_hooks();
     
     if (!CWS_original_getopt_long_only) {
         CWS_original_getopt_long_only = dlsym(RTLD_NEXT, "getopt_long_only");
