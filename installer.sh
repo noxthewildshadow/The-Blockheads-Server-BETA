@@ -142,7 +142,6 @@ download_server_files() {
     print_step "Downloading Critical Patches to patches/critical..."
     for patch in "${CRITICAL_PATCHES[@]}"; do
         print_progress "Downloading $patch..."
-
         if wget --timeout=30 --tries=3 -O "patches/critical/$patch" "$REPO_RAW_URL/critical_patches/$patch" 2>/dev/null; then
             print_success "$patch downloaded."
         else
@@ -182,7 +181,6 @@ if ! install_packages; then
         print_error "Failed to update package list"
         exit 1
     fi
-
     if ! apt-get install -y libgnustep-base1.28 libdispatch-dev patchelf wget curl tar screen lsof inotify-tools bc build-essential gobjc libobjc-12-dev clang >/dev/null 2>&1; then
         print_error "Failed to install essential packages"
         exit 1
@@ -214,7 +212,6 @@ rm -rf "$EXTRACT_DIR"
 
 if [ ! -f "$SERVER_BINARY" ]; then
     ALTERNATIVE_BINARY=$(find . -name "*blockheads*" -type f -executable | head -n 1)
-
     [ -n "$ALTERNATIVE_BINARY" ] && mv "$ALTERNATIVE_BINARY" "blockheads_server171" && SERVER_BINARY="blockheads_server171"
 fi
 
@@ -321,7 +318,6 @@ fi
 # -----------------------------------------------------
 
 print_step "[8/8] Setting ownership and permissions..."
-
 chown -R "$ORIGINAL_USER:$ORIGINAL_USER" "$SERVER_BINARY" "server_manager.sh" "rank_manager.sh" "patches" 2>/dev/null || true
 chmod 755 "$SERVER_BINARY" "server_manager.sh" "rank_manager.sh" 2>/dev/null || true
 chmod -R 755 "patches" 2>/dev/null || true
