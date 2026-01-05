@@ -273,7 +273,7 @@ start_server() {
         if [[ "$ws_opt" == "2" || "$ws_opt" == "3" ]]; then
             echo -e ""
             echo -e "${RED}╔══════════════════════════════════════════════════════════════════╗${NC}"
-            echo -e "${RED}║                    ⚠️  CRITICAL WARNING  ⚠️                      ║${NC}"
+            echo -e "${RED}║                    ⚠️  CRITICAL WARNING  ⚠️                        ║${NC}"
             echo -e "${RED}╠══════════════════════════════════════════════════════════════════╣${NC}"
             echo -e "${RED}║ [!] EXISTING WORLDS:                                             ║${NC}"
             echo -e "${RED}║     Forcing size WILL CORRUPT the map (Cliffs, Broken Chunks).   ║${NC}"
