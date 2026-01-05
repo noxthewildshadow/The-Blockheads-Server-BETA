@@ -269,7 +269,7 @@ start_server() {
     # Configurar World Size si existe el parche
     if [ "$HAS_WORLD_SIZE_PATCH" = true ]; then
         echo -e "\n${MAGENTA}>>> CONFIGURING WORLD SIZE (change_world_size.so)${NC}"
-        echo -e "1) ${GREEN}Normal Size (Default)${NC}"
+        echo -e "1) ${GREEN}Default Size (Skip)${NC}"
         echo -e "2) ${YELLOW}Custom Multiplier (e.g., 4x)${NC}"
         echo -e "3) ${RED}Exact Macro Count (Raw)${NC}"
         echo -n "Select world size option [1]: "
@@ -278,7 +278,7 @@ start_server() {
         if [[ "$ws_opt" == "2" || "$ws_opt" == "3" ]]; then
             echo -e ""
             echo -e "${RED}╔══════════════════════════════════════════════════════════════════╗${NC}"
-            echo -e "${RED}║                    ⚠️  CRITICAL WARNING  ⚠️                      ║${NC}"
+            echo -e "${RED}║                    ⚠️  CRITICAL WARNING  ⚠️                        ║${NC}"
             echo -e "${RED}╠══════════════════════════════════════════════════════════════════╣${NC}"
             echo -e "${RED}║ [!] EXISTING WORLDS:                                             ║${NC}"
             echo -e "${RED}║     Forcing size WILL CORRUPT the map (Cliffs, Broken Chunks).   ║${NC}"
