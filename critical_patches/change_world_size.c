@@ -17,7 +17,8 @@ static InitWorld_PTR size_original_InitWorld = NULL;
 static GetOpt_PTR size_original_getopt_long_only = NULL;
 
 static int size_hooks_installed = 0;
-// Inicializamos en 0. 0 significa "MODO PASIVO" (No forzar nada)
+// IMPORTANTE: Inicializamos en 0. 
+// 0 = Modo Pasivo (El script no hará nada a menos que se le ordene)
 static int TARGET_MACRO_WIDTH = 0;
 
 // --- HELPERS ---
@@ -48,8 +49,7 @@ static void size_hooked_LoadWorld(id self, SEL _cmd, id saveDict, id saveID, id 
     char* env_raw = getenv("BH_RAW");
     char* env_mul = getenv("BH_MUL");
     
-    // Por defecto 0 (Modo Pasivo)
-    int calculated_size = 0;
+    int calculated_size = 0; // Default a 0 (No tocar)
 
     if (env_raw) {
         calculated_size = atoi(env_raw);
@@ -59,12 +59,11 @@ static void size_hooked_LoadWorld(id self, SEL _cmd, id saveDict, id saveID, id 
         calculated_size = 512 * mul;
     }
 
-    // Guardamos el target globalmente
+    // Guardamos el objetivo. Si no hubo variables, se queda en 0.
     TARGET_MACRO_WIDTH = calculated_size;
 
-    // Decidir qué tamaño pasar al juego:
-    // Si TARGET > 0, pasamos nuestro tamaño personalizado.
-    // Si TARGET == 0 (Opción 1), pasamos 'widthMacro' original sin tocarlo.
+    // Si TARGET > 0, inyectamos el nuevo tamaño.
+    // Si TARGET == 0, pasamos el widthMacro original del juego.
     int size_to_pass = (TARGET_MACRO_WIDTH > 0) ? TARGET_MACRO_WIDTH : widthMacro;
 
     if (size_original_LoadWorld)
@@ -74,15 +73,15 @@ static void size_hooked_LoadWorld(id self, SEL _cmd, id saveDict, id saveID, id 
 // --- FORCE MEMORY OVERWRITE ---
 static id size_hooked_InitWorld(id self, SEL _cmd, id winInfo, id cache, id delegate, id saveID, id name, id client, id server, id mpData, id hostData, int saveDelay, int widthMacro, id rules, BOOL expert) {
     
-    // 1. Dejar que el juego cargue (leyendo el savefile)
+    // 1. Dejar que el juego cargue el savefile
     id result = size_original_InitWorld(self, _cmd, winInfo, cache, delegate, saveID, name, client, server, mpData, hostData, saveDelay, widthMacro, rules, expert);
     
-    // 2. SOLO INTERVENIR SI EL USUARIO PIDIÓ CAMBIOS EXPLICITOS
-    // Si TARGET_MACRO_WIDTH es 0 (Opción 1), este bloque se salta y respeta lo que cargó el save (x16, x4, etc).
+    // 2. SOLO intervenimos si TARGET_MACRO_WIDTH > 0 (Opción 2 o 3 del menú)
+    // Si es Opción 1 (Target 0), esto se salta y respeta el tamaño del mundo cargado (x16, x4, etc).
     if (result && TARGET_MACRO_WIDTH > 0) {
         int current = get_int_ivar_safe(result, "worldWidthMacro");
         if (current != TARGET_MACRO_WIDTH) {
-            // Solo forzamos si hay una discrepancia Y el usuario pidió un tamaño específico
+            // Forzamos la memoria solo si el usuario lo pidió explícitamente
             set_int_ivar_safe(result, "worldWidthMacro", TARGET_MACRO_WIDTH);
         }
     }
