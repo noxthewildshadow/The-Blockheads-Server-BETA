@@ -1,4 +1,4 @@
-# SERVER MANAGER WITH PATCHS/MODS
+#!/bin/bash
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -295,6 +295,9 @@ start_server() {
         *) BH_MODE_VAR="unset BH_MODE" ;;
     esac
     
+    # ==========================================================================
+    # MODIFICACIÓN CRÍTICA: CARGA AUTOMÁTICA DE TODOS LOS PARCHES CRÍTICOS
+    # ==========================================================================
     local PRELOAD_STR=""
     local PATCH_LIST=""
     
@@ -350,7 +353,7 @@ start_server() {
         print_status "Patches Loaded: $PATCH_LIST"
     fi
     # ==========================================================================
-    
+
     local start_script=$(mktemp)
     cat > "$start_script" << EOF
 #!/bin/bash
