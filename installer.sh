@@ -40,7 +40,7 @@ RANK_MANAGER_URL="$REPO_RAW_URL/rank_manager.sh"
 
 # --- LISTAS ACTUALIZADAS ---
 # change_world_mode.c y change_world_size.c agregados a CRITICAL
-CRITICAL_PATCHES=("name_exploit.c" "super_repair_mode.c" "change_world_mode.c" "change_world_size.c" "anti_dos_and_crash_attacks.c")
+CRITICAL_PATCHES=("name_exploit.c" "super_repair_mode.c" "change_world_mode.c" "change_world_size.c" "anti_crash_nullifier.c")
 OPTIONAL_PATCHES=("freight_car_patch.c" "portal_chest_patch.c" "portal_patch.c" "trade_portal_patch.c" "anti_fly_patch.c")
 MODS_FILES=(
     "all_items_one_chest.c"
