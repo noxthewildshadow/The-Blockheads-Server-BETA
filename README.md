@@ -6,8 +6,7 @@ Before starting, make sure your system meets the following requirements:
 
 * **Operating System:**
 
-  * Ubuntu 22.04+ recommended
-  * Any modern Debian-based or Arch-based distribution should work
+  * Ubuntu 22.04 recommended
 
 * **Access:**
 
