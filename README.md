@@ -1,26 +1,3 @@
----
-
-# The BlockHeads Server with EXPLOIT FIXES & MODS
-
-### Complete Installation Guide (Enhanced)
-
-## Introduction
-
-Welcome.
-This guide explains how to install and run your own **private The BlockHeads server** on Linux.
-
-This installer is **not a vanilla setup**. It provides:
-
-* A fully automated server installation
-* A **C-based Mod & Patch Loader**
-* **Critical exploit fixes**
-* An optional **Rank & Password Manager**
-* Interactive startup with per-session mod selection
-
-Everything is designed to be simple, reproducible, and secure.
-
----
-
 ## Prerequisites
 
 Before starting, make sure your system meets the following requirements:
