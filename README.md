@@ -1,203 +1,301 @@
-# The BlockHeads Server with EXPLOIT FIXES & MODS - Complete Installation Guide
+```md
+# The BlockHeads Server  
+### Secure Private Server with Exploit Fixes, Mods & Rank System
 
-## Introduction
+![Platform](https://img.shields.io/badge/platform-linux-blue)
+![Architecture](https://img.shields.io/badge/arch-x86__64-green)
+![Status](https://img.shields.io/badge/status-beta-orange)
+![Security](https://img.shields.io/badge/security-patched-brightgreen)
+![Mods](https://img.shields.io/badge/mods-supported-blueviolet)
 
-Welcome\! This guide will help you install your own private The BlockHeads server on a Linux system. This enhanced installer not only sets up the server but also includes a **Mod Loader**, **Security Patches**, and a **Rank Manager**. The process is automated to be as simple as possible.
+---
 
-## Prerequisites
+## 📖 Table of Contents
 
-Before you begin, make sure you have:
+- [Overview](#-overview)
+- [Features](#-features)
+- [System Requirements](#-system-requirements)
+- [Project Structure](#-project-structure)
+- [Installation](#-installation)
+- [World Creation](#-world-creation)
+- [Starting the Server](#-starting-the-server)
+- [Connecting In-Game](#-connecting-in-game)
+- [Mods & Patches](#-mods--patches)
+- [Server Management](#-server-management)
+- [Rank & Security System](#-rank--security-system)
+- [Troubleshooting](#-troubleshooting)
+- [Support](#-support)
 
-  * **Linux Server (OS):** Recommended: Ubuntu 22.04+ or any modern system based on Debian or Arch.
-  * **Root/Sudo Access:** Required to install programs.
-  * **`curl` Command:** The installer needs this to download itself.
-  * **Hardware:**
-      * At least 2GB of RAM (4GB+ recommended if running mods).
-      * 25GB of disk space.
+---
 
------
+## 📌 Overview
 
-## Installation: Step-by-Step
+This project provides a **fully patched and extensible private server** for **The BlockHeads** on Linux.
 
-Follow these 6 steps to get your server running.
+It includes **critical exploit fixes**, an **interactive mod loader**, and an optional **rank & password-based security system**, all installed using a **single automated script**.
 
-### 1\. Connect to Your Server (ONLY IF YOU USE A VPS)
+No prior knowledge of Linux server management or C compilation is required.
 
-If your server is remote (like a VPS), connect to it using SSH.
+---
 
-```bash
-ssh your_user@SERVER_IP_ADDRESS
+## ✨ Features
+
+- Official BlockHeads server binary
+- Automatic dependency installation
+- Binary compatibility fixes
+- C-based mod & patch system (`.so`)
+- Critical security patches (always enabled)
+- Optional gameplay and admin mods
+- Interactive server manager
+- Password & IP-based player authentication
+- Screen-based console management
+
+---
+
+## ✅ System Requirements
+
+### Operating System
+- Linux (64-bit)
+  - Recommended: Ubuntu 22.04+
+  - Debian / Arch compatible
+
+### Hardware
+- Minimum:
+  - 2 GB RAM
+  - 25 GB free disk space
+- Recommended:
+  - 4 GB+ RAM (mods enabled)
+
+### Permissions
+- Root or sudo access
+
+### Required Tool
+- `curl`
+
+---
+
+## 📁 Project Structure
+
 ```
 
-### 2\. Check if you have `curl`
+.
+├── blockheads_server171
+├── installer.sh
+├── server_manager.sh
+├── rank_manager.sh
+├── patches/
+│   ├── critical/
+│   ├── optional/
+│   └── mods/
+└── worlds/
 
-Most systems already have it. Check with:
+````
+
+---
+
+## 🛠 Installation
+
+### 1. Connect to Your Server (VPS only)
+
+```bash
+ssh your_user@SERVER_IP
+````
+
+Skip this step if installing locally.
+
+---
+
+### 2. Ensure `curl` Is Installed
 
 ```bash
 curl --version
 ```
 
-If you don't see a version, install it (example for Debian/Ubuntu):
+If missing:
 
 ```bash
-sudo apt update
-sudo apt install curl -y
+sudo apt update && sudo apt install curl -y
 ```
 
-### 3\. Run the Installer
+---
 
-This is the main command. It will download the script, compile the necessary patches/mods from source code (`.c`), and set up the environment.
+### 3. Run the Installer
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/installer.sh | sudo bash
 ```
 
-The script will automatically:
+### Installer Actions
 
-1.  Install dependencies (`clang`, `make`, `screen`, etc.).
-2.  Download the server binary and fix library incompatibilities.
-3.  **Compile Mods & Patches:** It will turn the raw C code into loadable modules (`.so`).
-4.  Organize files into `patches/critical`, `patches/optional`, and `patches/mods`.
+* Installs build tools (`clang`, `make`, `screen`)
+* Downloads server binary
+* Fixes missing libraries
+* Compiles `.c` patches into `.so`
+* Organizes patches by category
 
-### 4\. Create Your First World
+⚠️ Critical patches are **always active**.
 
-Once the installation is finished, create your world using the binary tool:
+---
+
+## 🌍 World Creation
+
+Create a new world:
 
 ```bash
 ./blockheads_server171 -n
 ```
 
-Follow the on-screen instructions to name and configure your world. **When finished, press `CTRL+C` to exit** and return to the terminal.
+Exit setup with **CTRL + C**
 
-*To see a list of the worlds you've created, use: `./blockheads_server171 -l`*
-
-### 5\. Start Your Server (Interactive Mode)
-
-Now, use the server manager to start your world. This version is **interactive**.
+List worlds:
 
 ```bash
-./server_manager.sh start YourWorldID 12153
+./blockheads_server171 -l
 ```
 
-  * Replace `YourWorldID` with the name of the world you created.
-  * `12153` is the default port.
+---
 
-**During startup, the script will ask you:**
-
-1.  **Start Rank Manager (Security & Ranks)? (y/N):**
-      * Type `y` to enable the password/rank system.
-      * Type `n` to run a vanilla server without the external rank manager.
-2.  **Enable patches/mods:**
-      * It will list every available mod (e.g., `chest_dupe`, `mob_spawner`) and ask if you want to load it for this session.
-      * *Note: Critical security patches (like `name_exploit`) are loaded automatically.*
-
-### 6\. Connect in the Game
-
-You're all set\! Open The BlockHeads on your phone or PC and connect using:
-
-  * **IP:** Your server's IP address.
-  * **Port:** `12153` (or the port you chose).
-
------
-
-## Mods & Patches System
-
-Your server now supports custom C-based mods and patches. These are stored in the `patches/` folder.
-
-### Critical Patches (Always Active)
-
-  * **`name_exploit`**: Prevents players from joining with invalid names, empty names, or spoofed exploit strings.
-
-### Optional Mods (Toggle on Startup)
-
-You can choose to enable these when starting the server:
-
-  * **`ban_all_new_drops`**: Prevents newly spawned items from dropping on the ground (lag reduction/anti-grief).
-  * **`chest_dupe_plus_any_item`**: Allows specific chest interaction mechanics or duplication features.
-  * **`fill_chest_with_any_id`**: Admin tool to fill chests with specific item IDs.
-  * **`mob_spawner`**: Adds mechanics to spawn mobs.
-  * **`pause_server_world`**: Can freeze the world state.
-  * **`place_banned_blocks`**: Allows admins to place blocks that are usually restricted.
-  * **`spawn_any_tree`**: Custom tree generation tools.
-  * **`freight_car_patch` / `portal_chest_patch`**: Fixes or modifies behavior for specific items to prevent crashes/exploits.
-
------
-
-## Server Management
-
-Use the `server_manager.sh` script to control your server.
-
-### Starting the Server
+## ▶ Starting the Server
 
 ```bash
-./server_manager.sh start YourWorldID 12153
+./server_manager.sh start WorldID 12153
 ```
 
-### Stopping the Server (Safely)
+### Interactive Prompts
 
-This stops the server, the rank manager, and cleans up the ports.
+1. **Enable Rank Manager?**
+
+   * `y` → password & IP protection
+   * `n` → vanilla mode
+
+2. **Enable Optional Mods**
+
+   * Select each mod individually
+   * Loaded per-session
+
+---
+
+## 🎮 Connecting In-Game
+
+* IP: your server IP
+* Port: `12153` (default)
+
+---
+
+## 🧩 Mods & Patches
+
+### 🔒 Critical (Always Enabled)
+
+* **name_exploit**
+  Prevents invalid or exploit-based player names.
+
+---
+
+### ⚙ Optional Mods
+
+| Mod                      | Description                 |
+| ------------------------ | --------------------------- |
+| ban_all_new_drops        | Prevents new item drops     |
+| chest_dupe_plus_any_item | Chest interaction mechanics |
+| fill_chest_with_any_id   | Admin item spawning         |
+| mob_spawner              | Mob spawning tools          |
+| pause_server_world       | Freeze world state          |
+| place_banned_blocks      | Place restricted blocks     |
+| spawn_any_tree           | Custom tree spawning        |
+| freight_car_patch        | Freight car crash fix       |
+| portal_chest_patch       | Portal chest exploit fix    |
+
+---
+
+## 🧰 Server Management
+
+### Start Server
 
 ```bash
-./server_manager.sh stop 12153
+./server_manager.sh start WorldID Port
 ```
 
-*To stop ALL running servers: `./server_manager.sh stop`*
-
-### Checking Status
-
-Shows if servers are RUNNING or STOPPED, and if the Rank Manager is active.
+### Stop Server
 
 ```bash
-./server_manager.sh status 12153
+./server_manager.sh stop Port
 ```
 
-### Viewing the Console
+Stop all servers:
 
-To see the live server console:
+```bash
+./server_manager.sh stop
+```
+
+### Server Status
+
+```bash
+./server_manager.sh status Port
+```
+
+---
+
+## 🖥 Console Access
+
+Attach:
 
 ```bash
 screen -r blockheads_server_12153
 ```
 
-*To exit the console without stopping the server, press: `CTRL+A` then `D`.*
+Detach:
 
------
+```
+CTRL + A → D
+```
 
-## Security and Rank System (Rank Patcher)
+---
 
-If you chose **"Yes"** to the Rank Manager prompt during startup, the `rank_manager.sh` script is running in the background.
+## 🔐 Rank & Security System
 
-  * **Player Authentication:** Verifies IP addresses. If an IP changes, the player must verify with their password.
-  * **Password Protection:** Players must create a password (`!psw`) to play.
-  * **Auto-Kick:** Unverified players are kicked after a grace period.
+### Features
 
-### Player Commands (in-game chat):
+* Password-protected accounts
+* IP verification
+* Auto-kick for unverified users
+* Anti-impersonation
 
-  * `!psw YOUR_PASSWORD YOUR_PASSWORD`
-    (Register your password).
-  * `!change_psw OLD_PASSWORD NEW_PASSWORD`
-    (Change password).
-  * `!ip_change YOUR_PASSWORD`
-    (Verify identity after IP change).
+### In-Game Commands
 
------
+```
+!psw PASSWORD PASSWORD
+!change_psw OLD_PASSWORD NEW_PASSWORD
+!ip_change PASSWORD
+```
 
-## Troubleshooting
+---
 
-1.  **"Port already in use"**
+## 🧯 Troubleshooting
 
-      * Use `./server_manager.sh stop PORT` to free it, or choose a different port (e.g., 12154).
+### Port in Use
 
-2.  **"Permission denied"**
+```bash
+./server_manager.sh stop PORT
+```
 
-      * Run: `chmod +x server_manager.sh rank_manager.sh installer.sh`
+### Permission Issues
 
-3.  **Mods not working / Compilation errors**
+```bash
+chmod +x installer.sh server_manager.sh rank_manager.sh
+```
 
-      * The installer tries to compile `.c` files to `.so`. If this failed, run `./server_manager.sh install-deps` to ensure you have `clang` and `make`.
-      * Check `patches/` to ensure `.so` files exist.
+### Mods Not Compiling
 
-## Support
+```bash
+./server_manager.sh install-deps
+ls patches/*/*.so
+```
 
-Oficial discord for updates:
-`https://discord.gg/TTNCvguEmV`
+---
+
+## 💬 Support
+
+Official Discord server:
+[https://discord.gg/TTNCvguEmV](https://discord.gg/TTNCvguEmV)
+
+---
