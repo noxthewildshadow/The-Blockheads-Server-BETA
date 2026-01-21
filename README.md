@@ -3,10 +3,10 @@ Elijahr, Xero & Floofy — clowns with **fragile egos, loud opinions, and reposi
 
 ## Introduction
 
-This repository provides a **complete, automated, and production-ready setup** for running a **The Blockheads dedicated server** with native patches and mods.
+This repository provides a **complete, automated, and production-ready setup** for running a **The Blockheads dedicated server** with native and most stable patches & mods.
 
 The goal of this project is to make server deployment **simple, stable, and extensible**, even for users with minimal Linux or server administration experience.  
-All critical steps — dependency installation, binary setup, patch compilation, and server management — are handled automatically.
+All critical steps — dependency installation, binary setup, patch compilation, and server management are handled automatically.
 
 Whether you want to:
 - Host a private world for friends  
