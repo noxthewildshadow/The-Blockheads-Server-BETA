@@ -1,3 +1,6 @@
+## Suck it, haters  
+Elijahr, Xero & Floofy — fragile egos, loud opinions, and repositories nobody clones .i.
+
 ## Prerequisites
 
 Before starting, make sure your system meets the following requirements:
