@@ -1,4 +1,4 @@
-## Suck it, haters 😆
+## Haters list 😆
 Elijahr, Xero & Floofy — clowns with **fragile egos, loud opinions, and repositories nobody clones 🧏**
 
 ## Introduction
