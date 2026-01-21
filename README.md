@@ -1,5 +1,20 @@
-## Suck it, haters  
-Elijahr, Xero & Floofy - **fragile egos, loud opinions, and repositories nobody clones .i.**
+## Suck it, haters 😆
+Elijahr, Xero & Floofy — clowns with **fragile egos, loud opinions, and repositories nobody clones 🧏**
+
+## Introduction
+
+This repository provides a **complete, automated, and production-ready setup** for running a **The Blockheads dedicated server** with native patches and mods.
+
+The goal of this project is to make server deployment **simple, stable, and extensible**, even for users with minimal Linux or server administration experience.  
+All critical steps — dependency installation, binary setup, patch compilation, and server management — are handled automatically.
+
+Whether you want to:
+- Host a private world for friends  
+- Run a public community server  
+- Experiment with native C-based mods and patches  
+
+this setup gives you a solid, well-documented foundation to build on.
+
 
 ## Prerequisites
 
