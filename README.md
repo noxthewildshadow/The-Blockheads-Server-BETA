@@ -1,5 +1,5 @@
 ## Suck it, haters  
-Elijahr, Xero & Floofy — fragile egos, loud opinions, and repositories nobody clones .i.
+Elijahr, Xero & Floofy - **fragile egos, loud opinions, and repositories nobody clones .i.**
 
 ## Prerequisites
 
