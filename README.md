@@ -1,5 +1,5 @@
 ## Haters list 😆
-Elijahr, Xero & Floofy — clowns with **fragile egos, loud opinions, and repositories nobody clones 🧏**
+Elijahr, Xero, Jarl & Floofy and others clowns with **fragile egos, loud opinions, and repositories nobody clones 🧏**
 
 ## Introduction
 
