@@ -15,6 +15,9 @@ Whether you want to:
 
 this setup gives you a solid, well-documented foundation to build on.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/scc.png" width="700">
+</p>
 
 ## Prerequisites
 
