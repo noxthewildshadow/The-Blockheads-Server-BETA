@@ -1,5 +1,5 @@
 ## Final announcement 2026:
-I am officially halting all further development for this game. It has become clear that this community, and even its creator, prioritize gatekeeping and outdated, bug-ridden manual coding over high-quality, AI-optimized results. I will not spend any more time trying to support a project that has been dead for over five years and refuses to evolve. The current version of the code is final; no further updates or support will be provided to those who prefer mediocrity over progress. **
+I am officially halting all further development for this game. It has become clear that this community, and even its creator, prioritize gatekeeping and outdated, bug-ridden manual coding over high-quality, AI-optimized results. I will not spend any more time trying to support a project that has been dead for over five years and refuses to evolve. The current version of the code is final; no further updates or support will be provided to those who prefer mediocrity over progress.
 
 ## Introduction
 
