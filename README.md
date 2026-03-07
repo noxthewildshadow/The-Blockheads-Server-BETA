@@ -1,5 +1,9 @@
 ## Final announcement 2026:
-I am officially halting all further development for this game. It has become clear that this community, and even its creator, prioritize gatekeeping and outdated, bug-ridden manual coding over high-quality, AI-optimized results. I will not spend any more time trying to support a project that has been dead for over five years and refuses to evolve. The current version of the code is final; no further updates or support will be provided to those who prefer mediocrity over progress.
+Support for this repository and all its mods has ended and will no longer receive updates.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/scc.png" width="700">
+</p>
 
 ## Introduction
 
@@ -14,10 +18,6 @@ Whether you want to:
 - Experiment with native C-based mods and patches  
 
 this setup gives you a solid, well-documented foundation to build on.
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/noxthewildshadow/The-Blockheads-Server-BETA/main/scc.png" width="700">
-</p>
 
 ## Prerequisites
 
