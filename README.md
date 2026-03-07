@@ -353,6 +353,6 @@ chmod +x server_manager.sh rank_manager.sh installer.sh
 Official Discord for updates and support:
 
 ```
-https://discord.gg/YG22C2FCRp
+https://discord.gg/9GfcnqUxx8
 ```
 
